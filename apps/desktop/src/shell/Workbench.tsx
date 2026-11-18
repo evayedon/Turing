@@ -7,6 +7,8 @@ import {
   Terminal,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { Explorer } from "../explorer/Explorer";
+import { useExplorer } from "../explorer/use-explorer";
 import { useLayout } from "../state/layout";
 
 function Panel({
@@ -27,6 +29,7 @@ function Panel({
 }
 
 export function Workbench() {
+  const explorer = useExplorer();
   const {
     sidebar,
     terminal,
@@ -87,7 +90,7 @@ export function Workbench() {
 
         {sidebar === "explorer" && (
           <Panel title="Explorer" className="sidebar">
-            <p className="panel-message">No folder open.</p>
+            <Explorer {...explorer} />
           </Panel>
         )}
         {sidebar === "git" && (
@@ -121,7 +124,7 @@ export function Workbench() {
       </div>
 
       <footer className="statusbar">
-        <span>No workspace</span>
+        <span>{explorer.workspace?.name ?? "No workspace"}</span>
         <span>Turing Nebula</span>
       </footer>
     </div>

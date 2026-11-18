@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-workspace-readonly"
+description = "Open or close a native workspace and read approved directory entries and text files."
+commands.allow = [
+  "workspace_open",
+  "workspace_close",
+  "fs_list_directory",
+  "fs_read_file",
+]

@@ -51,3 +51,6 @@ jobs:
       # Tauri builds the frontend first, then compiles for the runner's native target.
       - name: Build desktop without installers
         run: pnpm build:desktop --no-bundle -- --locked
+
+      - name: Test native workspace authorization
+        run: cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml

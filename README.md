@@ -1,8 +1,8 @@
 # Turing Core v0.1
 
 Turing Core is a cross-platform IDE foundation built with Tauri 2, Rust, React,
-TypeScript, Vite, and Zustand. The initial Turing Nebula workbench includes
-placeholders for Explorer, Git, Monaco, Terminal, and the AI panel.
+TypeScript, Vite, and Zustand. The Turing Nebula workbench includes a read-only
+native workspace Explorer and placeholders for Git, Monaco, Terminal, and AI.
 
 ## Development
 
@@ -25,6 +25,7 @@ pnpm test
 pnpm build
 pnpm build:desktop
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
 Use `pnpm build:desktop --no-bundle` to compile the native executable without

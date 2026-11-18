@@ -194,3 +194,46 @@ body {
     border-top: 1px solid var(--nebula-border);
   }
 }
+
+.explorer-content {
+  padding: 12px;
+  color: var(--nebula-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.explorer-content button {
+  padding: 4px 8px;
+  border: 1px solid var(--nebula-border);
+  border-radius: 4px;
+  background: var(--nebula-rail);
+  color: var(--nebula-text);
+  font: inherit;
+  text-align: left;
+}
+
+.explorer-content button:focus-visible {
+  outline: 2px solid var(--nebula-accent);
+}
+
+.explorer-content button:disabled {
+  opacity: 0.6;
+}
+
+.explorer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.explorer-path {
+  color: var(--nebula-text);
+  font-weight: 600;
+}
+
+.explorer-entries {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  list-style: none;
+}
