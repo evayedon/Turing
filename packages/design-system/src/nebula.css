@@ -1,0 +1,13 @@
+:root {
+  color-scheme: dark;
+  --nebula-canvas: #11121a;
+  --nebula-panel: #171821;
+  --nebula-rail: #13141d;
+  --nebula-border: #2a2c3a;
+  --nebula-text: #ebeaf4;
+  --nebula-muted: #a2a4ba;
+  --nebula-accent: #c1adff;
+  --nebula-active: #29233c;
+  --nebula-font: system-ui, sans-serif;
+  --nebula-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+}

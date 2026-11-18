@@ -1,0 +1,196 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--nebula-canvas);
+  color: var(--nebula-text);
+  font-family: var(--nebula-font);
+}
+
+.workbench {
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr) 26px;
+  height: 100vh;
+}
+
+.titlebar,
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-inline: 16px;
+  background: var(--nebula-rail);
+  color: var(--nebula-muted);
+  font: 11px var(--nebula-mono);
+}
+
+.titlebar {
+  border-bottom: 1px solid var(--nebula-border);
+}
+
+.titlebar h1 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  color: var(--nebula-text);
+  font: 600 14px var(--nebula-font);
+}
+
+.titlebar svg,
+.editor-empty svg {
+  color: var(--nebula-accent);
+}
+
+.workspace {
+  display: flex;
+  min-width: 0;
+}
+
+.activity {
+  display: flex;
+  flex: 0 0 48px;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  padding: 6px 0;
+  background: var(--nebula-rail);
+  border-right: 1px solid var(--nebula-border);
+}
+
+.activity button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--nebula-muted);
+  cursor: pointer;
+}
+
+.activity button:hover,
+.activity button[aria-pressed="true"] {
+  background: var(--nebula-active);
+  color: var(--nebula-accent);
+}
+
+.activity button[aria-pressed="true"] {
+  border-color: var(--nebula-border);
+}
+
+.activity button:focus-visible {
+  outline: 2px solid var(--nebula-accent);
+  outline-offset: 1px;
+}
+
+.panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--nebula-panel);
+}
+
+.panel-title {
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--nebula-border);
+  color: var(--nebula-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebar {
+  flex: 0 0 clamp(140px, 19vw, 245px);
+  border-right: 1px solid var(--nebula-border);
+}
+
+.assistant {
+  flex: 0 0 clamp(155px, 22vw, 300px);
+  border-left: 1px solid var(--nebula-border);
+}
+
+.editing-area {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.editor {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  background: var(--nebula-canvas);
+}
+
+.editor-empty {
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.editor-empty p {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.editor-empty span,
+.panel-message {
+  color: var(--nebula-muted);
+  font-size: 13px;
+}
+
+.panel-message {
+  margin: 14px;
+}
+
+.terminal {
+  flex: 0 0 clamp(96px, 25vh, 215px);
+  border-top: 1px solid var(--nebula-border);
+  font-family: var(--nebula-mono);
+}
+
+.statusbar {
+  border-top: 1px solid var(--nebula-border);
+}
+
+@media (max-width: 600px) {
+  .workspace {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .activity {
+    grid-row: 1 / -1;
+  }
+
+  .sidebar,
+  .assistant {
+    border: 0;
+  }
+
+  .sidebar {
+    grid-area: 1 / 2;
+  }
+
+  .editing-area {
+    grid-area: 2 / 2;
+  }
+
+  .assistant {
+    grid-area: 3 / 2;
+    border-top: 1px solid var(--nebula-border);
+  }
+}

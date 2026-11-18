@@ -1,0 +1,29 @@
+node_modules/
+dist/
+target/
+apps/desktop/src-tauri/gen/
+coverage/
+.DS_Store
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# macOS and IDE files
+.AppleDouble
+.LSOverride
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+
+# Build artifacts and installers
+*.dmg
+*.app/
+*.log
+
+# Python (future AI backend)
+__pycache__/
+*.pyc
+.venv/
