@@ -149,6 +149,10 @@ impl Registry {
             .ok_or(WorkspaceError::PermissionDenied)
     }
 
+    pub fn terminal_directory(&self, owner: &str, id: &str) -> Result<Dir> {
+        Ok(self.authorize(owner, id)?.try_clone()?)
+    }
+
     pub fn list(&self, owner: &str, id: &str, relative_path: &str) -> Result<Vec<DirectoryEntry>> {
         let root = self.authorize(owner, id)?;
         let parts = relative_parts(relative_path)?;

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-interactive-terminal"
+description = "Manage the local workbench's single user-initiated PTY session."
+commands.allow = ["terminal_start", "terminal_read", "terminal_input", "terminal_resize", "terminal_close"]

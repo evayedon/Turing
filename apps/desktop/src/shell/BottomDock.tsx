@@ -1,12 +1,12 @@
 import { CircleAlert, List, Terminal, X } from "lucide-react";
 
+import { TerminalPanel } from "../terminal/TerminalPanel";
 import { dockViews } from "../state/dock-views";
 import type { DockView } from "../state/dock-views";
 
 const details = {
   Terminal: {
     Icon: Terminal,
-    message: "Terminal execution is unavailable in this build.",
   },
   Problems: {
     Icon: CircleAlert,
@@ -22,13 +22,26 @@ export function BottomDock({
   active,
   select,
   close,
+  visible,
+  native,
+  workspaceId,
+  terminalActivation,
 }: {
   active: DockView;
   select: (view: DockView) => void;
   close: () => void;
+  visible: boolean;
+  native: boolean;
+  workspaceId?: string;
+  terminalActivation: number;
 }) {
   return (
-    <section id="bottom-dock" className="panel bottom-dock" aria-label={active}>
+    <section
+      id="bottom-dock"
+      className="panel bottom-dock"
+      aria-label={active}
+      hidden={!visible}
+    >
       <header className="dock-header">
         <div role="tablist" aria-label="Bottom dock" className="dock-tabs">
           {dockViews.map((name, index) => {
@@ -88,7 +101,15 @@ export function BottomDock({
           hidden={active !== name}
           tabIndex={0}
         >
-          <p className="panel-message">{details[name].message}</p>
+          {name === "Terminal" ? (
+            <TerminalPanel
+              native={native}
+              workspaceId={workspaceId}
+              activation={terminalActivation}
+            />
+          ) : (
+            <p className="panel-message">{details[name].message}</p>
+          )}
         </div>
       ))}
     </section>

@@ -1,11 +1,36 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useLayout } from "./layout";
 
 beforeEach(() => useLayout.setState(useLayout.getInitialState(), true));
 
 describe("desktop layout", () => {
-  it("opens the explorer on launch", () => {
-    expect(useLayout.getState().sidebar).toBe("explorer");
+  it("opens the explorer and collapses the bottom dock on a fresh launch", () => {
+    expect(useLayout.getState()).toMatchObject({
+      sidebar: "explorer",
+      terminal: false,
+      dockView: "Terminal",
+    });
+  });
+
+  it("restores a saved open dock and selected tab", async () => {
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) =>
+          key === "turing:visible-panes:v1"
+            ? JSON.stringify({ terminal: true, dockView: "Output" })
+            : null,
+      },
+    });
+    try {
+      vi.resetModules();
+      const { useLayout: restoredLayout } = await import("./layout");
+      expect(restoredLayout.getState()).toMatchObject({
+        terminal: true,
+        dockView: "Output",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("switches between sidebar views and closes the active view", () => {

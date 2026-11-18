@@ -1,0 +1,345 @@
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import type { TerminalSize } from "@turing/contracts";
+import { invokeTerminal, terminalErrorMessage } from "./terminal-ipc";
+import type { createTerminalView } from "./terminal-view";
+
+type View = ReturnType<typeof createTerminalView>;
+type Session = {
+  id?: string;
+  focusFrom: Element | null;
+  view?: View;
+  poll?: ReturnType<typeof setTimeout>;
+  observer?: ResizeObserver;
+  pending: Uint8Array[];
+  pendingBytes: number;
+  writing: boolean;
+  dimensions?: TerminalSize;
+  sent?: TerminalSize;
+  resizing: boolean;
+};
+type Status =
+  | { phase: "idle" | "starting" | "closing" }
+  | { phase: "running"; workspaceDirectory: boolean }
+  | { phase: "exited"; exitCode: number | null };
+
+const inputChunk = 8192;
+const inputLimit = 128 * 1024;
+
+function canMoveFocus(host: HTMLElement, from: Element | null) {
+  const { activeElement, body } = host.ownerDocument;
+  return (
+    !host.closest("[hidden]") &&
+    (activeElement === from || (activeElement === body && !from?.isConnected))
+  );
+}
+
+async function closeNative(id: string) {
+  try {
+    await invokeTerminal("terminal_close", { id });
+  } catch (error) {
+    if (error !== "SESSION_CLOSED") throw error;
+  }
+}
+
+function stopWatching(session: Session) {
+  clearTimeout(session.poll);
+  session.observer?.disconnect();
+  session.view?.disableInput();
+  session.pending = [];
+  session.pendingBytes = 0;
+}
+
+export function TerminalPanel({
+  native,
+  workspaceId,
+  activation = 0,
+}: {
+  native: boolean;
+  workspaceId?: string;
+  activation?: number;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const current = useRef<Session | null>(null);
+  const lastView = useRef<View | undefined>(undefined);
+  const startButton = useRef<HTMLButtonElement>(null);
+  const handledActivation = useRef(0);
+  const restoreFocus = useRef<Element | null | undefined>(undefined);
+  const [status, setStatus] = useState<Status>({ phase: "idle" });
+  const [error, setError] = useState("");
+
+  const activateTerminal = useEffectEvent(() => {
+    if (!host.current || host.current.closest("[hidden]")) return;
+    const session = current.current;
+    if (session?.id) {
+      session.view?.focus();
+    } else if (session) {
+      session.focusFrom = host.current.ownerDocument.activeElement;
+    } else {
+      void start();
+    }
+  });
+
+  useEffect(() => {
+    if (
+      activation === 0 ||
+      handledActivation.current === activation ||
+      status.phase === "closing"
+    )
+      return;
+    handledActivation.current = activation;
+    activateTerminal();
+  }, [activation, status.phase]);
+
+  useEffect(
+    () => () => {
+      const session = current.current;
+      current.current = null;
+      if (session) {
+        stopWatching(session);
+        if (session.id) void closeNative(session.id).catch(() => {});
+      }
+      lastView.current?.dispose();
+      lastView.current = undefined;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      (status.phase === "idle" || status.phase === "exited") &&
+      restoreFocus.current !== undefined
+    ) {
+      const from = restoreFocus.current;
+      restoreFocus.current = undefined;
+      if (host.current && canMoveFocus(host.current, from))
+        startButton.current?.focus();
+    }
+  }, [status.phase]);
+
+  async function end(
+    session: Session,
+    message = "",
+    exitCode: number | null = null,
+    finished = false,
+  ) {
+    if (current.current !== session) return;
+    current.current = null;
+    stopWatching(session);
+    setStatus({ phase: "closing" });
+    let failure = message;
+    if (session.id && !finished) {
+      try {
+        await closeNative(session.id);
+      } catch (cause) {
+        failure ||= terminalErrorMessage(cause);
+      }
+    }
+    setError(failure);
+    setStatus({ phase: "exited", exitCode });
+  }
+
+  async function sendInput(session: Session) {
+    const id = session.id;
+    if (!id || session.writing) return;
+    session.writing = true;
+    try {
+      while (current.current === session && session.pending.length) {
+        const bytes = session.pending[0];
+        try {
+          await invokeTerminal("terminal_input", {
+            id,
+            data: Array.from(bytes),
+          });
+        } catch (cause) {
+          if (cause !== "INPUT_BUSY") throw cause;
+          await new Promise<void>((resolve) => setTimeout(resolve, 24));
+          continue;
+        }
+        if (current.current !== session) break;
+        session.pending.shift();
+        session.pendingBytes -= bytes.length;
+      }
+    } catch (cause) {
+      if (cause === "SESSION_CLOSED") {
+        session.pending = [];
+        session.pendingBytes = 0;
+      } else {
+        await end(session, terminalErrorMessage(cause));
+      }
+    } finally {
+      session.writing = false;
+    }
+  }
+
+  function receiveInput(session: Session, bytes: Uint8Array) {
+    if (current.current !== session || !session.id || !bytes.length) return;
+    if (session.pendingBytes + bytes.length > inputLimit) {
+      setError(
+        "Terminal input buffer is full. Wait for the shell and try again.",
+      );
+      return;
+    }
+    for (let i = 0; i < bytes.length; i += inputChunk) {
+      session.pending.push(bytes.subarray(i, i + inputChunk));
+    }
+    session.pendingBytes += bytes.length;
+    void sendInput(session);
+  }
+
+  async function resize(session: Session) {
+    const id = session.id;
+    if (!id || session.resizing) return;
+    session.resizing = true;
+    try {
+      while (current.current === session && session.dimensions) {
+        const { rows, cols } = session.dimensions;
+        if (rows === session.sent?.rows && cols === session.sent.cols) break;
+        await invokeTerminal("terminal_resize", { id, rows, cols });
+        session.sent = { rows, cols };
+      }
+    } catch (cause) {
+      if (current.current === session && cause !== "SESSION_CLOSED")
+        setError(terminalErrorMessage(cause));
+    } finally {
+      session.resizing = false;
+    }
+  }
+
+  async function read(session: Session) {
+    if (current.current !== session || !session.id) return;
+    try {
+      const output = await invokeTerminal("terminal_read", { id: session.id });
+      if (current.current !== session) return;
+      if (output.bytes.length) await session.view?.write(output.bytes);
+      if (current.current !== session) return;
+      if (output.finished) {
+        const active = host.current?.ownerDocument.activeElement;
+        if (active && host.current?.contains(active))
+          restoreFocus.current = active;
+        await end(session, "", output.exitCode, true);
+      } else {
+        session.poll = setTimeout(
+          () => void read(session),
+          output.bytes.length ? 0 : 48,
+        );
+      }
+    } catch (cause) {
+      await end(session, terminalErrorMessage(cause));
+    }
+  }
+
+  async function start() {
+    const element = host.current;
+    if (!native || !element || current.current || status.phase === "closing")
+      return;
+    const session: Session = {
+      focusFrom: element.ownerDocument.activeElement,
+      pending: [],
+      pendingBytes: 0,
+      writing: false,
+      resizing: false,
+    };
+    current.current = session;
+    restoreFocus.current = undefined;
+    setError("");
+    setStatus({ phase: "starting" });
+    try {
+      const { createTerminalView } = await import("./terminal-view");
+      if (current.current !== session) return;
+      lastView.current?.dispose();
+      const view = createTerminalView(element, (bytes) =>
+        receiveInput(session, bytes),
+      );
+      lastView.current = session.view = view;
+      const measure = () => {
+        if (current.current !== session) return;
+        session.dimensions = view.size() ?? session.dimensions;
+        void resize(session);
+      };
+      session.observer = new ResizeObserver(measure);
+      session.observer.observe(element);
+      measure();
+      const size = session.dimensions ?? { rows: 24, cols: 80 };
+      const started = await invokeTerminal("terminal_start", {
+        ...size,
+        workspaceId,
+      });
+      if (current.current !== session) {
+        await closeNative(started.id);
+        return;
+      }
+      session.id = started.id;
+      session.sent = size;
+      setStatus({
+        phase: "running",
+        workspaceDirectory: started.workspaceDirectory,
+      });
+      void resize(session);
+      if (
+        canMoveFocus(element, session.focusFrom) ||
+        (session.focusFrom === startButton.current &&
+          element.ownerDocument.activeElement === element.ownerDocument.body &&
+          !element.closest("[hidden]"))
+      )
+        view.focus();
+      void read(session);
+    } catch (cause) {
+      if (current.current === session) restoreFocus.current = session.focusFrom;
+      await end(session, terminalErrorMessage(cause));
+    }
+  }
+
+  if (!native)
+    return <p className="panel-message">Terminal requires the desktop app.</p>;
+
+  return (
+    <div className="terminal-panel">
+      <div className="terminal-toolbar">
+        {status.phase === "running" ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              restoreFocus.current = event.currentTarget;
+              if (current.current) void end(current.current);
+            }}
+          >
+            Close terminal
+          </button>
+        ) : (
+          <button
+            type="button"
+            ref={startButton}
+            className="terminal-start"
+            disabled={status.phase === "starting" || status.phase === "closing"}
+            onClick={() => void start()}
+          >
+            {status.phase === "starting"
+              ? "Starting terminal…"
+              : status.phase === "closing"
+                ? "Closing terminal…"
+                : status.phase === "exited"
+                  ? error
+                    ? "Retry terminal"
+                    : "Restart terminal"
+                  : "Start terminal"}
+          </button>
+        )}
+        {status.phase === "idle" && <span>No terminal session running.</span>}
+        {status.phase === "running" &&
+          workspaceId &&
+          !status.workspaceDirectory && (
+            <span>Started outside the workspace</span>
+          )}
+        {status.phase === "exited" && status.exitCode !== null && (
+          <span role="status">Shell exited with code {status.exitCode}.</span>
+        )}
+      </div>
+      {error && (
+        <p className="terminal-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div ref={host} className="terminal-screen" />
+    </div>
+  );
+}

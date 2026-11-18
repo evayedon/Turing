@@ -1,0 +1,352 @@
+// @vitest-environment jsdom
+
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
+import { Workbench } from "../shell/Workbench";
+import { useLayout } from "../state/layout";
+import { TerminalPanel } from "./TerminalPanel";
+
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  create: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
+  isTauri: () => true,
+}));
+vi.mock("./terminal-view", () => ({ createTerminalView: mocks.create }));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { resolve, promise };
+}
+
+let resize: () => void;
+let input: (bytes: Uint8Array) => void;
+let disconnect: ReturnType<typeof vi.fn>;
+let view: {
+  size: ReturnType<typeof vi.fn>;
+  write: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  disableInput: ReturnType<typeof vi.fn>;
+  dispose: ReturnType<typeof vi.fn>;
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  disconnect = vi.fn();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: () => void) {
+        resize = callback;
+      }
+      observe() {}
+      disconnect = disconnect;
+    },
+  );
+  view = {
+    size: vi.fn(() => ({ rows: 18, cols: 100 })),
+    write: vi.fn().mockResolvedValue(undefined),
+    focus: vi.fn(),
+    disableInput: vi.fn(),
+    dispose: vi.fn(),
+  };
+  mocks.create.mockImplementation((_: HTMLDivElement, send: typeof input) => {
+    input = send;
+    return view;
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  useLayout.setState(useLayout.getInitialState(), true);
+  vi.unstubAllGlobals();
+});
+
+describe("TerminalPanel", () => {
+  it("requires native access and starts only when explicitly requested", () => {
+    const { rerender } = render(<TerminalPanel native={false} />);
+    expect(screen.getByText("Terminal requires the desktop app.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start terminal" })).toBeNull();
+    rerender(<TerminalPanel native workspaceId="approved" />);
+    expect(screen.getByRole("button", { name: "Start terminal" })).toBeTruthy();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps restored layout idle and opens, focuses and reopens only on explicit requests", async () => {
+    useLayout.setState({ terminal: true, dockView: "Terminal" });
+    const start = deferred<{ id: string; workspaceDirectory: boolean }>();
+    let starts = 0;
+    const pendingRead = deferred<never>();
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "terminal_start") {
+        starts++;
+        return starts === 1
+          ? start.promise
+          : Promise.resolve({ id: "second", workspaceDirectory: false });
+      }
+      if (command === "terminal_read") return pendingRead.promise;
+      return Promise.resolve();
+    });
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <Workbench />
+      </StrictMode>,
+    );
+    expect(screen.getByRole("button", { name: "Start terminal" })).toBeTruthy();
+    expect(screen.getByText("No terminal session running.")).toBeTruthy();
+    expect(starts).toBe(0);
+    const terminal = screen.getByRole("tab", { name: "Terminal" });
+    await user.dblClick(terminal);
+    await waitFor(() => expect(starts).toBe(1));
+    expect(view.focus).not.toHaveBeenCalled();
+    await act(async () =>
+      start.resolve({ id: "first", workspaceDirectory: false }),
+    );
+    expect(view.focus).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("tab", { name: "Problems" }));
+    await user.click(screen.getByRole("button", { name: "Hide bottom panel" }));
+    await user.click(
+      screen.getByRole("button", { name: "Open command palette" }),
+    );
+    await user.type(
+      screen.getByRole("combobox", { name: "Search commands" }),
+      "open terminal",
+    );
+    await user.click(screen.getByRole("option", { name: /^Open Terminal/ }));
+    expect(view.focus).toHaveBeenCalledTimes(2);
+    expect(starts).toBe(1);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "terminal_close",
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Close terminal" }));
+    await screen.findByRole("button", { name: "Restart terminal" });
+    expect(starts).toBe(1);
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_close", {
+      id: "first",
+    });
+    await user.click(screen.getByRole("tab", { name: "Problems" }));
+    await user.click(screen.getByRole("tab", { name: "Terminal" }));
+    await screen.findByRole("button", { name: "Close terminal" });
+    expect(starts).toBe(2);
+    expect(view.focus).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["activity control", "keyboard shortcut", "command palette"])(
+    "starts from a collapsed dock using the %s and preserves the session when reopened",
+    async (action) => {
+      const pendingRead = deferred<never>();
+      mocks.invoke.mockImplementation((command: string) => {
+        if (command === "terminal_start")
+          return Promise.resolve({ id: "fresh", workspaceDirectory: false });
+        if (command === "terminal_read") return pendingRead.promise;
+        return Promise.resolve();
+      });
+      const user = userEvent.setup();
+      render(<Workbench />);
+      expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+      expect(mocks.invoke).not.toHaveBeenCalled();
+      const toggle = screen.getByRole("button", {
+        name: "Toggle Bottom Panel",
+      });
+      if (action === "activity control") await user.click(toggle);
+      else if (action === "keyboard shortcut")
+        await user.keyboard("{Control>}`{/Control}");
+      else {
+        await user.click(
+          screen.getByRole("button", { name: "Open command palette" }),
+        );
+        await user.type(
+          screen.getByRole("combobox", { name: "Search commands" }),
+          "open terminal",
+        );
+        await user.click(
+          screen.getByRole("option", { name: /^Open Terminal/ }),
+        );
+      }
+      await screen.findByRole("button", { name: "Close terminal" });
+      expect(view.focus).toHaveBeenCalledOnce();
+      await user.click(toggle);
+      expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+      await user.click(toggle);
+      expect(view.focus).toHaveBeenCalledTimes(2);
+      expect(view.dispose).not.toHaveBeenCalled();
+      expect(
+        mocks.invoke.mock.calls.filter(
+          ([command]) => command === "terminal_start",
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not steal focus if the user moves to another control while starting", async () => {
+    const start = deferred<{ id: string; workspaceDirectory: boolean }>();
+    const pendingRead = deferred<never>();
+    mocks.invoke.mockImplementation((command: string) =>
+      command === "terminal_start" ? start.promise : pendingRead.promise,
+    );
+    const user = userEvent.setup();
+    render(<Workbench />);
+    await user.click(
+      screen.getByRole("button", { name: "Toggle Bottom Panel" }),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "terminal_start",
+        expect.anything(),
+      ),
+    );
+    const file = screen.getByRole("button", { name: "File" });
+    file.focus();
+    await act(async () =>
+      start.resolve({ id: "session", workspaceDirectory: false }),
+    );
+    expect(document.activeElement).toBe(file);
+    expect(view.focus).not.toHaveBeenCalled();
+  });
+
+  it("streams output, forwards input, resizes, and closes while a read is pending", async () => {
+    const output = deferred<{
+      bytes: number[];
+      finished: boolean;
+      exitCode: null;
+    }>();
+    const pending = deferred<{
+      bytes: number[];
+      finished: boolean;
+      exitCode: null;
+    }>();
+    let reads = 0;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "terminal_start")
+        return Promise.resolve({ id: "session", workspaceDirectory: true });
+      if (command === "terminal_read")
+        return (++reads === 1 ? output : pending).promise;
+      return Promise.resolve();
+    });
+    const user = userEvent.setup();
+    render(<TerminalPanel native workspaceId="approved" />);
+    await user.click(screen.getByRole("button", { name: "Start terminal" }));
+    const close = await screen.findByRole("button", { name: "Close terminal" });
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_start", {
+      rows: 18,
+      cols: 100,
+      workspaceId: "approved",
+    });
+    await act(async () =>
+      output.resolve({
+        bytes: [226, 152, 131],
+        finished: false,
+        exitCode: null,
+      }),
+    );
+    expect(view.write).toHaveBeenCalledWith([226, 152, 131]);
+    await waitFor(() => expect(reads).toBe(2));
+
+    view.size.mockReturnValue({ rows: 22, cols: 120 });
+    act(() => {
+      input(Uint8Array.of(3));
+      resize();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_input", {
+      id: "session",
+      data: [3],
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_resize", {
+      id: "session",
+      rows: 22,
+      cols: 120,
+    });
+
+    await user.click(close);
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_close", {
+      id: "session",
+    });
+    expect(document.activeElement).toBe(
+      await screen.findByRole("button", { name: "Restart terminal" }),
+    );
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(view.disableInput).toHaveBeenCalledOnce();
+    await act(async () =>
+      pending.resolve({ bytes: [65], finished: false, exitCode: null }),
+    );
+    expect(view.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up a native session if startup completes after unmount", async () => {
+    const start = deferred<{ id: string; workspaceDirectory: boolean }>();
+    mocks.invoke.mockImplementation((command: string) =>
+      command === "terminal_start" ? start.promise : Promise.resolve(),
+    );
+    const { unmount } = render(<TerminalPanel native />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start terminal" }),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "terminal_start",
+        expect.anything(),
+      ),
+    );
+    unmount();
+    await act(async () =>
+      start.resolve({ id: "late", workspaceDirectory: false }),
+    );
+    expect(mocks.invoke).toHaveBeenLastCalledWith("terminal_close", {
+      id: "late",
+    });
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(view.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("shows a startup error and permits retry", async () => {
+    const pendingRead = deferred<never>();
+    mocks.invoke
+      .mockRejectedValueOnce("SHELL_UNAVAILABLE")
+      .mockResolvedValueOnce({ id: "retry", workspaceDirectory: false })
+      .mockReturnValueOnce(pendingRead.promise);
+    render(<TerminalPanel native />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start terminal" }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toMatch(
+      /No usable system shell/,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry terminal" }),
+    );
+    await screen.findByRole("button", { name: "Close terminal" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(view.focus).toHaveBeenCalledOnce();
+  });
+
+  it("keeps final output visible and reports the shell exit without another close request", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({ id: "session", workspaceDirectory: false })
+      .mockResolvedValueOnce({ bytes: [65], finished: true, exitCode: 7 });
+    render(<TerminalPanel native />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Start terminal" }),
+    );
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "Shell exited with code 7.",
+    );
+    expect(view.write).toHaveBeenCalledWith([65]);
+    expect(view.dispose).not.toHaveBeenCalled();
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+    expect(
+      screen.getByRole("button", { name: "Restart terminal" }),
+    ).toBeTruthy();
+  });
+});

@@ -7,7 +7,7 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { EditorWorkspace } from "../editor/EditorWorkspace";
 import type { EditorInfo } from "../editor/editor-info";
@@ -59,6 +59,7 @@ export function Workbench() {
   const layout = usePaneLayout(!!sidebar, assistant);
   const dockView = useLayout((state) => state.dockView);
   const setDockView = useLayout((state) => state.selectDockView);
+  const [terminalActivation, setTerminalActivation] = useState(0);
   const [settings, setSettings] = useState(false);
   const [palette, setPalette] = useState(false);
   const [info, setInfo] = useState<EditorInfo>();
@@ -73,16 +74,36 @@ export function Workbench() {
         : null;
     setPalette(true);
   }
+  const openTerminalFromShortcut = useEffectEvent(() => revealDock("Terminal"));
+
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (
         settings ||
+        event.defaultPrevented ||
+        event.repeat ||
+        event.isComposing
+      )
+        return;
+      if (
+        !palette &&
+        explorer.native &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key === "`"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        openTerminalFromShortcut();
+        return;
+      }
+      if (
         (!event.metaKey && !event.ctrlKey) ||
         !event.shiftKey ||
         event.altKey ||
-        event.key.toLowerCase() !== "p" ||
-        event.repeat ||
-        event.isComposing
+        event.key.toLowerCase() !== "p"
       )
         return;
       event.preventDefault();
@@ -91,16 +112,26 @@ export function Workbench() {
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [palette, settings]);
+  }, [explorer.native, palette, settings]);
 
   function dismissPalette() {
     setPalette(false);
     if (previousFocus.current?.isConnected) previousFocus.current.focus();
   }
 
-  function revealDock(view: DockView) {
+  function selectDock(view: DockView) {
     setDockView(view);
+    if (view === "Terminal") setTerminalActivation((previous) => previous + 1);
+  }
+
+  function revealDock(view: DockView) {
+    selectDock(view);
     if (!terminal) toggleTerminal();
+  }
+
+  function toggleBottomFromControl() {
+    if (terminal) toggleTerminal();
+    else revealDock(dockView);
   }
 
   const openFolder = () => editor.changeWorkspace(explorer.open);
@@ -117,15 +148,13 @@ export function Workbench() {
       label: sidebar === "explorer" ? "Hide Explorer" : "Show Explorer",
       run: () => toggleSidebar("explorer"),
     },
+    ...(terminal && dockView === "Terminal"
+      ? [{ label: "Hide Terminal panel", run: toggleTerminal }]
+      : []),
     {
-      label:
-        terminal && dockView === "Terminal"
-          ? "Hide Terminal panel"
-          : "Show Terminal panel",
-      run:
-        terminal && dockView === "Terminal"
-          ? toggleTerminal
-          : () => revealDock("Terminal"),
+      label: "Open Terminal",
+      hint: explorer.native ? "Ctrl+`" : undefined,
+      run: () => revealDock("Terminal"),
     },
     {
       label: sidebar === "search" ? "Hide Search" : "Show Search",
@@ -137,7 +166,7 @@ export function Workbench() {
     },
     {
       label: terminal ? "Hide Bottom Panel" : "Show Bottom Panel",
-      run: toggleTerminal,
+      run: toggleBottomFromControl,
     },
     { label: "Open Settings", run: () => setSettings(true) },
     { label: "Show Problems", run: () => revealDock("Problems") },
@@ -202,7 +231,7 @@ export function Workbench() {
           bottom={terminal}
           toggleSidebar={toggleSidebar}
           toggleAssistant={toggleAssistant}
-          toggleBottom={toggleTerminal}
+          toggleBottom={toggleBottomFromControl}
           openSettings={() => setSettings(true)}
         />
         {sidebar && (
@@ -281,19 +310,19 @@ export function Workbench() {
               }}
             />
           </Panel>
-          {terminal && (
-            <>
-              <Splitter {...layout.splitter("terminal")} />
-              <BottomDock
-                active={dockView}
-                select={setDockView}
-                close={() => {
-                  toggleTerminal();
-                  document.getElementById("toggle-bottom-panel")?.focus();
-                }}
-              />
-            </>
-          )}
+          {terminal && <Splitter {...layout.splitter("terminal")} />}
+          <BottomDock
+            visible={terminal}
+            active={dockView}
+            native={explorer.native}
+            workspaceId={explorer.workspace?.id}
+            terminalActivation={terminalActivation}
+            select={selectDock}
+            close={() => {
+              toggleTerminal();
+              document.getElementById("toggle-bottom-panel")?.focus();
+            }}
+          />
         </main>
         {assistant && (
           <>

@@ -33,7 +33,7 @@ describe("Nebula workbench", () => {
     fireEvent.keyDown(trigger, { key: "P", ctrlKey: true, shiftKey: true });
     const search = screen.getByRole("combobox", { name: "Search commands" });
     expect(document.activeElement).toBe(search);
-    await user.type(search, "terminal");
+    await user.type(search, "hide terminal");
     expect(
       screen.getByRole("option", { name: "Hide Terminal panel" }),
     ).toBeTruthy();

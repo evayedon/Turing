@@ -407,6 +407,10 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const onSaveShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (
       native &&
+      !(
+        event.target instanceof Element &&
+        event.target.closest(".terminal-screen")
+      ) &&
       !document.querySelector("dialog[open]") &&
       (event.metaKey || event.ctrlKey) &&
       !event.altKey &&

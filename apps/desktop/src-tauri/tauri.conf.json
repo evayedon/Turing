@@ -34,7 +34,8 @@
             "allow-workspace-readonly",
             "allow-workspace-search",
             "allow-workspace-edit",
-            "allow-editor-selected-files"
+            "allow-editor-selected-files",
+            "allow-interactive-terminal"
           ]
         }
       ]

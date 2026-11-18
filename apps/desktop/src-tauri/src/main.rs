@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod terminal;
 mod workspace;
 
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -9,6 +10,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(workspace::WorkspaceService::default())
+        .manage(terminal::TerminalService::default())
         .invoke_handler(tauri::generate_handler![
             commands::workspace_open,
             commands::workspace_close,
@@ -25,10 +27,23 @@ fn main() {
             commands::file_save_as,
             commands::editor_confirm_discard,
             commands::editor_exit,
+            terminal::terminal_start,
+            terminal::terminal_read,
+            terminal::terminal_input,
+            terminal::terminal_resize,
+            terminal::terminal_close,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start Turing Core")
         .run(|app, event| {
+            if matches!(event, RunEvent::Exit)
+                || matches!(event, RunEvent::WindowEvent {
+                ref label, event: WindowEvent::Destroyed, ..
+            } if label == "main")
+            {
+                app.state::<terminal::TerminalService>().shutdown();
+                return;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 match event {
                     RunEvent::WindowEvent {

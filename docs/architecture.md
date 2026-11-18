@@ -17,8 +17,8 @@ document, save, save as, or close a tab. Folder changes affect workspace tabs.
 Standalone files and untitled documents keep their own tabs. Browser preview
 supports in-memory untitled editing with filesystem actions disabled. Monaco
 and its workers are bundled locally and loaded on demand. Each tab keeps a
-Monaco model separate from its saved snapshot. Terminal, Git, and AI remain
-placeholder surfaces.
+Monaco model separate from its saved snapshot. Git and AI remain placeholder
+surfaces.
 
 ## Workspace authorization
 
@@ -125,5 +125,45 @@ directory listings. Monaco reports the active language, line ending, and caret
 position when available. Panel dimensions and visibility use versioned local
 preferences. These preferences contain only layout values.
 
-The bottom dock offers Terminal, Problems, and Output views with explicit
-availability messages. It uses the same layout controls as the side panels.
+The bottom dock offers Terminal, Problems, and Output views and uses the same
+layout controls as the side panels. Problems and Output display availability
+messages.
+
+## Integrated terminal
+
+The bottom dock starts collapsed for new profiles and honors saved visibility
+and tab preferences. A restored Terminal tab shows an inactive state with
+**Start terminal**. Selecting Terminal, revealing it with the activity control,
+or invoking **Open Terminal** (Ctrl+backtick) opens and focuses one interactive
+session. Layout restoration and workspace changes leave an idle shell stopped. Switching dock tabs or hiding the dock keeps the
+session and its scrollback. **Close terminal** ends the shell. Shell exit leaves
+output visible until the next start, and failed startup offers a retry. Browser
+preview has no terminal access.
+
+Rust chooses the executable, arguments and working directory. On macOS and Linux,
+it tries an absolute configured shell, then the platform's system shell and
+`/bin/sh`. The child uses `fchdir` on the active workspace's authorized directory
+handle, so path replacement cannot redirect it. Windows uses system PowerShell
+or Command Prompt and starts in the user's profile directory or the system
+directory as a fallback. ConPTY's path-based launch cannot consume the retained
+workspace handle. Without a workspace, Unix starts in the user's home or root
+directory. Changing workspaces leaves an existing shell in its current directory.
+
+The local main webview capability allows only terminal start, input, output,
+resize and close. Rust checks the caller, the session ID, and any requested
+workspace grant. It accepts terminal bytes and dimensions with explicit limits.
+There is no process-launch IPC taking an executable, arguments, environment or
+filesystem path. The shell runs with the user's OS privileges. Any future AI
+terminal access requires its own authorization and integration.
+
+xterm.js is loaded on explicit start. The renderer reads one batch at a time and
+waits for xterm to process each batch. Rust buffers up to 32 output chunks of
+8 KiB with PTY backpressure and queues up to 16 input chunks of 8 KiB. The
+renderer bounds pending input and retains 2,000 lines of scrollback. Each session
+owns its input and output workers, and closing it releases both queues. The
+application closes sessions when the main window is destroyed or the app exits.
+Unix signals the foreground and shell process groups during explicit close,
+hangs up the PTY and reaps the shell. Detached Unix processes can outlive the
+session. Windows assigns the shell to a kill-on-close Job Object after ConPTY
+starts it, so processes created before assignment or detached outside the job
+can outlive it.
