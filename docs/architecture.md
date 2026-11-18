@@ -14,8 +14,11 @@ exploration, Monaco, and AI surfaces contain static placeholder content.
 
 ## Desktop security
 
-The native host registers zero IPC commands or plugins and grants zero Tauri
-capabilities. Production uses embedded assets and a content security policy
+The native host registers no custom IPC commands or plugins. Its explicit
+`shell-no-ipc` capability matches no windows or webviews and grants no
+permissions. This entry prevents Tauri from automatically enabling capability
+files added to the project, which it does when the capability list is empty.
+Production uses embedded assets and a content security policy
 that denies connections, embedded frames, and form submissions. The Vite
 development server binds to loopback. The development policy allows Vite's
 inline refresh code, injected styles, and loopback WebSocket.

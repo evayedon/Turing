@@ -32,5 +32,9 @@ running platform packaging. Use `CI=true pnpm build:desktop` on macOS when Finde
 automation is unavailable. Desktop bundles are produced under
 `apps/desktop/src-tauri/target/release/bundle`.
 
+CI verifies the workbench on Linux, macOS, and Windows and uses
+`pnpm build:desktop --no-bundle -- --locked` to build each runner's native
+executable without generating installers.
+
 See [Architecture](docs/architecture.md) for package responsibilities and the
 desktop security boundary.

@@ -40,28 +40,28 @@ Its key differentiators are a fully integrated AI workflow, project-wide code un
 
 ## 4. Confirmed Product Decisions
 
-| Area | Decision |
-|---|---|
-| Product name | Turing |
-| Desktop framework | Tauri 2 |
-| Supported operating systems | Windows, macOS, Linux |
-| Frontend | React + TypeScript |
-| Editor | Monaco Editor |
-| Native core | Rust |
-| AI orchestration | Python + FastAPI |
-| Frontend state | Zustand |
-| Local metadata | SQLite |
-| AI strategy | Hybrid local/cloud; future Turing LLM |
-| Agent | Supervised autonomy |
-| Context engine | Local indexing, syntax/LSP/search, code graph |
-| Graphify | Initial evaluation candidate; replaceable adapter |
-| Token efficiency | Adaptive Intelligence by default |
-| Learning | Turing Evolution, local-first |
-| Shared learning | Explicit opt-in |
-| Visual identity | Turing Nebula |
-| Plugins | Native-first, MCP, progressive VS Code compatibility |
-| Release strategy | Incremental releases |
-| Business model | Open core |
+| Area                        | Decision                                             |
+| --------------------------- | ---------------------------------------------------- |
+| Product name                | Turing                                               |
+| Desktop framework           | Tauri 2                                              |
+| Supported operating systems | Windows, macOS, Linux                                |
+| Frontend                    | React + TypeScript                                   |
+| Editor                      | Monaco Editor                                        |
+| Native core                 | Rust                                                 |
+| AI orchestration            | Python + FastAPI                                     |
+| Frontend state              | Zustand                                              |
+| Local metadata              | SQLite                                               |
+| AI strategy                 | Hybrid local/cloud; future Turing LLM                |
+| Agent                       | Supervised autonomy                                  |
+| Context engine              | Local indexing, syntax/LSP/search, code graph        |
+| Graphify                    | Initial evaluation candidate; replaceable adapter    |
+| Token efficiency            | Adaptive Intelligence by default                     |
+| Learning                    | Turing Evolution, local-first                        |
+| Shared learning             | Explicit opt-in                                      |
+| Visual identity             | Turing Nebula                                        |
+| Plugins                     | Native-first, MCP, progressive VS Code compatibility |
+| Release strategy            | Incremental releases                                 |
+| Business model              | Open core                                            |
 
 ## 5. Scope and Feature Requirements
 
@@ -174,27 +174,27 @@ The native core shall mediate privileged filesystem, terminal, and Git actions t
 
 These are provisional engineering targets, not validated product measurements.
 
-| Metric | Proposed target |
-|---|---|
-| Warm startup | ≤ 3 seconds |
-| Local typing response | P95 ≤ 50 ms |
-| Idle IDE memory | ≤ 500 MB, excluding AI processes |
-| Ordinary UI interaction | Target 60 FPS |
-| Standard hardware | 8 GB RAM minimum target; 16 GB recommended |
-| AI workstation | 32–64 GB+ RAM; optional dedicated GPU |
+| Metric                  | Proposed target                            |
+| ----------------------- | ------------------------------------------ |
+| Warm startup            | ≤ 3 seconds                                |
+| Local typing response   | P95 ≤ 50 ms                                |
+| Idle IDE memory         | ≤ 500 MB, excluding AI processes           |
+| Ordinary UI interaction | Target 60 FPS                              |
+| Standard hardware       | 8 GB RAM minimum target; 16 GB recommended |
+| AI workstation          | 32–64 GB+ RAM; optional dedicated GPU      |
 
 Benchmark representative Windows, macOS, and Linux systems, with defined project sizes and background workloads. The editor must remain responsive during indexing and inference.
 
 ## 10. Incremental Release Roadmap
 
-| Milestone | Scope | Exit criterion |
-|---|---|---|
-| v0.1 Alpha — Turing Core | Desktop shell, editor, explorer, Git, terminal, Nebula UI, persistence | Real projects can be edited, run, and version-controlled |
+| Milestone                        | Scope                                                                            | Exit criterion                                                     |
+| -------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| v0.1 Alpha — Turing Core         | Desktop shell, editor, explorer, Git, terminal, Nebula UI, persistence           | Real projects can be edited, run, and version-controlled           |
 | v0.2 Alpha — Turing Intelligence | AI chat, local/cloud models, indexing, context, adaptive routing, initial memory | Project-aware AI works with at least one local and one cloud model |
-| v0.3 Alpha — Turing Agent | Supervised workflows, multi-file edits, approvals, tests, rollback | Representative multi-file task completes with enforced approvals |
-| v0.4 Beta — Turing Ecosystem | Native extensions, MCP, compatibility foundation | Extensions and MCP tools can be managed safely |
-| v0.5 Beta — Turing Evolution | Advanced experience learning, opt-in sharing, model evaluation pipeline | Learning is measurable, privacy-controlled, and reversible |
-| v1.0 Stable | Cross-platform validation, security, accessibility, optimization | Production acceptance suite passes |
+| v0.3 Alpha — Turing Agent        | Supervised workflows, multi-file edits, approvals, tests, rollback               | Representative multi-file task completes with enforced approvals   |
+| v0.4 Beta — Turing Ecosystem     | Native extensions, MCP, compatibility foundation                                 | Extensions and MCP tools can be managed safely                     |
+| v0.5 Beta — Turing Evolution     | Advanced experience learning, opt-in sharing, model evaluation pipeline          | Learning is measurable, privacy-controlled, and reversible         |
+| v1.0 Stable                      | Cross-platform validation, security, accessibility, optimization                 | Production acceptance suite passes                                 |
 
 Release numbers are provisional milestones, not promised dates. Basic memory and feedback begin in v0.2; advanced model fine-tuning may extend beyond v0.5.
 
@@ -229,16 +229,16 @@ Turing's stable release should demonstrate that users can:
 
 ## 13. Risks and Mitigations
 
-| Risk | Mitigation |
-|---|---|
-| Cross-platform WebView inconsistencies | Test Monaco and UI on all target OSs |
-| Agent overreach or prompt injection | Scoped permissions, approvals, audit history, sandboxing |
-| High inference cost | Adaptive routing, caching, selective retrieval, budget controls |
-| Incomplete code graph | Combine graph results with LSP, search, and source validation |
-| Faulty AI edits | Diff review, tests, checkpoints, rollback |
-| Extension incompatibility | Native-first interfaces; validate compatibility incrementally |
-| Incorrect learning signals | Curated feedback, evaluations, reversibility |
-| Scope creep | Release gates and staged delivery |
+| Risk                                   | Mitigation                                                      |
+| -------------------------------------- | --------------------------------------------------------------- |
+| Cross-platform WebView inconsistencies | Test Monaco and UI on all target OSs                            |
+| Agent overreach or prompt injection    | Scoped permissions, approvals, audit history, sandboxing        |
+| High inference cost                    | Adaptive routing, caching, selective retrieval, budget controls |
+| Incomplete code graph                  | Combine graph results with LSP, search, and source validation   |
+| Faulty AI edits                        | Diff review, tests, checkpoints, rollback                       |
+| Extension incompatibility              | Native-first interfaces; validate compatibility incrementally   |
+| Incorrect learning signals             | Curated feedback, evaluations, reversibility                    |
+| Scope creep                            | Release gates and staged delivery                               |
 
 ## 14. Outstanding Decisions
 
