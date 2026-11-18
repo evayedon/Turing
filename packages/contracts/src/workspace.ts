@@ -28,6 +28,27 @@ export interface SelectedFileSnapshot extends SelectedFileVersion {
   content: string;
 }
 
+export interface SearchOptions {
+  query: string;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  filenameFilter?: string;
+}
+
+export interface SearchMatch {
+  line: number;
+  column: number;
+  before: string;
+  text: string;
+  after: string;
+}
+
+export interface SearchResponse {
+  files: { relativePath: string; matches: SearchMatch[] }[];
+  truncated: boolean;
+  skippedFiles: number;
+}
+
 export type WorkspaceError =
   | "BUSY"
   | "PERMISSION_DENIED"
@@ -40,6 +61,9 @@ export type WorkspaceError =
   | "FILE_CONFLICT"
   | "SAVE_RACE"
   | "DIRECTORY_TOO_LARGE"
+  | "INVALID_SEARCH"
+  | "SEARCH_BUSY"
+  | "SEARCH_CANCELLED"
   | "IO_ERROR";
 
 type WorkspacePath = {
@@ -52,6 +76,18 @@ export interface WorkspaceCommands {
   workspace_close: { args: { workspaceId: string }; result: void };
   fs_list_directory: { args: WorkspacePath; result: DirectoryEntry[] };
   fs_read_file: { args: WorkspacePath; result: TextFile };
+  workspace_search_begin: {
+    args: { workspaceId: string; options: SearchOptions };
+    result: string;
+  };
+  workspace_search_run: {
+    args: { workspaceId: string; searchId: string };
+    result: SearchResponse;
+  };
+  workspace_search_cancel: {
+    args: { workspaceId: string; searchId: string };
+    result: void;
+  };
   fs_write_file: {
     args: WorkspacePath & { content: string; expectedVersion: string };
     result: string;

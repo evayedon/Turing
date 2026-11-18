@@ -13,6 +13,7 @@ cap-std = "4"
 cap-fs-ext = "4"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 tauri-plugin-dialog = "2"
 

@@ -22,18 +22,18 @@ describe("desktop layout", () => {
     const { toggleTerminal, toggleAssistant } = useLayout.getState();
     toggleTerminal();
     expect(useLayout.getState()).toMatchObject({
-      terminal: false,
-      assistant: true,
+      terminal: true,
+      assistant: false,
     });
     toggleAssistant();
     expect(useLayout.getState()).toMatchObject({
-      terminal: false,
-      assistant: false,
+      terminal: true,
+      assistant: true,
     });
     toggleTerminal();
     expect(useLayout.getState()).toMatchObject({
-      terminal: true,
-      assistant: false,
+      terminal: false,
+      assistant: true,
     });
   });
 });

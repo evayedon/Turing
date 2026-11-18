@@ -10,7 +10,9 @@ export function useExplorer() {
   const native = nativeWorkspaceAvailable();
   const [workspace, setWorkspace] = useState<WorkspaceDescriptor | null>(null);
   const [relativePath, setRelativePath] = useState("");
-  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [folders, setFolders] = useState(
+    () => new Map<string, DirectoryEntry[]>(),
+  );
   const [busy, setBusy] = useState<
     "selecting folder" | "loading folder" | "closing workspace" | null
   >(null);
@@ -18,16 +20,14 @@ export function useExplorer() {
 
   async function readDirectory(workspaceId: string, path: string) {
     setRelativePath(path);
-    setEntries([]);
     setBusy("loading folder");
     setError(null);
     try {
-      setEntries(
-        await invokeWorkspace("fs_list_directory", {
-          workspaceId,
-          relativePath: path,
-        }),
-      );
+      const entries = await invokeWorkspace("fs_list_directory", {
+        workspaceId,
+        relativePath: path,
+      });
+      setFolders((previous) => new Map(previous).set(path, entries));
     } catch (cause) {
       setError(workspaceErrorMessage(cause));
     } finally {
@@ -42,6 +42,7 @@ export function useExplorer() {
       const selection = await invokeWorkspace("workspace_open", undefined);
       if (selection) {
         setWorkspace(selection);
+        setFolders(new Map());
         await readDirectory(selection.id, "");
         return true;
       }
@@ -60,7 +61,7 @@ export function useExplorer() {
       await invokeWorkspace("workspace_close", { workspaceId: workspace.id });
       setWorkspace(null);
       setRelativePath("");
-      setEntries([]);
+      setFolders(new Map());
       return true;
     } catch (cause) {
       setError(workspaceErrorMessage(cause));
@@ -73,7 +74,7 @@ export function useExplorer() {
     native,
     workspace,
     relativePath,
-    entries,
+    folders,
     busy,
     error,
     open,

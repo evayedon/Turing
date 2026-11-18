@@ -1,6 +1,8 @@
 mod file;
+mod search;
 mod selected;
 
+pub use search::{SearchOptions, SearchResponse};
 pub use selected::{PickedFile, SelectedFileSnapshot, SelectedFileVersion};
 
 use cap_fs_ext::DirExt;
@@ -30,6 +32,9 @@ pub enum WorkspaceError {
     FileConflict,
     SaveRace,
     DirectoryTooLarge,
+    InvalidSearch,
+    SearchCancelled,
+    SearchBusy,
     IoError,
 }
 
@@ -92,6 +97,7 @@ struct Workspace {
 pub struct Registry {
     generation: u64,
     active: Option<Workspace>,
+    search: Option<search::SearchJob>,
     selected: HashMap<String, selected::SelectedGrant>,
 }
 
@@ -119,6 +125,7 @@ impl Registry {
                 .to_string_lossy()
                 .into_owned(),
         };
+        self.revoke_search();
         self.active = Some(Workspace {
             owner: owner.to_owned(),
             descriptor: descriptor.clone(),
@@ -129,6 +136,7 @@ impl Registry {
 
     pub fn close(&mut self, owner: &str, id: &str) -> Result<()> {
         self.authorize(owner, id)?;
+        self.revoke_search();
         self.active = None;
         Ok(())
     }

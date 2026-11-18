@@ -25,6 +25,10 @@ const messages = {
     "A concurrent change interrupted the save. Your draft is still open. A .turing-save-*.tmp or .original recovery file may be beside the document.",
   FILE_TOO_LARGE: "This file exceeds the 2 MiB read limit.",
   DIRECTORY_TOO_LARGE: "This folder exceeds the 10,000-entry listing limit.",
+  INVALID_SEARCH:
+    "Enter a single-line query and an optional filename fragment, each up to 256 UTF-8 bytes.",
+  SEARCH_BUSY: "Another search is finishing. Try again in a moment.",
+  SEARCH_CANCELLED: "Search canceled.",
   IO_ERROR: "The desktop app could not complete the workspace operation.",
 } satisfies Record<WorkspaceError, string>;
 

@@ -68,7 +68,7 @@ describe("workspace explorer", () => {
       relativePath: "src",
     });
 
-    await user.click(screen.getByRole("button", { name: "Git" }));
+    await user.click(screen.getByRole("button", { name: "Source Control" }));
     await user.click(screen.getByRole("button", { name: "Explorer" }));
     const reopened = within(screen.getByRole("region", { name: "Explorer" }));
     expect(reopened.getByText("project/src")).toBeTruthy();
@@ -82,6 +82,31 @@ describe("workspace explorer", () => {
     expect(ipc).toHaveBeenLastCalledWith("workspace_close", {
       workspaceId: project.id,
     });
+  });
+
+  it("keeps folder context and navigates the expanded branch with arrow keys", async () => {
+    const user = userEvent.setup();
+    ipc
+      .mockResolvedValueOnce(project)
+      .mockResolvedValueOnce(entries)
+      .mockResolvedValueOnce([
+        { name: "main.ts", relativePath: "src/main.ts", kind: "file" },
+      ])
+      .mockResolvedValueOnce(entries);
+    render(<Workbench />);
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
+    const folder = await screen.findByRole("button", { name: "src/" });
+    folder.focus();
+    await user.keyboard("{ArrowRight}");
+    const child = await screen.findByRole("button", { name: "main.ts" });
+    expect(folder.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "README.md" })).toBeTruthy();
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(child);
+    await user.keyboard("{ArrowLeft}");
+    expect(document.activeElement).toBe(folder);
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.queryByRole("button", { name: "main.ts" })).toBeNull();
   });
 
   it("handles a canceled folder selection without listing anything", async () => {

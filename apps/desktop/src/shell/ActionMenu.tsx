@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-interface MenuAction {
+export interface MenuAction {
   label: string;
   run: () => void;
   disabled?: boolean;
   pressed?: boolean;
+  hint?: string;
 }
 
 export function ActionMenu({
@@ -87,7 +88,7 @@ export function ActionMenu({
         role="group"
         aria-label={`${label} actions`}
       >
-        {actions.map(({ label, run, disabled, pressed }) => (
+        {actions.map(({ label, run, disabled, pressed, hint }) => (
           <button
             key={label}
             type="button"
@@ -100,6 +101,7 @@ export function ActionMenu({
             }}
           >
             {label}
+            {hint && <kbd aria-hidden="true">{hint}</kbd>}
             {pressed !== undefined && (
               <span className="action-menu-state" aria-hidden="true">
                 {pressed ? "On" : "Off"}

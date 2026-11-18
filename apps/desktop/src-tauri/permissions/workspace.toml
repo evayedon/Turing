@@ -17,3 +17,8 @@ commands.allow = ["fs_write_file", "editor_confirm_discard", "editor_exit"]
 identifier = "allow-editor-selected-files"
 description = "Use native pickers and access only the resulting individual file grants."
 commands.allow = ["file_open", "file_read", "file_write", "file_close", "file_save_as"]
+
+[[permission]]
+identifier = "allow-workspace-search"
+description = "Start, scan, and cancel a bounded text search in the active authorized workspace."
+commands.allow = ["workspace_search_begin", "workspace_search_run", "workspace_search_cancel"]

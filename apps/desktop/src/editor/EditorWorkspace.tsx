@@ -1,5 +1,6 @@
-import { CodeXml } from "lucide-react";
+import { ChevronRight, CodeXml, FileCode2, X } from "lucide-react";
 import { lazy, Suspense } from "react";
+import type { EditorInfo } from "./editor-info";
 import type { useEditor } from "./use-editor";
 
 const MonacoHost = lazy(() => import("./MonacoHost"));
@@ -7,6 +8,7 @@ const MonacoHost = lazy(() => import("./MonacoHost"));
 export function EditorWorkspace({
   tabs,
   active,
+  reveal,
   busy,
   readOnly,
   error,
@@ -16,7 +18,14 @@ export function EditorWorkspace({
   edit,
   save,
   reload,
-}: ReturnType<typeof useEditor>) {
+  onInfo,
+  onCommands,
+  shortcut,
+}: ReturnType<typeof useEditor> & {
+  onInfo: (info: EditorInfo) => void;
+  onCommands: () => void;
+  shortcut: string;
+}) {
   return (
     <>
       {tabs.length > 0 && (
@@ -34,9 +43,36 @@ export function EditorWorkspace({
                     aria-selected={active === tab}
                     aria-label={dirty ? `${name} (unsaved)` : name}
                     disabled={busy}
+                    tabIndex={active === tab ? 0 : -1}
                     onClick={() => select(tab.key)}
+                    onKeyDown={(event) => {
+                      const index = tabs.findIndex(
+                        (item) => item.key === tab.key,
+                      );
+                      const next =
+                        event.key === "ArrowLeft"
+                          ? (index + tabs.length - 1) % tabs.length
+                          : event.key === "ArrowRight"
+                            ? (index + 1) % tabs.length
+                            : event.key === "Home"
+                              ? 0
+                              : event.key === "End"
+                                ? tabs.length - 1
+                                : undefined;
+                      if (next === undefined) return;
+                      event.preventDefault();
+                      const tablist =
+                        event.currentTarget.closest('[role="tablist"]');
+                      const buttons =
+                        tablist?.querySelectorAll<HTMLButtonElement>(
+                          '[role="tab"]',
+                        );
+                      buttons?.[next]?.focus();
+                      select(tabs[next].key);
+                    }}
                   >
-                    {name}
+                    <FileCode2 size={14} aria-hidden="true" />
+                    <span>{name}</span>
                     {dirty && (
                       <span className="editor-dirty" aria-hidden="true">
                         {" "}
@@ -50,7 +86,7 @@ export function EditorWorkspace({
                     aria-label={`Close ${name}`}
                     onClick={() => void close(tab)}
                   >
-                    ×
+                    <X size={13} aria-hidden="true" />
                   </button>
                 </div>
               );
@@ -64,6 +100,23 @@ export function EditorWorkspace({
             Save
           </button>
         </div>
+      )}
+      {active && (
+        <nav
+          className="breadcrumbs"
+          aria-label="Active file path"
+          title={active.title}
+        >
+          {(active.source.kind === "workspace"
+            ? active.source.relativePath.split("/")
+            : [active.name]
+          ).map((part, index) => (
+            <span key={index}>
+              {index > 0 && <ChevronRight size={12} aria-hidden="true" />}
+              {part}
+            </span>
+          ))}
+        </nav>
       )}
       {error && (
         <p className="editor-notice" role="alert">
@@ -88,16 +141,21 @@ export function EditorWorkspace({
         >
           <MonacoHost
             active={active}
+            reveal={reveal}
             tabs={tabs}
             readOnly={readOnly}
             onChange={edit}
+            onInfo={onInfo}
           />
         </Suspense>
       ) : (
         <div className="editor-empty">
           <CodeXml size={36} aria-hidden="true" />
           <p>{busy ? "Working…" : "No file open"}</p>
-          <span>Use the File menu to open or create a document.</span>
+          <span>Open a file or create an untitled document.</span>
+          <button className="quiet-button" type="button" onClick={onCommands}>
+            Browse commands <kbd>{shortcut}</kbd>
+          </button>
         </div>
       )}
     </>

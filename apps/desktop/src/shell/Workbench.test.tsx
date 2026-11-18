@@ -2,23 +2,58 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isTauri } from "@tauri-apps/api/core";
+import { autoSaveKey } from "../editor/use-editor";
 import { useLayout } from "../state/layout";
 import { Workbench } from "./Workbench";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: vi.fn(() => false),
+  invoke: vi.fn(),
+}));
+
+beforeEach(() => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  });
+  useLayout.setState(useLayout.getInitialState(), true);
+});
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
+
+  vi.mocked(isTauri).mockReturnValue(false);
   useLayout.setState(useLayout.getInitialState(), true);
 });
 
 describe("workbench panels", () => {
-  it("opens Explorer, Editor, Terminal, and AI on launch", () => {
+  it("opens Explorer and Editor on a fresh profile", () => {
     render(<Workbench />);
 
-    for (const name of ["Explorer", "Editor", "Terminal", "AI panel"]) {
+    for (const name of ["Explorer", "Editor"]) {
       expect(screen.getByRole("region", { name })).toBeTruthy();
     }
-    expect(screen.queryByRole("region", { name: "Git" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Source Control" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Turing AI" })).toBeNull();
+    const rail = screen.getByRole("navigation", { name: "Workbench panels" });
+    expect(
+      [...rail.querySelectorAll("button")].map((button) =>
+        button.getAttribute("aria-label"),
+      ),
+    ).toEqual([
+      "Explorer",
+      "Search",
+      "Source Control",
+      "Run & Debug",
+      "Turing AI",
+      "Toggle Bottom Panel",
+      "Settings",
+    ]);
     expect(
       screen.getByRole("button", { name: "Explorer", pressed: true }),
     ).toBeTruthy();
@@ -34,42 +69,121 @@ describe("workbench panels", () => {
     );
     await user.tab();
     expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Open command palette" }),
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Explorer" }),
     );
     await user.tab();
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Git" }),
+      screen.getByRole("button", { name: "Search" }),
+    );
+    await user.keyboard("{Enter}");
+    expect(
+      screen.getByRole("region", { name: "Search" }).textContent,
+    ).toContain("Workspace search requires the desktop app");
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Source Control" }),
     );
     await user.keyboard("{Enter}");
 
-    expect(screen.getByRole("region", { name: "Git" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Source Control" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Explorer" })).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Git", pressed: true }),
+      screen.getByRole("button", { name: "Source Control", pressed: true }),
     ).toBeTruthy();
 
     await user.keyboard("[Space]");
-    expect(screen.queryByRole("region", { name: "Git" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Source Control" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Turing AI" })).toBeNull();
+    const rail = screen.getByRole("navigation", { name: "Workbench panels" });
     expect(
-      screen.getByRole("button", { name: "Git", pressed: false }),
+      [...rail.querySelectorAll("button")].map((button) =>
+        button.getAttribute("aria-label"),
+      ),
+    ).toEqual([
+      "Explorer",
+      "Search",
+      "Source Control",
+      "Run & Debug",
+      "Turing AI",
+      "Toggle Bottom Panel",
+      "Settings",
+    ]);
+    expect(
+      screen.getByRole("button", { name: "Source Control", pressed: false }),
     ).toBeTruthy();
   });
 
-  it("keeps terminal and AI visibility independent of the sidebar", async () => {
+  it("toggles AI alongside Explorer and reopens the dock with its selected tab", async () => {
     const user = userEvent.setup();
     render(<Workbench />);
+    const toggle = screen.getByRole("button", { name: "Toggle Bottom Panel" });
+    const runDebug = screen.getByRole("button", { name: "Run & Debug" });
+    expect(runDebug.getAttribute("aria-disabled")).toBe("true");
+    await user.click(runDebug);
+    expect(screen.queryByRole("region", { name: "Run & Debug" })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Terminal" }));
-    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
-    expect(screen.getByRole("region", { name: "AI panel" })).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: "AI panel" }));
-    expect(screen.queryByRole("region", { name: "AI panel" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
-
-    await user.click(screen.getByRole("button", { name: "Terminal" }));
-    expect(screen.getByRole("region", { name: "Terminal" })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "AI panel" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Turing AI" }));
+    expect(screen.getByRole("region", { name: "Turing AI" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Editor" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Explorer" })).toBeTruthy();
+
+    await user.click(toggle);
+    await user.click(screen.getByRole("tab", { name: "Output" }));
+    await user.click(screen.getByRole("button", { name: "Hide bottom panel" }));
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.queryByRole("tablist", { name: "Bottom dock" })).toBeNull();
+    await user.click(toggle);
+    expect(
+      screen.getByRole("tab", { name: "Output", selected: true }),
+    ).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Turing AI" })).toBeTruthy();
+  });
+
+  it("applies settings and returns keyboard focus to the opener", async () => {
+    const user = userEvent.setup();
+    render(<Workbench />);
+    const opener = screen.getByRole("button", { name: "Settings" });
+    opener.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeTruthy();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Close settings" }),
+    );
+    expect(
+      screen.getByRole<HTMLInputElement>("checkbox", { name: "Auto Save" })
+        .disabled,
+    ).toBe(true);
+    await user.click(
+      screen.getByRole("checkbox", { name: "Show bottom panel" }),
+    );
+    expect(useLayout.getState().terminal).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(screen.getByRole("tablist", { name: "Bottom dock" })).toBeTruthy();
+  });
+
+  it("shares native Auto Save with the File menu and restores it on remount", async () => {
+    vi.mocked(isTauri).mockReturnValue(true);
+    const user = userEvent.setup();
+    const { unmount } = render(<Workbench />);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const input = screen.getByRole<HTMLInputElement>("checkbox", {
+      name: "Auto Save",
+    });
+    expect(input.checked).toBe(false);
+    await user.click(input);
+    expect(window.localStorage.getItem(autoSaveKey)).toBe("true");
+    unmount();
+    render(<Workbench />);
+    await user.click(screen.getByRole("button", { name: "File" }));
+    expect(
+      screen.getByRole("button", { name: /Auto Save/, pressed: true }),
+    ).toBeTruthy();
   });
 });

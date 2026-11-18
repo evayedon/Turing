@@ -269,3 +269,55 @@ pub fn editor_exit(window: WebviewWindow) -> Result<()> {
     window.app_handle().exit(0);
     Ok(())
 }
+
+#[tauri::command]
+pub fn workspace_search_begin(
+    window: WebviewWindow,
+    workspace_id: String,
+    options: crate::workspace::SearchOptions,
+) -> Result<String> {
+    if window.label() != "main" {
+        return Err(WorkspaceError::PermissionDenied);
+    }
+    window.state::<WorkspaceService>().registry()?.begin_search(
+        window.label(),
+        &workspace_id,
+        options,
+    )
+}
+
+#[tauri::command]
+pub async fn workspace_search_run(
+    window: WebviewWindow,
+    workspace_id: String,
+    search_id: String,
+) -> Result<crate::workspace::SearchResponse> {
+    if window.label() != "main" {
+        return Err(WorkspaceError::PermissionDenied);
+    }
+    let task = window
+        .state::<WorkspaceService>()
+        .registry()?
+        .claim_search(window.label(), &workspace_id, &search_id)?;
+    let result = tauri::async_runtime::spawn_blocking(move || task.run()).await;
+    window
+        .state::<WorkspaceService>()
+        .registry()?
+        .finish_search(window.label(), &workspace_id, &search_id)?;
+    result.map_err(|_| WorkspaceError::IoError)?
+}
+
+#[tauri::command]
+pub fn workspace_search_cancel(
+    window: WebviewWindow,
+    workspace_id: String,
+    search_id: String,
+) -> Result<()> {
+    if window.label() != "main" {
+        return Err(WorkspaceError::PermissionDenied);
+    }
+    window
+        .state::<WorkspaceService>()
+        .registry()?
+        .cancel_search(window.label(), &workspace_id, &search_id)
+}

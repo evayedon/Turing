@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EditorTab } from "./use-editor";
+import type { EditorLocation, EditorTab } from "./use-editor";
 import { Workbench } from "../shell/Workbench";
 import { useLayout } from "../state/layout";
 
@@ -20,14 +20,21 @@ vi.mock("./MonacoHost", () => ({
   default: ({
     active,
     readOnly,
+    reveal,
     onChange,
   }: {
     active: EditorTab;
     readOnly: boolean;
+    reveal?: EditorLocation & { key: string };
     onChange: (tab: EditorTab, value: string) => void;
   }) => (
     <textarea
       aria-label="File editor"
+      data-location={
+        reveal?.key === active.key
+          ? `${reveal.line}:${reveal.column}`
+          : undefined
+      }
       value={active.draft}
       readOnly={readOnly}
       onChange={(event) => onChange(active, event.target.value)}
@@ -103,6 +110,69 @@ describe("editor workspace", () => {
     expect(
       screen.getByRole("tab", { name: "notes.md", selected: true }),
     ).toBeTruthy();
+  });
+
+  it("opens search results using scoped reads and reveals repeated hits in an existing tab", async () => {
+    const user = userEvent.setup();
+    render(<Workbench />);
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
+    await screen.findByRole("button", { name: "main.ts" });
+    await user.click(screen.getByRole("button", { name: "Search" }));
+    const panel = within(screen.getByRole("region", { name: "Search" }));
+    await user.type(
+      panel.getByRole("searchbox", { name: "Search text" }),
+      "doc",
+    );
+    await user.type(
+      panel.getByRole("textbox", { name: "Filename filter" }),
+      ".ts",
+    );
+    await user.click(panel.getByRole("checkbox", { name: "Match case" }));
+    await user.click(panel.getByRole("checkbox", { name: "Whole word" }));
+    ipc.mockResolvedValueOnce("job").mockResolvedValueOnce({
+      files: [
+        {
+          relativePath: "main.ts",
+          matches: [
+            { line: 3, column: 5, before: "the ", text: "doc", after: "" },
+            { line: 12, column: 8, before: "another ", text: "doc", after: "" },
+          ],
+        },
+      ],
+      skippedFiles: 0,
+      truncated: false,
+    });
+    await user.click(panel.getByRole("button", { name: "Search" }));
+    expect(ipc).toHaveBeenCalledWith("workspace_search_begin", {
+      workspaceId: "project",
+      options: {
+        query: "doc",
+        filenameFilter: ".ts",
+        caseSensitive: true,
+        wholeWord: true,
+      },
+    });
+    expect(ipc).toHaveBeenCalledWith("workspace_search_run", {
+      workspaceId: "project",
+      searchId: "job",
+    });
+    const results = within(
+      await panel.findByRole("list", { name: "Matches in main.ts" }),
+    );
+    await user.click(results.getByRole("button", { name: /line 3, column 5/ }));
+    const editor = await screen.findByRole("textbox", { name: "File editor" });
+    expect(editor.getAttribute("data-location")).toBe("3:5");
+    expect(ipc).toHaveBeenCalledWith("fs_read_file", {
+      workspaceId: "project",
+      relativePath: "main.ts",
+    });
+    await user.click(
+      results.getByRole("button", { name: /line 12, column 8/ }),
+    );
+    expect(editor.getAttribute("data-location")).toBe("12:8");
+    expect(
+      ipc.mock.calls.filter(([command]) => command === "fs_read_file"),
+    ).toHaveLength(1);
   });
 
   it("marks drafts dirty and clears the indicator only after a successful versioned save", async () => {
@@ -283,7 +353,9 @@ describe("File menu", () => {
     expect(ipc).toHaveBeenLastCalledWith("file_close", {
       fileId: pickedFile.fileId,
     });
-    expect(screen.queryByRole("tab")).toBeNull();
+    expect(
+      within(screen.getByRole("region", { name: "Editor" })).queryByRole("tab"),
+    ).toBeNull();
   });
 
   it("keeps the workspace and its tabs when opening a standalone file", async () => {
@@ -412,12 +484,18 @@ describe("File menu", () => {
       ipc.mockRejectedValueOnce(code);
       await fileAction(user, "Open File");
       expect((await screen.findByRole("alert")).textContent).toMatch(message);
-      expect(screen.queryByRole("tab")).toBeNull();
+      expect(
+        within(screen.getByRole("region", { name: "Editor" })).queryByRole(
+          "tab",
+        ),
+      ).toBeNull();
     }
     ipc.mockResolvedValueOnce(null);
     await fileAction(user, "Open File");
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.queryByRole("tab")).toBeNull();
+    expect(
+      within(screen.getByRole("region", { name: "Editor" })).queryByRole("tab"),
+    ).toBeNull();
   });
 
   it("allows an in-memory untitled buffer in browser preview while disabling filesystem actions", async () => {

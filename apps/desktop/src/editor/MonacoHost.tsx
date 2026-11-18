@@ -5,7 +5,8 @@ import CssWorker from "monaco-editor/language/css/css.worker?worker";
 import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker?worker";
 import TypeScriptWorker from "monaco-editor/language/typescript/ts.worker?worker";
-import type { EditorTab } from "./use-editor";
+import type { EditorInfo } from "./editor-info";
+import type { EditorLocation, EditorTab } from "./use-editor";
 
 const environment = {
   getWorker(_moduleId: string, language: string) {
@@ -57,20 +58,43 @@ interface OpenModel {
 
 export default function MonacoHost({
   active,
+  reveal,
   tabs,
   readOnly,
   onChange,
+  onInfo,
 }: {
   active: EditorTab;
+  reveal?: EditorLocation & { key: string };
   tabs: EditorTab[];
   readOnly: boolean;
+  onInfo: (info: EditorInfo) => void;
   onChange: (tab: EditorTab, value: string) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const models = useRef(new Map<string, OpenModel>());
   const syncing = useRef(false);
+  const lastReveal = useRef<typeof reveal>(undefined);
   const change = useEffectEvent((value: string) => onChange(active, value));
+
+  const report = useEffectEvent(
+    (instance: monaco.editor.IStandaloneCodeEditor) => {
+      const position = instance.getPosition();
+      const model = instance.getModel();
+      if (!position || !model) return;
+      const id = model.getLanguageId();
+      onInfo({
+        key: active.key,
+        language:
+          monaco.languages.getLanguages().find((language) => language.id === id)
+            ?.aliases?.[0] ?? id,
+        line: position.lineNumber,
+        column: position.column,
+        eol: model.getEOL() === "\r\n" ? "CRLF" : "LF",
+      });
+    },
+  );
 
   useLayoutEffect(() => {
     if (!container.current) return;
@@ -88,6 +112,12 @@ export default function MonacoHost({
         "editorCursor.foreground": colors
           .getPropertyValue("--nebula-accent")
           .trim(),
+        "editor.lineHighlightBackground": colors
+          .getPropertyValue("--nebula-panel")
+          .trim(),
+        "editorLineNumber.activeForeground": colors
+          .getPropertyValue("--nebula-cyan")
+          .trim(),
         "editor.selectionBackground": colors
           .getPropertyValue("--nebula-active")
           .trim(),
@@ -98,6 +128,9 @@ export default function MonacoHost({
       theme,
       ariaLabel: "File editor",
       automaticLayout: true,
+      fontSize: 13,
+      lineHeight: 22,
+      padding: { top: 10 },
       autoIndent: "full",
       lineNumbers: "on",
       folding: true,
@@ -107,12 +140,17 @@ export default function MonacoHost({
       fontFamily: colors.getPropertyValue("--nebula-mono").trim(),
     });
     editor.current = instance;
+    lastReveal.current = undefined;
     const cache = models.current;
     const subscription = instance.onDidChangeModelContent(() => {
       if (!syncing.current)
         change(instance.getModel()?.getValue(undefined, true) ?? "");
     });
+    const cursor = instance.onDidChangeCursorPosition(() => {
+      if (!syncing.current) report(instance);
+    });
     return () => {
+      cursor.dispose();
       subscription.dispose();
       instance.dispose();
       editor.current = null;
@@ -154,7 +192,8 @@ export default function MonacoHost({
         if (previous) previous.viewState = instance.saveViewState();
         instance.setModel(next.model);
         if (next.viewState) instance.restoreViewState(next.viewState);
-        instance.focus();
+        if (document.activeElement?.getAttribute("role") !== "tab")
+          instance.focus();
       }
       if (next.model.getValue(undefined, true) !== active.draft)
         next.model.setValue(active.draft);
@@ -167,7 +206,29 @@ export default function MonacoHost({
     } finally {
       syncing.current = false;
     }
+    report(instance);
   }, [active, tabs]);
+
+  useLayoutEffect(() => {
+    const instance = editor.current;
+    const model = instance?.getModel();
+    if (
+      !instance ||
+      !model ||
+      !reveal ||
+      reveal.key !== active.key ||
+      reveal === lastReveal.current
+    )
+      return;
+    lastReveal.current = reveal;
+    const position = model.validatePosition({
+      lineNumber: reveal.line,
+      column: reveal.column,
+    });
+    instance.setPosition(position);
+    instance.revealPositionInCenter(position);
+    instance.focus();
+  }, [active.key, reveal]);
 
   useLayoutEffect(
     () => editor.current?.updateOptions({ readOnly }),

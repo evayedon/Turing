@@ -5,6 +5,7 @@
 | `apps/desktop/src/shell`    | React workbench and panel placeholders                      |
 | `apps/desktop/src/editor`   | Monaco models, tabs, unsaved state, and editor actions      |
 | `apps/desktop/src/explorer` | Explorer UI, navigation state, and typed native IPC adapter |
+| `apps/desktop/src/search`   | Workspace search form, cancellation and grouped results     |
 | `apps/desktop/src/state`    | Zustand layout state and state transition tests             |
 | `apps/desktop/src-tauri`    | Native window, native pickers, and scoped file operations   |
 | `packages/contracts`        | Shared TypeScript types and workspace command contracts     |
@@ -41,6 +42,41 @@ and symbolic links are rejected. Handle-relative opens disable symlink following
 at each component. Listings omit links, special entries, and names the IPC
 cannot represent, and are limited to 10,000 entries per folder. Reads return
 regular UTF-8 text up to 2 MiB with an opaque version based on file identity, modification time, and content.
+
+## Workspace search
+
+The Search activity view submits a literal, single-line query within the active
+folder. Match Case and Whole Word are optional; word boundaries treat Unicode
+letters and numbers and underscore as word characters. The optional filename
+filter is a case-insensitive basename substring such as `.tsx`. Path syntax
+and glob expansion are unsupported. Query and filter each accept up to
+256 UTF-8 bytes. Search reads disk snapshots, so unsaved editor text is
+excluded. Clicking a result opens the authorized relative file in Monaco at
+the reported one-based line and UTF-16 column. Monaco clamps coordinates if the
+file or its open draft has since changed.
+
+The local main webview may reserve, execute, or cancel a search through an
+explicit Tauri capability. Every command requires an active caller-bound
+workspace. Rust clones the approved directory handle for a blocking worker,
+releases the registry lock before scanning, and rechecks authorization before
+returning results. Closing or replacing the workspace revokes the search.
+Closing the sidebar also cancels the current UI request. Traversal skips links
+and special entries, revalidates parent directory identity around reads, and
+uses the existing 2 MiB UTF-8 text snapshot checks. Unreadable, unsupported
+or changing entries are skipped and counted when encountered as read errors.
+Browser preview has no workspace-search IPC access.
+
+Search skips directories named `.git`, `.hg`, `.svn`, `node_modules`,
+`target`, `dist`, `build`, `.next`, `.nuxt`, `.venv`, `venv`,
+`__pycache__`, `coverage`, or `.cache` at any depth, case-insensitively.
+It also omits Turing save staging and recovery entries prefixed with
+`.turing-save-`. This fixed list does not interpret `.gitignore`.
+One scan runs at a time, with at most 500 matches, 50,000 entries, 32 levels
+of subdirectories, 128 MiB read, and a cooperative 10-second time budget.
+The scanner reserves up to one maximum-size read before visiting the next entry.
+Search reports partial results when it hits a limit. Cancellation and the
+deadline are checked during scanning. An OS filesystem call already in progress
+can delay either. Results are grouped by file and include short snippets.
 
 ## Individual files and Save As
 
@@ -80,3 +116,14 @@ the draft. Failed writes stay dirty and pause automatic retries for that tab.
 Known disk conflicts require the normal reload or Save As workflow. Untitled
 documents still use the native picker on explicit Save, and browser preview
 keeps its drafts in memory.
+
+## Workbench layout
+
+Nebula styling uses the shared design tokens. The File menu and command palette
+share editor actions. Explorer expands the current branch in place using scoped
+directory listings. Monaco reports the active language, line ending, and caret
+position when available. Panel dimensions and visibility use versioned local
+preferences. These preferences contain only layout values.
+
+The bottom dock offers Terminal, Problems, and Output views with explicit
+availability messages. It uses the same layout controls as the side panels.

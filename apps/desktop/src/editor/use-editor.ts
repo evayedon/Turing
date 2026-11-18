@@ -9,6 +9,11 @@ import {
   workspaceErrorMessage,
 } from "../explorer/workspace-ipc";
 
+export interface EditorLocation {
+  line: number;
+  column: number;
+}
+
 type SavedSource = (
   | { kind: "workspace"; workspaceId: string; relativePath: string }
   | { kind: "selected"; fileId: string }
@@ -79,6 +84,15 @@ function writeFile(source: SavedSource, content: string) {
 }
 
 export const AUTO_SAVE_DELAY_MS = 1000;
+export const autoSaveKey = "turing:auto-save:v1";
+
+function loadAutoSave() {
+  try {
+    return window.localStorage.getItem(autoSaveKey) === "true";
+  } catch {
+    return false;
+  }
+}
 type Operation = "foreground" | "automatic";
 
 type DiscardAction =
@@ -87,8 +101,10 @@ type DiscardAction =
 export function useEditor(workspaceId: string | undefined, native: boolean) {
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   const [activeKey, setActiveKey] = useState<string>();
+  const [reveal, setReveal] = useState<EditorLocation & { key: string }>();
   const [operation, setOperation] = useState<Operation | null>(null);
-  const [autoSave, setAutoSave] = useState(false);
+  const [autoSavePreference, setAutoSave] = useState(loadAutoSave);
+  const autoSave = native && autoSavePreference;
   const [exitPending, setExitPending] = useState(false);
   const [error, setError] = useState<string>();
   const pending = useRef<Operation | null>(null);
@@ -156,10 +172,11 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     const key = String(++tabSequence.current);
     setTabs((previous) => [...previous, { ...tab, key }]);
     setActiveKey(key);
+    return key;
   }
 
-  function open(relativePath: string) {
-    if (!workspaceId) return;
+  function open(relativePath: string, location?: EditorLocation) {
+    if (!workspaceId || pending.current) return;
     const existing = tabs.find(
       (tab) =>
         tab.source.kind === "workspace" &&
@@ -168,6 +185,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     );
     if (existing) {
       select(existing.key);
+      if (location) setReveal({ key: existing.key, ...location });
       return;
     }
     return perform(async () => {
@@ -175,7 +193,8 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         workspaceId,
         relativePath,
       });
-      addTab(workspaceTab(file));
+      const key = addTab(workspaceTab(file));
+      if (location) setReveal({ key, ...location });
     });
   }
 
@@ -310,6 +329,11 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       );
     }
     setAutoSave(!autoSave);
+    try {
+      window.localStorage.setItem(autoSaveKey, String(!autoSave));
+    } catch {
+      // The preference still applies for this session.
+    }
   }
 
   const runAutoSave = useEffectEvent((tab: EditorTab) => {
@@ -383,6 +407,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const onSaveShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (
       native &&
+      !document.querySelector("dialog[open]") &&
       (event.metaKey || event.ctrlKey) &&
       !event.altKey &&
       event.key.toLowerCase() === "s"
@@ -457,6 +482,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   return {
     tabs,
     active,
+    reveal,
     busy,
     error: error ?? active?.saveError,
     readOnly: operation === "foreground",
