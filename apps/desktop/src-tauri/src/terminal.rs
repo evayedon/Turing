@@ -407,13 +407,20 @@ pub async fn terminal_close(window: WebviewWindow, id: String) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    const CONPTY_QUERIES: [(&[u8], &[u8]); 2] =
+        [(b"\x1b[6n", b"\x1b[1;1R"), (b"\x1b[c", b"\x1b[?1;0c")];
+
+    #[track_caller]
     fn output_until(
         service: &TerminalService,
         id: &str,
-        accept: impl Fn(&[u8], &TerminalOutput) -> bool,
+        mut accept: impl FnMut(&[u8], &TerminalOutput) -> bool,
     ) -> TerminalOutput {
         let until = Instant::now() + Duration::from_secs(10);
         let mut bytes = Vec::new();
+        #[cfg(windows)]
+        let mut query_offsets = [0; CONPTY_QUERIES.len()];
         loop {
             let output = service
                 .with_session("main", id, |slot| {
@@ -425,12 +432,29 @@ mod tests {
                 })
                 .unwrap();
             bytes.extend_from_slice(&output.bytes);
+            #[cfg(windows)]
+            if !output.finished {
+                // Answer ConPTY's startup queries in place of xterm.
+                for ((query, reply), offset) in CONPTY_QUERIES.into_iter().zip(&mut query_offsets) {
+                    for _ in bytes[*offset..]
+                        .windows(query.len())
+                        .filter(|window| *window == query)
+                    {
+                        send(service, id, reply);
+                    }
+                    // Keep enough overlap for a query split across reads.
+                    *offset = bytes.len().saturating_sub(query.len() - 1);
+                }
+            }
             if accept(&bytes, &output) {
                 return output;
             }
             assert!(
                 !output.finished && Instant::now() < until,
-                "terminal output deadline"
+                "expected terminal output was not received ({} bytes read, finished: {}, exit code: {:?})",
+                bytes.len(),
+                output.finished,
+                output.exit_code,
             );
             thread::sleep(Duration::from_millis(15));
         }
@@ -490,9 +514,33 @@ mod tests {
             })
             .unwrap();
 
-        send(&service, &started.id, b"echo TURING-PTY-HELLO\r");
-        let needle = b"\nTURING-PTY-HELLO\r";
-        output_until(&service, &started.id, |bytes, _| {
+        // Assemble the marker in the shell so input echo cannot satisfy the
+        // test. Bash and ConPTY can emit control bytes around command output.
+        let needle = b"TURING-PTY-HELLO";
+        #[cfg(unix)]
+        let command = b"printf '%s%s\\n' TURING-PTY- HELLO\r";
+        // PowerShell passes the caret through to cmd.exe. If the outer shell
+        // is already cmd.exe, it can consume the caret itself.
+        #[cfg(windows)]
+        let command = b"cmd.exe /D /C echo TURING-PTY-HE^LLO\r";
+        #[cfg(windows)]
+        let mut probe_sent = false;
+        #[cfg(unix)]
+        send(&service, &started.id, command);
+        output_until(&service, &started.id, |bytes, _output| {
+            // Queue the probe after any negotiation replies. Wait for actual
+            // output first, without requiring a specific shell prompt.
+            #[cfg(windows)]
+            if !probe_sent
+                && !_output.finished
+                && !bytes.is_empty()
+                && !CONPTY_QUERIES
+                    .iter()
+                    .any(|(query, _)| (1..query.len()).any(|len| bytes.ends_with(&query[..len])))
+            {
+                send(&service, &started.id, command);
+                probe_sent = true;
+            }
             bytes.windows(needle.len()).any(|window| window == needle)
         });
         send(&service, &started.id, b"exit 7\r");
