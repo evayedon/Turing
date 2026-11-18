@@ -50,6 +50,8 @@ jobs:
 
       # Tauri builds the frontend first, then compiles for the runner's native target.
       - name: Build desktop without installers
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:desktop --no-bundle -- --locked
 
       - name: Test native workspace authorization
