@@ -1,8 +1,10 @@
 # Turing Core v0.1
 
 Turing Core is a cross-platform IDE foundation built with Tauri 2, Rust, React,
-TypeScript, Vite, and Zustand. The Turing Nebula workbench includes a read-only
-native workspace Explorer and placeholders for Git, Monaco, Terminal, and AI.
+TypeScript, Vite, and Zustand. The Turing Nebula workbench includes a native
+workspace Explorer, Monaco editing with versioned saves, and placeholders for
+Git, Terminal, and AI. Use the File menu to open a standalone file or folder,
+create an untitled document, or choose a Save As destination.
 
 ## Development
 

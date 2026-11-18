@@ -43,6 +43,7 @@ export function useExplorer() {
       if (selection) {
         setWorkspace(selection);
         await readDirectory(selection.id, "");
+        return true;
       }
     } catch (cause) {
       setError(workspaceErrorMessage(cause));
@@ -60,6 +61,7 @@ export function useExplorer() {
       setWorkspace(null);
       setRelativePath("");
       setEntries([]);
+      return true;
     } catch (cause) {
       setError(workspaceErrorMessage(cause));
     } finally {

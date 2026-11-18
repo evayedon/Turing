@@ -1,15 +1,11 @@
-import {
-  CodeXml,
-  Files,
-  GitBranch,
-  Orbit,
-  Sparkles,
-  Terminal,
-} from "lucide-react";
+import { Files, GitBranch, Orbit, Sparkles, Terminal } from "lucide-react";
 import type { ReactNode } from "react";
+import { EditorWorkspace } from "../editor/EditorWorkspace";
+import { useEditor } from "../editor/use-editor";
 import { Explorer } from "../explorer/Explorer";
 import { useExplorer } from "../explorer/use-explorer";
 import { useLayout } from "../state/layout";
+import { FileMenu } from "./FileMenu";
 
 function Panel({
   title,
@@ -30,6 +26,7 @@ function Panel({
 
 export function Workbench() {
   const explorer = useExplorer();
+  const editor = useEditor(explorer.workspace?.id, explorer.native);
   const {
     sidebar,
     terminal,
@@ -42,9 +39,17 @@ export function Workbench() {
   return (
     <div className="workbench">
       <header className="titlebar">
-        <h1>
-          <Orbit size={20} aria-hidden="true" /> Turing Core
-        </h1>
+        <div className="titlebar-brand">
+          <h1>
+            <Orbit size={20} aria-hidden="true" /> Turing Core
+          </h1>
+          <FileMenu
+            editor={editor}
+            native={explorer.native}
+            folderBusy={!!explorer.busy}
+            openFolder={() => editor.changeWorkspace(explorer.open)}
+          />
+        </div>
         <span>v0.1.0</span>
       </header>
 
@@ -90,7 +95,13 @@ export function Workbench() {
 
         {sidebar === "explorer" && (
           <Panel title="Explorer" className="sidebar">
-            <Explorer {...explorer} />
+            <Explorer
+              {...explorer}
+              open={() => editor.changeWorkspace(explorer.open)}
+              close={() => editor.changeWorkspace(explorer.close)}
+              openFile={editor.open}
+              editorBusy={editor.busy}
+            />
           </Panel>
         )}
         {sidebar === "git" && (
@@ -101,11 +112,7 @@ export function Workbench() {
 
         <main className="editing-area">
           <Panel title="Editor" className="editor">
-            <div className="editor-empty">
-              <CodeXml size={36} aria-hidden="true" />
-              <p>No file open</p>
-              <span>Monaco editor placeholder</span>
-            </div>
+            <EditorWorkspace {...editor} />
           </Panel>
           {terminal && (
             <Panel title="Terminal" className="terminal">

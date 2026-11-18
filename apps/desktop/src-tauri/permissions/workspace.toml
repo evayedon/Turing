@@ -7,3 +7,13 @@ commands.allow = [
   "fs_list_directory",
   "fs_read_file",
 ]
+
+[[permission]]
+identifier = "allow-workspace-edit"
+description = "Save approved text files and handle editor close confirmation."
+commands.allow = ["fs_write_file", "editor_confirm_discard", "editor_exit"]
+
+[[permission]]
+identifier = "allow-editor-selected-files"
+description = "Use native pickers and access only the resulting individual file grants."
+commands.allow = ["file_open", "file_read", "file_write", "file_close", "file_save_as"]

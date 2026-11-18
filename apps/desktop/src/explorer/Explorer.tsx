@@ -10,7 +10,14 @@ export function Explorer({
   open,
   close,
   browse,
-}: ReturnType<typeof useExplorer>) {
+  openFile,
+  editorBusy,
+}: Omit<ReturnType<typeof useExplorer>, "open" | "close"> & {
+  open: () => void;
+  close: () => void;
+  openFile: (path: string) => void;
+  editorBusy: boolean;
+}) {
   if (!native) {
     return (
       <p className="panel-message">
@@ -32,14 +39,25 @@ export function Explorer({
             {relativePath && (
               <button
                 type="button"
-                disabled={!!busy}
+                disabled={!!busy || editorBusy}
                 onClick={() => browse(parent)}
               >
                 Up
               </button>
             )}
-            <button type="button" disabled={!!busy} onClick={close}>
+            <button
+              type="button"
+              disabled={!!busy || editorBusy}
+              onClick={close}
+            >
               Close workspace
+            </button>
+            <button
+              type="button"
+              disabled={!!busy || editorBusy}
+              onClick={open}
+            >
+              Switch folder
             </button>
           </div>
           <p className="explorer-path">
@@ -48,7 +66,7 @@ export function Explorer({
           </p>
         </>
       ) : (
-        <button type="button" disabled={!!busy} onClick={open}>
+        <button type="button" disabled={!!busy || editorBusy} onClick={open}>
           Open folder
         </button>
       )}
@@ -88,7 +106,13 @@ export function Explorer({
                   {entry.name}/
                 </button>
               ) : (
-                entry.name
+                <button
+                  type="button"
+                  disabled={editorBusy}
+                  onClick={() => openFile(entry.relativePath)}
+                >
+                  {entry.name}
+                </button>
               )}
             </li>
           ))}

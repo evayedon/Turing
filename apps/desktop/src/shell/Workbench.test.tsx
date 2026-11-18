@@ -30,6 +30,10 @@ describe("workbench panels", () => {
 
     await user.tab();
     expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "File" }),
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Explorer" }),
     );
     await user.tab();

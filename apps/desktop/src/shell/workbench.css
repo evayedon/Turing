@@ -237,3 +237,150 @@ body {
   padding: 0;
   list-style: none;
 }
+
+.editor-toolbar,
+.editor-tab {
+  display: flex;
+  align-items: stretch;
+}
+
+.editor-toolbar {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--nebula-border);
+}
+
+.editor-tabs {
+  display: flex;
+  min-width: 0;
+  overflow: auto;
+}
+
+.editor-tab {
+  flex: 0 0 auto;
+  border-right: 1px solid var(--nebula-border);
+}
+
+.editor-toolbar button,
+.editor-notice button {
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  background: var(--nebula-rail);
+  color: var(--nebula-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.editor-toolbar button[aria-selected="true"] {
+  border-bottom-color: var(--nebula-accent);
+  background: var(--nebula-active);
+}
+
+.editor-toolbar button:focus-visible,
+.editor-notice button:focus-visible {
+  outline: 1px solid var(--nebula-accent);
+  outline-offset: -2px;
+}
+
+.editor-toolbar button:disabled,
+.editor-notice button:disabled {
+  opacity: 0.6;
+}
+
+.editor-dirty {
+  color: var(--nebula-accent);
+}
+
+.editor-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--nebula-border);
+  color: var(--nebula-accent);
+  font-size: 13px;
+}
+
+.monaco-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.action-menu {
+  position: relative;
+  z-index: 10;
+}
+
+.action-menu button {
+  border: 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nebula-text);
+  text-align: left;
+  font: 13px var(--nebula-font);
+}
+
+.action-menu button:hover:not(:disabled),
+.action-menu button[aria-expanded="true"] {
+  background: var(--nebula-active);
+}
+
+.action-menu button:focus-visible {
+  outline: 1px solid var(--nebula-accent);
+}
+
+.action-menu button:disabled {
+  color: var(--nebula-muted);
+  opacity: 0.68;
+  cursor: default;
+}
+
+.action-menu-panel {
+  position: absolute;
+  inset: calc(100% + 5px) auto auto 0;
+  display: grid;
+  min-width: 192px;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid var(--nebula-border);
+  border-radius: 6px;
+  background: var(--nebula-panel);
+  box-shadow: 0 5px 18px #0006;
+}
+
+.action-menu-panel p {
+  margin: 6px 10px;
+  color: var(--nebula-muted);
+  font: 12px var(--nebula-font);
+}
+
+.action-menu-panel[hidden] {
+  display: none;
+}
+
+.action-menu-panel button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  min-height: 29px;
+}
+
+.action-menu-state {
+  color: var(--nebula-muted);
+  font-size: 12px;
+}
+
+.action-menu-panel button[aria-pressed="true"] .action-menu-state {
+  color: var(--nebula-accent);
+}

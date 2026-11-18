@@ -1,12 +1,14 @@
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_std::{
-    ambient_authority,
-    fs::{Dir, OpenOptions},
-};
+mod file;
+mod selected;
+
+pub use selected::{PickedFile, SelectedFileSnapshot, SelectedFileVersion};
+
+use cap_fs_ext::DirExt;
+use cap_std::{ambient_authority, fs::Dir};
 use serde::Serialize;
 use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    io::{self, Read},
+    collections::HashMap,
+    io,
     path::Path,
     sync::{Mutex, MutexGuard},
 };
@@ -25,6 +27,8 @@ pub enum WorkspaceError {
     NotFile,
     InvalidEncoding,
     FileTooLarge,
+    FileConflict,
+    SaveRace,
     DirectoryTooLarge,
     IoError,
 }
@@ -41,6 +45,10 @@ impl From<io::Error> for WorkspaceError {
 }
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
+
+pub fn validate_save_content(content: &str) -> Result<()> {
+    file::validate_content(content.as_bytes())
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +92,7 @@ struct Workspace {
 pub struct Registry {
     generation: u64,
     active: Option<Workspace>,
+    selected: HashMap<String, selected::SelectedGrant>,
 }
 
 impl Registry {
@@ -96,20 +105,7 @@ impl Registry {
             return Err(WorkspaceError::PermissionDenied);
         }
 
-        let canonical = selected.canonicalize()?;
-        let anchor = canonical
-            .ancestors()
-            .last()
-            .ok_or(WorkspaceError::IoError)?;
-        let mut root = Dir::open_ambient_dir(anchor, ambient_authority())?;
-        // Walk the canonical path without following links that may have appeared
-        // after canonicalization. Retain the resulting directory handle.
-        for component in canonical
-            .strip_prefix(anchor)
-            .map_err(|_| WorkspaceError::IoError)?
-        {
-            root = open_child_dir(&root, Path::new(component))?;
-        }
+        let (canonical, root) = open_picked_directory(selected)?;
 
         self.generation = self
             .generation
@@ -189,44 +185,26 @@ impl Registry {
 
     pub fn read(&self, owner: &str, id: &str, relative_path: &str) -> Result<TextFile> {
         let root = self.authorize(owner, id)?;
-        let parts = relative_parts(relative_path)?;
-        let (name, parents) = parts.split_last().ok_or(WorkspaceError::NotFile)?;
-        let directory = directory_at(root, parents)?;
-        let metadata = directory.symlink_metadata(name)?;
-        if metadata.is_symlink() {
-            return Err(WorkspaceError::OutsideWorkspace);
-        }
-        if !metadata.is_file() {
-            return Err(WorkspaceError::NotFile);
-        }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let file = directory.open_with(name, &options)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
-            return Err(WorkspaceError::NotFile);
-        }
-        if metadata.len() > MAX_TEXT_BYTES {
-            return Err(WorkspaceError::FileTooLarge);
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_TEXT_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_TEXT_BYTES {
-            return Err(WorkspaceError::FileTooLarge);
-        }
-        let content = String::from_utf8(bytes).map_err(|_| WorkspaceError::InvalidEncoding)?;
-        if content.contains('\0') {
-            return Err(WorkspaceError::InvalidEncoding);
-        }
-        let mut version = DefaultHasher::new();
-        content.hash(&mut version);
+        let snapshot = file::read(root, relative_path)?;
         Ok(TextFile {
             workspace_id: id.to_owned(),
             relative_path: relative_path.to_owned(),
-            content,
+            content: snapshot.content,
             encoding: "utf-8",
-            version: format!("{:016x}", version.finish()),
+            version: snapshot.version,
         })
+    }
+
+    pub fn write(
+        &self,
+        owner: &str,
+        id: &str,
+        relative_path: &str,
+        expected_version: &str,
+        content: &str,
+    ) -> Result<String> {
+        let root = self.authorize(owner, id)?;
+        file::write(root, relative_path, expected_version, content)
     }
 }
 
@@ -244,6 +222,23 @@ impl WorkspaceService {
     pub fn begin_picker(&self) -> Result<MutexGuard<'_, ()>> {
         self.picker.try_lock().map_err(|_| WorkspaceError::Busy)
     }
+}
+
+fn open_picked_directory(selected: &Path) -> Result<(std::path::PathBuf, Dir)> {
+    let canonical = selected.canonicalize()?;
+    let anchor = canonical
+        .ancestors()
+        .last()
+        .ok_or(WorkspaceError::IoError)?;
+    let mut root = Dir::open_ambient_dir(anchor, ambient_authority())?;
+    // Refuse links that appeared after canonicalization and retain the opened directory.
+    for component in canonical
+        .strip_prefix(anchor)
+        .map_err(|_| WorkspaceError::IoError)?
+    {
+        root = open_child_dir(&root, Path::new(component))?;
+    }
+    Ok((canonical, root))
 }
 
 fn valid_component(name: &str) -> bool {
@@ -385,7 +380,13 @@ mod tests {
                 WorkspaceError::OutsideWorkspace,
                 "{path}"
             );
+            assert_eq!(
+                registry.write(OWNER, &workspace.id, path, "bogus", "unauthorized"),
+                Err(WorkspaceError::OutsideWorkspace),
+                "{path}"
+            );
         }
+        assert_eq!(fs::read_to_string(outside_file).unwrap(), "private");
     }
 
     #[cfg(any(unix, windows))]
@@ -401,14 +402,14 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.path(), &linked_folder).unwrap();
-            std::os::unix::fs::symlink(outside_file, &linked_file).unwrap();
+            std::os::unix::fs::symlink(&outside_file, &linked_file).unwrap();
         }
         #[cfg(windows)]
         {
             use std::os::windows::fs::{symlink_dir, symlink_file};
             for result in [
                 symlink_dir(outside.path(), &linked_folder),
-                symlink_file(outside_file, &linked_file),
+                symlink_file(&outside_file, &linked_file),
             ] {
                 if let Err(error) = result {
                     // Windows can require Developer Mode or SeCreateSymbolicLinkPrivilege.
@@ -433,7 +434,12 @@ mod tests {
                 registry.read(OWNER, &workspace.id, path).unwrap_err(),
                 WorkspaceError::OutsideWorkspace
             );
+            assert_eq!(
+                registry.write(OWNER, &workspace.id, path, "bogus", "unauthorized"),
+                Err(WorkspaceError::OutsideWorkspace)
+            );
         }
+        assert_eq!(fs::read_to_string(outside_file).unwrap(), "private");
     }
 
     #[cfg(unix)]
@@ -480,5 +486,138 @@ mod tests {
             registry.read(OWNER, &workspace.id, "").unwrap_err(),
             WorkspaceError::NotFile
         );
+    }
+
+    #[test]
+    fn saves_existing_text_and_rejects_a_stale_editor_version() {
+        let (folder, registry, workspace) = approved();
+        let path = folder.path().join("notes.txt");
+        fs::write(&path, "original").unwrap();
+        let original = registry.read(OWNER, &workspace.id, "notes.txt").unwrap();
+
+        let version = registry
+            .write(
+                OWNER,
+                &workspace.id,
+                "notes.txt",
+                &original.version,
+                "saved ✓",
+            )
+            .unwrap();
+        let saved = registry.read(OWNER, &workspace.id, "notes.txt").unwrap();
+        assert_ne!(version, original.version);
+        assert_eq!(version, saved.version);
+        assert_eq!(saved.content, "saved ✓");
+        assert_eq!(
+            registry.write(
+                OWNER,
+                &workspace.id,
+                "notes.txt",
+                &original.version,
+                "lost update"
+            ),
+            Err(WorkspaceError::FileConflict)
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "saved ✓");
+        assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn refuses_external_edits_replacements_and_deletions() {
+        let (folder, registry, workspace) = approved();
+        let path = folder.path().join("notes.txt");
+        fs::write(&path, "original").unwrap();
+        let original = registry.read(OWNER, &workspace.id, "notes.txt").unwrap();
+        fs::write(&path, "external").unwrap();
+        assert_eq!(
+            registry.write(OWNER, &workspace.id, "notes.txt", &original.version, "mine"),
+            Err(WorkspaceError::FileConflict)
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+        let edited = registry.read(OWNER, &workspace.id, "notes.txt").unwrap();
+        fs::rename(&path, folder.path().join("old")).unwrap();
+        fs::write(&path, "external").unwrap();
+        assert_eq!(
+            registry.write(OWNER, &workspace.id, "notes.txt", &edited.version, "mine"),
+            Err(WorkspaceError::FileConflict)
+        );
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            registry.write(OWNER, &workspace.id, "notes.txt", &edited.version, "mine"),
+            Err(WorkspaceError::FileConflict)
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn writes_require_the_active_workspace_and_a_supported_buffer() {
+        let (folder, mut registry, workspace) = approved();
+        let path = folder.path().join("notes.txt");
+        fs::write(&path, "safe").unwrap();
+        let original = registry.read(OWNER, &workspace.id, "notes.txt").unwrap();
+        for (owner, id) in [("other", workspace.id.as_str()), (OWNER, "wrong")] {
+            assert_eq!(
+                registry.write(owner, id, "notes.txt", &original.version, "unauthorized"),
+                Err(WorkspaceError::PermissionDenied)
+            );
+        }
+        for (content, error) in [
+            ("bad\0buffer".to_owned(), WorkspaceError::InvalidEncoding),
+            (
+                "x".repeat(MAX_TEXT_BYTES as usize + 1),
+                WorkspaceError::FileTooLarge,
+            ),
+        ] {
+            assert_eq!(
+                registry.write(
+                    OWNER,
+                    &workspace.id,
+                    "notes.txt",
+                    &original.version,
+                    &content
+                ),
+                Err(error)
+            );
+        }
+        registry.close(OWNER, &workspace.id).unwrap();
+        assert_eq!(
+            registry.write(
+                OWNER,
+                &workspace.id,
+                "notes.txt",
+                &original.version,
+                "closed"
+            ),
+            Err(WorkspaceError::PermissionDenied)
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "safe");
+    }
+
+    #[test]
+    fn a_read_only_target_is_preserved_on_save_failure() {
+        let (folder, registry, workspace) = approved();
+        let path = folder.path().join("notes.txt");
+        fs::write(&path, "read only").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+
+        let original = registry.read(OWNER, &workspace.id, "notes.txt").unwrap();
+        let write_result = registry.write(
+            OWNER,
+            &workspace.id,
+            "notes.txt",
+            &original.version,
+            "replace",
+        );
+        #[cfg(windows)]
+        {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+        assert_eq!(write_result, Err(WorkspaceError::PermissionDenied));
+        assert_eq!(fs::read_to_string(path).unwrap(), "read only");
+        assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
     }
 }
