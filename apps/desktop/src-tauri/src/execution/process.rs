@@ -97,6 +97,11 @@ fn available(
             Err(error)
         };
     }
+    // A zero-byte ReadFile on a pipe blocks until data arrives, which would
+    // stall the loop on an idle stream while the other one fills up.
+    if bytes == 0 {
+        return Ok(0);
+    }
     let len = buffer.len().min(bytes as usize);
     pipe.read(&mut buffer[..len])
 }

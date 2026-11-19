@@ -36,6 +36,8 @@ pub enum WorkspaceError {
     InvalidName,
     EntryChanged,
     NameTaken,
+    // Only the Unix staging rollback can produce this.
+    #[cfg_attr(not(unix), allow(dead_code))]
     RenameRace,
     DirectoryTooLarge,
     InvalidSearch,

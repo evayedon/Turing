@@ -170,13 +170,22 @@ fn rename_entry(parent: &Dir, old: &str, name: &str, before: &Metadata) -> Resul
     use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
     use cap_std::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{
-            FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    use windows_sys::{
+        Wdk::Storage::FileSystem::{FileRenameInformation, NtSetInformationFile},
+        Win32::{
+            Foundation::{RtlNtStatusToDosError, HANDLE},
+            Storage::FileSystem::{
+                DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+                FILE_SHARE_WRITE,
+            },
+            System::IO::IO_STATUS_BLOCK,
         },
     };
+
+    let wide: Vec<u16> = name.encode_utf16().collect();
+    if wide.len() > 255 {
+        return Err(WorkspaceError::InvalidName);
+    }
 
     let entry = parent.open_with(
         old,
@@ -194,7 +203,11 @@ fn rename_entry(parent: &Dir, old: &str, name: &str, before: &Metadata) -> Resul
         return Err(WorkspaceError::EntryChanged);
     }
 
-    // FILE_RENAME_INFO with storage for a variable-length UTF-16 component.
+    // FILE_RENAME_INFORMATION with storage for one UTF-16 name component.
+    // The name is resolved relative to the already-open parent handle, so a
+    // swapped path cannot redirect the rename. The Win32 wrapper
+    // (SetFileInformationByHandle) rewrites relative names against the
+    // process current directory, so call the native API directly.
     #[repr(C)]
     struct RenameInfo {
         flags: u32,
@@ -208,21 +221,22 @@ fn rename_entry(parent: &Dir, old: &str, name: &str, before: &Metadata) -> Resul
         length: 0,
         filename: [0; 256],
     };
-    for (slot, unit) in info.filename.iter_mut().zip(name.encode_utf16()) {
-        *slot = unit;
-        info.length += 2;
-    }
+    info.filename[..wide.len()].copy_from_slice(&wide);
+    info.length = (wide.len() * 2) as u32;
     let size = std::mem::offset_of!(RenameInfo, filename) as u32 + info.length + 2;
-    if unsafe {
-        SetFileInformationByHandle(
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtSetInformationFile(
             entry.as_raw_handle(),
-            FileRenameInfo,
+            &mut status_block,
             (&info as *const RenameInfo).cast(),
             size,
+            FileRenameInformation,
         )
-    } == 0
-    {
-        return Err(mutation_error(io::Error::last_os_error()));
+    };
+    if status < 0 {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(mutation_error(io::Error::from_raw_os_error(code as i32)));
     }
     Ok(())
 }
