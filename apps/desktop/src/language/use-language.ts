@@ -10,6 +10,8 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { EditorTab } from "../editor/use-editor";
 import { clangdProblems, record } from "./problems";
 import type { Problem } from "./problems";
+import { stampOf } from "./diagnostic-store";
+import type { DiagnosticBatch } from "./diagnostic-store";
 
 function ipc<K extends keyof LanguageCommands>(
   command: K,
@@ -390,25 +392,30 @@ export function useLanguage(
     });
   }
 
-  const problems = useMemo(
-    () =>
-      tabs.flatMap((tab) => {
-        const path = languagePath(tab, workspaceId);
-        const result = path && diagnostics.get(path);
-        return result &&
-          !tab.changedOnDisk &&
-          unchanged(result.tracked.tab, tab)
-          ? result.problems
-          : [];
-      }),
-    [tabs, workspaceId, diagnostics],
+  // Each clangd result is stamped with the document state it was synced at;
+  // the diagnostic store hides it once that document changes.
+  const batches = useMemo(
+    (): DiagnosticBatch[] =>
+      owner === workspaceId
+        ? [...diagnostics.values()].map(({ tracked, problems }) => ({
+            producer: "clangd",
+            stamp: stampOf(tracked.tab),
+            problems: problems.map(({ start, end, severity, message }) => ({
+              start,
+              end,
+              severity,
+              message,
+            })),
+          }))
+        : [],
+    [owner, workspaceId, diagnostics],
   );
 
   return {
     status: owner === workspaceId ? status : ("idle" as const),
     message: owner === workspaceId ? message : undefined,
     capabilities: owner === workspaceId ? capabilities : null,
-    problems,
+    batches,
     start,
     stop,
     request,

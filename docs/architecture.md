@@ -412,6 +412,17 @@ force process cleanup. Unix uses a process group, signalled before the
 child is reaped so the group ID cannot be reused; Windows uses a
 kill-on-close Job Object. A desktop crash can leave temporary files behind.
 
+Every problem flows through one diagnostic store
+(`language/diagnostic-store.ts`). A producer (`clangd` or `compiler`)
+publishes a batch per document, stamped with the document's `uri`,
+`revision` and `editRevision` at the time it was computed. A batch is shown
+only while its open document still has that exact stamp and has not changed
+on disk, so edits, saves, reloads, renames and closes clear stale items
+deterministically. A newer batch from the same producer replaces the older
+one, and a stopped or crashed producer publishes nothing, which clears its
+items. Output is ordered by open-tab order, position, severity and producer,
+with IDs that do not depend on arrival order.
+
 Problems groups errors, warnings and informational messages. The Severity
 filter is under **Settings → Diagnostics**. Rows open the
 corresponding editor and location. The `clangd` marker owner is separate from

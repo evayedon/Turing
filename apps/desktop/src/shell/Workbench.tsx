@@ -63,7 +63,8 @@ import type {
 import { MenuBar } from "./MenuBar";
 import { WorkbenchDialog } from "./WorkbenchDialog";
 import { ProblemsPanel } from "../language/ProblemsPanel";
-import { compilerProblems } from "../language/problems";
+import { compilerBatches } from "../language/problems";
+import { currentProblems } from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import { adjacentProblem, orderProblems } from "../language/problem-navigation";
 import { useLanguage } from "../language/use-language";
@@ -113,11 +114,12 @@ export function Workbench() {
     editor.tabs,
   );
   const problems = useMemo(
-    () => [
-      ...language.problems,
-      ...compilerProblems(execution.run, editor.tabs),
-    ],
-    [language.problems, execution.run, editor.tabs],
+    () =>
+      currentProblems(
+        [...language.batches, ...compilerBatches(execution.run, editor.tabs)],
+        editor.tabs,
+      ),
+    [language.batches, execution.run, editor.tabs],
   );
   const tabOrder = editor.tabs.map(({ key }) => key);
   const navigable = orderProblems(problems, tabOrder);

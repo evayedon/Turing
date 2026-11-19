@@ -13,6 +13,7 @@ import type { LanguageAction, LanguageEvent } from "@turing/contracts";
 import type { EditorTab } from "../editor/use-editor";
 import { ProblemsPanel } from "./ProblemsPanel";
 import { clangdProblems, compilerProblems } from "./problems";
+import { currentProblems } from "./diagnostic-store";
 import { useLanguage } from "./use-language";
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -88,10 +89,12 @@ it("requires activation, syncs both tabs, clears stale problems, saves, renames,
     version: 1,
     diagnostics: [diagnostic],
   });
-  await waitFor(() => expect(result.current.problems).toHaveLength(1));
+  const shown = (tabs: EditorTab[]) =>
+    currentProblems(result.current.batches, tabs);
+  await waitFor(() => expect(shown([tab, header])).toHaveLength(1));
   const edited = { ...tab, draft: "y", editRevision: 1 };
   rerender({ workspace: "one", tabs: [edited, header] });
-  expect(result.current.problems).toEqual([]);
+  expect(shown([edited, header])).toEqual([]);
   await waitFor(() =>
     expect(actions).toContainEqual({
       kind: "sync",
@@ -123,7 +126,7 @@ it("requires activation, syncs both tabs, clears stale problems, saves, renames,
       saved: true,
     }),
   );
-  expect(result.current.problems).toEqual([]);
+  expect(shown([saved, header])).toEqual([]);
   const renamed = {
     ...saved,
     name: "next.cpp",

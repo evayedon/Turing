@@ -1,6 +1,8 @@
 import type { LanguagePosition } from "@turing/contracts";
 import type { EditorTab } from "../editor/use-editor";
 import type { useExecution } from "../execution/use-execution";
+import { stampOf } from "./diagnostic-store";
+import type { DiagnosticBatch } from "./diagnostic-store";
 
 export type Severity = "error" | "warning" | "info";
 
@@ -90,6 +92,32 @@ function utf16Column(line: string, byteOffset: number) {
   // Never split a multi-byte character: back up to its first byte.
   while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
   return new TextDecoder().decode(bytes.subarray(0, end)).length;
+}
+
+/**
+ * The compiler's diagnostics for the current run as a store batch. It is
+ * present only while the tab still holds the exact saved source that was
+ * compiled, and is stamped with that tab's current state.
+ */
+export function compilerBatches(
+  run: ReturnType<typeof useExecution>["run"],
+  tabs: EditorTab[],
+): DiagnosticBatch[] {
+  const problems = compilerProblems(run, tabs);
+  const tab = run && tabs.find(({ key }) => key === run.document.key);
+  if (!tab || !problems.length) return [];
+  return [
+    {
+      producer: "compiler",
+      stamp: stampOf(tab),
+      problems: problems.map(({ start, end, severity, message }) => ({
+        start,
+        end,
+        severity,
+        message,
+      })),
+    },
+  ];
 }
 
 export function compilerProblems(
