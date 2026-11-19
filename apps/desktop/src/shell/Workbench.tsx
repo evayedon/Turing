@@ -64,6 +64,8 @@ import { MenuBar } from "./MenuBar";
 import { WorkbenchDialog } from "./WorkbenchDialog";
 import { ProblemsPanel } from "../language/ProblemsPanel";
 import { compilerProblems } from "../language/problems";
+import type { Problem } from "../language/problems";
+import { adjacentProblem, orderProblems } from "../language/problem-navigation";
 import { useLanguage } from "../language/use-language";
 import { BottomDock } from "./BottomDock";
 import { CommandPalette } from "./CommandPalette";
@@ -110,6 +112,47 @@ export function Workbench() {
     ],
     [language.problems, execution.run, editor.tabs],
   );
+  const tabOrder = editor.tabs.map(({ key }) => key);
+  const navigable = orderProblems(problems, tabOrder);
+  const lastProblem = useRef<string>(undefined);
+  const [problemAnnouncement, setProblemAnnouncement] = useState("");
+  function revealProblem(problem: Problem) {
+    const tab = editor.tabs.find(({ key }) => key === problem.tabKey);
+    if (!tab) return;
+    lastProblem.current = problem.id;
+    const line = problem.start.line + 1;
+    const column = problem.start.character + 1;
+    editor.navigate({ tab }, { line, column });
+    const order = navigable.findIndex(({ id }) => id === problem.id);
+    const severity =
+      problem.severity === "error"
+        ? "Error"
+        : problem.severity === "warning"
+          ? "Warning"
+          : "Info";
+    setProblemAnnouncement(
+      `${severity} ${order + 1} of ${navigable.length}: ${problem.message} (${problem.filename}:${line}:${column})`,
+    );
+  }
+  function goToProblem(direction: 1 | -1) {
+    const position = active && editorCommandsReady?.position();
+    const cursor =
+      active && position
+        ? {
+            tabKey: active.key,
+            line: position.line - 1,
+            character: position.column - 1,
+          }
+        : undefined;
+    const target = adjacentProblem(
+      problems,
+      tabOrder,
+      cursor,
+      direction,
+      lastProblem.current,
+    );
+    if (target) revealProblem(target);
+  }
   const sidebar = useLayout((state) => state.sidebar);
   const terminal = useLayout((state) => state.terminal);
   const assistant = useLayout((state) => state.assistant);
@@ -388,6 +431,16 @@ export function Workbench() {
       label: "Go to Line/Column…",
       disabled: !active || !editorCommandsReady,
     },
+    nextProblem: {
+      label: "Next Problem",
+      shortcut: { key: "F8" },
+      disabled: !navigable.length,
+    },
+    previousProblem: {
+      label: "Previous Problem",
+      shortcut: { key: "F8", shift: true },
+      disabled: !navigable.length,
+    },
     run: {
       label: "Run Without Debugging",
       shortcut: { key: "F5" },
@@ -455,6 +508,8 @@ export function Workbench() {
       setLineInput("");
       openPopup("line");
     },
+    nextProblem: () => goToProblem(1),
+    previousProblem: () => goToProblem(-1),
     run: () => {
       if (active)
         void execution.start(active, native, () => showDock("Output"));
@@ -761,19 +816,7 @@ export function Workbench() {
                 problems={problems}
                 native={explorer.native}
                 workspaceId={explorer.workspace?.id}
-                open={(problem) => {
-                  const tab = editor.tabs.find(
-                    ({ key }) => key === problem.tabKey,
-                  );
-                  if (tab)
-                    editor.navigate(
-                      { tab },
-                      {
-                        line: problem.start.line + 1,
-                        column: problem.start.character + 1,
-                      },
-                    );
-                }}
+                open={revealProblem}
               />
             }
             visible={terminal}
@@ -985,6 +1028,13 @@ export function Workbench() {
           </p>
         </WorkbenchDialog>
       )}
+      <p
+        className="visually-hidden"
+        role="status"
+        aria-label="Problem navigation"
+      >
+        {problemAnnouncement}
+      </p>
     </div>
   );
 }

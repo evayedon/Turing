@@ -78,7 +78,13 @@ function stopWatching(session: Session) {
   session.pendingBytes = 0;
 }
 
-export type TerminalActions = { close: () => void; clear: () => void };
+export type TerminalActions = {
+  close: () => void;
+  clear: () => void;
+  find: () => void;
+  copy: () => void;
+  paste: () => void;
+};
 
 export function TerminalPanel({
   native,
@@ -89,7 +95,11 @@ export function TerminalPanel({
   onRunningChange,
   profile = "system",
   onShell,
+  chrome = "full",
 }: {
+  /** "minimal" hides the per-terminal toolbar when a session runs; the host
+   * supplies those actions (for example in the bottom panel header). */
+  chrome?: "full" | "minimal";
   native: boolean;
   workspaceId?: string;
   profile?: TerminalProfile;
@@ -145,6 +155,9 @@ export function TerminalPanel({
       }
       lastView.current?.dispose();
       lastView.current = undefined;
+      // A remount (React StrictMode in development) must honour a start
+      // request that the unmount just cancelled.
+      handledActivation.current = 0;
     },
     [],
   );
@@ -194,6 +207,21 @@ export function TerminalPanel({
     close: () =>
       closeSession(host.current?.ownerDocument.activeElement ?? null),
     clear: () => current.current?.view?.clear(),
+    find: () => {
+      if (lastView.current) setSearch(true);
+    },
+    copy: () => {
+      void lastView.current
+        ?.copy?.()
+        .catch(() => setError("Could not copy terminal selection."));
+    },
+    paste: () => {
+      void lastView.current
+        ?.paste?.()
+        .catch(() =>
+          setError("Could not read the clipboard. Try the keyboard shortcut."),
+        );
+    },
   }));
 
   useEffect(
@@ -388,6 +416,7 @@ export function TerminalPanel({
   return (
     <div
       className="terminal-panel"
+      data-phase={status.phase}
       onKeyDown={(event) => {
         if (
           (event.metaKey || event.ctrlKey) &&
@@ -400,14 +429,16 @@ export function TerminalPanel({
         }
       }}
     >
-      <div className="terminal-toolbar">
+      <div className="terminal-toolbar" data-chrome={chrome}>
         {status.phase === "running" ? (
-          <button
-            type="button"
-            onClick={(event) => closeSession(event.currentTarget)}
-          >
-            Close terminal
-          </button>
+          chrome === "full" && (
+            <button
+              type="button"
+              onClick={(event) => closeSession(event.currentTarget)}
+            >
+              Close terminal
+            </button>
+          )
         ) : (
           <button
             type="button"
@@ -435,7 +466,8 @@ export function TerminalPanel({
             Cancel
           </button>
         )}
-        {(status.phase === "running" || status.phase === "exited") &&
+        {chrome === "full" &&
+          (status.phase === "running" || status.phase === "exited") &&
           lastView.current && (
             <>
               <button type="button" onClick={() => setSearch(!search)}>

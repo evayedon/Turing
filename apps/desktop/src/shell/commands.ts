@@ -35,6 +35,8 @@ export type EditorCommands = {
   supports: (id: MonacoCommand) => boolean;
   run: (id: MonacoCommand) => void;
   reveal: (line: number, column: number) => void;
+  /** The cursor as a 1-based Monaco line and UTF-16 column. */
+  position: () => { line: number; column: number } | undefined;
 };
 
 export type Command = {
@@ -78,6 +80,8 @@ export type CommandId =
   | "assistant"
   | "goFile"
   | "goLine"
+  | "nextProblem"
+  | "previousProblem"
   | "run"
   | "stop"
   | "openTerminal"
@@ -237,6 +241,9 @@ export const menus: { label: string; entries: MenuRow[] }[] = [
       "goFile",
       "goLine",
       "symbol",
+      "-",
+      "nextProblem",
+      "previousProblem",
       "-",
       "definition",
       "declaration",

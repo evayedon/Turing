@@ -1,13 +1,6 @@
 // @vitest-environment jsdom
 
-import {
-  act,
-  cleanup,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
@@ -15,6 +8,14 @@ import { Workbench } from "../shell/Workbench";
 import { TerminalSessions } from "./TerminalSessions";
 import { useLayout } from "../state/layout";
 import { TerminalPanel, terminalStartupDeadline } from "./TerminalPanel";
+
+/** Waits until a terminal inside `scope` has a running shell. */
+const running = (scope: ParentNode = document) =>
+  waitFor(() =>
+    expect(
+      scope.querySelector('.terminal-panel[data-phase="running"]'),
+    ).toBeTruthy(),
+  );
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -113,7 +114,7 @@ describe("TerminalPanel", () => {
     );
     await user.click(menu);
     await user.click(screen.getByRole("menuitem", { name: "Open Terminal" }));
-    await screen.findByRole("button", { name: "Close terminal" });
+    await running();
     await user.click(menu);
     await user.click(screen.getByRole("menuitem", { name: "Clear Terminal" }));
     expect(view.clear).toHaveBeenCalledOnce();
@@ -151,12 +152,8 @@ describe("TerminalPanel", () => {
     await user.click(screen.getByRole("menuitem", { name: "Split Terminal" }));
     const first = await screen.findByRole("tabpanel", { name: "Terminal 1" });
     const second = await screen.findByRole("tabpanel", { name: "Terminal 2" });
-    expect(
-      await within(first).findByRole("button", { name: "Close terminal" }),
-    ).toBeTruthy();
-    expect(
-      await within(second).findByRole("button", { name: "Close terminal" }),
-    ).toBeTruthy();
+    await running(first);
+    await running(second);
     const divider = screen.getByRole("separator", {
       name: "Resize terminal panes",
     });
@@ -174,9 +171,7 @@ describe("TerminalPanel", () => {
     }
     await user.click(screen.getByRole("button", { name: "Remove Terminal 2" }));
     expect(screen.queryByRole("tabpanel", { name: "Terminal 2" })).toBeNull();
-    expect(
-      within(first).getByRole("button", { name: "Close terminal" }),
-    ).toBeTruthy();
+    await running(first);
     expect(
       mocks.invoke.mock.calls.filter(
         ([command]) => command === "terminal_close",
@@ -237,7 +232,7 @@ describe("TerminalPanel", () => {
       expect.anything(),
     );
 
-    await user.click(screen.getByRole("button", { name: "Close terminal" }));
+    await user.click(screen.getByRole("button", { name: "Kill terminal" }));
     await screen.findByRole("button", { name: "Restart terminal" });
     expect(starts).toBe(1);
     expect(mocks.invoke).toHaveBeenCalledWith("terminal_close", {
@@ -245,7 +240,7 @@ describe("TerminalPanel", () => {
     });
     await user.click(screen.getByRole("tab", { name: "Problems" }));
     await user.click(screen.getByRole("tab", { name: "Terminal" }));
-    await screen.findByRole("button", { name: "Close terminal" });
+    await running();
     expect(starts).toBe(2);
     expect(view.focus).toHaveBeenCalledTimes(3);
   });
@@ -282,7 +277,7 @@ describe("TerminalPanel", () => {
           screen.getByRole("option", { name: /^Open Terminal/ }),
         );
       }
-      await screen.findByRole("button", { name: "Close terminal" });
+      await running();
       expect(view.focus).toHaveBeenCalledOnce();
       await user.click(toggle);
       expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
@@ -507,6 +502,36 @@ it("ends an unresponsive start, retries, and cleans up a late reply", async () =
   }
 });
 
+it("starts a newly created terminal promptly under StrictMode", async () => {
+  const pending = deferred<never>();
+  let count = 0;
+  mocks.invoke.mockImplementation((command: string) => {
+    if (command === "terminal_start")
+      return Promise.resolve({
+        id: String(++count),
+        workspaceDirectory: false,
+        shell: "zsh",
+      });
+    if (command === "terminal_read") return pending.promise;
+    return Promise.resolve();
+  });
+  const user = userEvent.setup();
+  render(
+    <StrictMode>
+      <TerminalSessions native activation={0} />
+    </StrictMode>,
+  );
+  const create = screen.getByRole("button", { name: "New terminal session" });
+  await user.click(create);
+  await running(screen.getByRole("tabpanel", { name: "zsh" }));
+  // A second terminal mounts already asked to start.
+  await user.click(create);
+  const second = await screen.findByRole("tabpanel", {
+    name: /^(Terminal|zsh) 2$/,
+  });
+  await running(second);
+});
+
 it("renames sessions, keeps a vertical group on tab switches, and reuses display numbers", async () => {
   const pending = deferred<never>();
   let count = 0;
@@ -522,11 +547,12 @@ it("renames sessions, keeps a vertical group on tab switches, and reuses display
   });
   const user = userEvent.setup();
   render(<TerminalSessions native activation={0} />);
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Shell profile for new terminals" }),
-    "bash",
+  await user.click(screen.getByRole("button", { name: "Launch profile" }));
+  await user.click(screen.getByRole("menuitem", { name: "New Bash terminal" }));
+  await user.click(
+    screen.getByRole("button", { name: "More terminal actions" }),
   );
-  await user.click(screen.getByRole("button", { name: "Split down" }));
+  await user.click(screen.getByRole("menuitem", { name: "Split Down" }));
   const separator = screen.getByRole("separator");
   expect(separator.getAttribute("aria-orientation")).toBe("horizontal");
   await screen.findByRole("tab", { name: "bash 2" });
@@ -538,7 +564,10 @@ it("renames sessions, keeps a vertical group on tab switches, and reuses display
       expect.objectContaining({ profile: "bash" }),
     ]),
   );
-  await user.click(screen.getByRole("button", { name: "Rename" }));
+  await user.click(
+    screen.getByRole("button", { name: "More terminal actions" }),
+  );
+  await user.click(screen.getByRole("menuitem", { name: "Rename…" }));
   await user.clear(screen.getByRole("textbox", { name: "Terminal name" }));
   await user.type(
     screen.getByRole("textbox", { name: "Terminal name" }),

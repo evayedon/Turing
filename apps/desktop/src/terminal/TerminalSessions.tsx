@@ -6,12 +6,25 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
+import {
+  ChevronDown,
+  Columns2,
+  Ellipsis,
+  Plus,
+  SquareTerminal,
+  Trash2,
+} from "lucide-react";
 import type { TerminalProfile } from "@turing/contracts";
 import type { Ref } from "react";
 import { TerminalPanel } from "./TerminalPanel";
 import type { TerminalActions } from "./TerminalPanel";
+import { ToolbarMenu } from "./ToolbarMenu";
 
-export type TerminalSessionControls = TerminalActions & {
+export type TerminalSessionControls = Pick<
+  TerminalActions,
+  "close" | "clear"
+> & {
   create: (split: boolean) => void;
 };
 export type TerminalSessionLayout = { count: number; split: boolean };
@@ -23,7 +36,11 @@ export function TerminalSessions({
   actionsRef,
   onRunningChange,
   onLayout,
+  toolbar = "inline",
 }: {
+  /** Where the session actions render: inline above the terminals, into a
+   * host element (the bottom panel header), or nowhere (`null`). */
+  toolbar?: "inline" | HTMLElement | null;
   native: boolean;
   workspaceId?: string;
   activation: number;
@@ -43,7 +60,6 @@ export function TerminalSessions({
     >(),
   );
   const [direction, setDirection] = useState<"columns" | "rows">("columns");
-  const [profile, setProfile] = useState<TerminalProfile>("system");
   const [profiles, setProfiles] = useState<Record<number, TerminalProfile>>({});
   const [labels, setLabels] = useState<Record<number, number>>({ 1: 1 });
   const [names, setNames] = useState<Record<number, string>>({});
@@ -116,8 +132,15 @@ export function TerminalSessions({
     setRename({ id, name: label(id) });
   }
 
-  function create(split: boolean, axis: "columns" | "rows" = "columns") {
+  function create(
+    split: boolean,
+    axis: "columns" | "rows" = "columns",
+    chosen?: TerminalProfile,
+  ) {
     if (!native || slots.length >= 4 || (split && visible.length > 1)) return;
+    // A split uses the same shell as the terminal it splits, as in VS Code.
+    const profile =
+      chosen ?? (split ? profiles[active] : undefined) ?? "system";
     const reuseIdle =
       !split &&
       slots.length === 1 &&
@@ -200,10 +223,15 @@ export function TerminalSessions({
   }
 
   useImperativeHandle(actionsRef, () => ({
-    create,
+    create: (split: boolean) => create(split),
     close: () => handles.current.get(active)?.close(),
     clear: () => handles.current.get(active)?.clear(),
   }));
+
+  function kill() {
+    if (slots.length > 1) remove(active);
+    else handles.current.get(active)?.close();
+  }
 
   function changeRatio(value: number) {
     const ratio = Math.min(80, Math.max(20, value));
@@ -228,15 +256,52 @@ export function TerminalSessions({
 
   if (!native) return <TerminalPanel native={false} />;
 
-  return (
-    <div className="terminal-sessions">
-      <div
-        className="terminal-session-tabs"
-        role="tablist"
-        aria-label="Terminal sessions"
-      >
-        {slots.map((id) => (
-          <div key={id} className="terminal-session-tab" role="presentation">
+  const full = slots.length >= 4;
+  const tabs = (
+    <div
+      className="terminal-session-tabs"
+      role="tablist"
+      aria-label="Terminal sessions"
+      aria-orientation={slots.length > 1 ? "vertical" : "horizontal"}
+    >
+      {slots.map((id) => (
+        <div
+          key={id}
+          className="terminal-session-tab"
+          role="presentation"
+          data-active={active === id}
+        >
+          {rename?.id === id ? (
+            <form
+              className="terminal-rename"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const name = rename.name.trim();
+                setNames((old) => ({ ...old, [rename.id]: name }));
+                restoreTabFocus.current = true;
+                setRename(undefined);
+              }}
+            >
+              <input
+                aria-label="Terminal name"
+                autoFocus
+                maxLength={40}
+                value={rename.name}
+                onFocus={(event) => event.currentTarget.select()}
+                onChange={(event) =>
+                  setRename({ ...rename, name: event.target.value })
+                }
+                onBlur={() => setRename(undefined)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    restoreTabFocus.current = true;
+                    setRename(undefined);
+                  }
+                }}
+              />
+            </form>
+          ) : (
             <button
               type="button"
               role="tab"
@@ -253,113 +318,142 @@ export function TerminalSessions({
                   startRename(id);
                   return;
                 }
-                if (event.key !== "ArrowRight" && event.key !== "ArrowLeft")
-                  return;
+                const step =
+                  event.key === "ArrowDown" || event.key === "ArrowRight"
+                    ? 1
+                    : event.key === "ArrowUp" || event.key === "ArrowLeft"
+                      ? slots.length - 1
+                      : 0;
+                if (!step) return;
                 event.preventDefault();
-                const next =
-                  slots[
-                    (slots.indexOf(id) +
-                      (event.key === "ArrowRight" ? 1 : slots.length - 1)) %
-                      slots.length
-                  ];
+                const next = slots[(slots.indexOf(id) + step) % slots.length];
                 select(next);
                 event.currentTarget.ownerDocument
                   .getElementById(`terminal-tab-${next}`)
                   ?.focus();
               }}
             >
-              {label(id)}
+              <SquareTerminal size={14} aria-hidden="true" />
+              <span>{label(id)}</span>
             </button>
-            {slots.length > 1 && (
-              <button
-                type="button"
-                aria-label={`Remove ${label(id)}`}
-                onClick={() => remove(id)}
-              >
-                ×
-              </button>
-            )}
-          </div>
-        ))}
-        {rename && (
-          <form
-            className="terminal-rename"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const name = rename.name.trim();
-              setNames((old) => ({ ...old, [rename.id]: name }));
-              restoreTabFocus.current = true;
-              setRename(undefined);
-            }}
-          >
-            <input
-              aria-label="Terminal name"
-              autoFocus
-              maxLength={40}
-              value={rename.name}
-              onFocus={(event) => event.currentTarget.select()}
-              onChange={(event) =>
-                setRename({ ...rename, name: event.target.value })
-              }
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.stopPropagation();
-                  restoreTabFocus.current = true;
-                  setRename(undefined);
-                }
-              }}
-            />
-          </form>
-        )}
-        <select
-          aria-label="Shell profile for new terminals"
-          value={profile}
-          onChange={(event) => {
-            const selected = profilesAvailable.find(
-              (item) => item.id === event.target.value,
-            );
-            const next = selected?.id ?? "system";
-            setProfile(next);
-            if (!running[active])
-              setProfiles((old) => ({ ...old, [active]: next }));
-          }}
-        >
-          <option value="system">Default shell</option>
-          {profilesAvailable.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.label}
-            </option>
-          ))}
-        </select>
-        <button type="button" onClick={() => startRename(active)}>
-          Rename
-        </button>
-        <button
-          type="button"
-          disabled={slots.length >= 4}
-          aria-label="New terminal session"
-          title="New terminal session"
-          onClick={() => create(false)}
-        >
-          +
-        </button>
-        <button
-          type="button"
-          disabled={slots.length >= 4 || visible.length > 1}
-          aria-label="Split terminal pane"
-          title="Split terminal pane"
-          onClick={() => create(true)}
-        >
-          Split right
-        </button>
-        <button
-          type="button"
-          disabled={slots.length >= 4 || split}
-          onClick={() => create(true, "rows")}
-        >
-          Split down
-        </button>
-      </div>
+          )}
+          {slots.length > 1 && (
+            <button
+              type="button"
+              className="terminal-tab-kill"
+              aria-label={`Remove ${label(id)}`}
+              title={`Kill ${label(id)}`}
+              onClick={() => remove(id)}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const actions = (
+    <div
+      className="terminal-actions"
+      role="toolbar"
+      aria-label="Terminal actions"
+    >
+      {slots.length === 1 && tabs}
+      <button
+        type="button"
+        className="dock-action"
+        disabled={full}
+        aria-label="New terminal session"
+        title="New Terminal"
+        onClick={() => create(false)}
+      >
+        <Plus size={15} aria-hidden="true" />
+      </button>
+      <ToolbarMenu
+        label="Launch profile"
+        icon={<ChevronDown size={14} aria-hidden="true" />}
+        disabled={full}
+        items={[
+          ...[
+            { id: "system" as const, label: "Default shell" },
+            ...profilesAvailable,
+          ].map((item) => ({
+            label: `New ${item.label} terminal`,
+            run: () => create(false, "columns", item.id),
+          })),
+          "-",
+          {
+            label: "Split Terminal",
+            disabled: split,
+            run: () => create(true),
+          },
+        ]}
+      />
+      <button
+        type="button"
+        className="dock-action"
+        disabled={full || split}
+        aria-label="Split terminal pane"
+        title="Split Terminal"
+        onClick={() => create(true)}
+      >
+        <Columns2 size={15} aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        className="dock-action"
+        aria-label="Kill terminal"
+        title="Kill Terminal"
+        onClick={kill}
+      >
+        <Trash2 size={15} aria-hidden="true" />
+      </button>
+      <ToolbarMenu
+        label="More terminal actions"
+        icon={<Ellipsis size={15} aria-hidden="true" />}
+        items={[
+          { label: "Rename…", run: () => startRename(active) },
+          {
+            label: "Split Down",
+            disabled: full || split,
+            run: () => create(true, "rows"),
+          },
+          "-",
+          {
+            label: "Find",
+            disabled: !running[active],
+            run: () => handles.current.get(active)?.find(),
+          },
+          {
+            label: "Copy",
+            disabled: !running[active],
+            run: () => handles.current.get(active)?.copy(),
+          },
+          {
+            label: "Paste",
+            disabled: !running[active],
+            run: () => handles.current.get(active)?.paste(),
+          },
+          {
+            label: "Clear",
+            disabled: !running[active],
+            run: () => handles.current.get(active)?.clear(),
+          },
+        ]}
+      />
+    </div>
+  );
+
+  return (
+    <div
+      className="terminal-sessions"
+      data-toolbar={toolbar === "inline" ? "inline" : "hosted"}
+      data-list={slots.length > 1}
+    >
+      {toolbar === "inline"
+        ? actions
+        : toolbar && createPortal(actions, toolbar)}
       <div
         ref={grid}
         className="terminal-session-grid"
@@ -389,6 +483,7 @@ export function TerminalSessions({
           >
             <TerminalPanel
               native={native}
+              chrome="minimal"
               workspaceId={workspaceId}
               activation={activations[id]}
               profile={profiles[id]}
@@ -451,6 +546,7 @@ export function TerminalSessions({
           />
         )}
       </div>
+      {slots.length > 1 && tabs}
     </div>
   );
 }

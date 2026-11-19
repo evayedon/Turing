@@ -76,6 +76,15 @@ export function clangdProblems(
   });
 }
 
+/** Converts a 0-based UTF-8 byte offset in `line` to UTF-16 code units. */
+function utf16Column(line: string, byteOffset: number) {
+  const bytes = new TextEncoder().encode(line);
+  let end = Math.min(byteOffset, bytes.length);
+  // Never split a multi-byte character: back up to its first byte.
+  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  return new TextDecoder().decode(bytes.subarray(0, end)).length;
+}
+
 export function compilerProblems(
   run: ReturnType<typeof useExecution>["run"],
   tabs: EditorTab[],
@@ -91,6 +100,7 @@ export function compilerProblems(
       tab.source.version === run.document.version,
   );
   if (!tab) return [];
+  const lines = tab.content.split(/\r?\n/);
   return run.output
     .filter((chunk) => chunk.stream === "buildStderr")
     .flatMap((chunk) => chunk.text.split(/\r?\n/))
@@ -103,9 +113,14 @@ export function compilerProblems(
       const path = match[1].replaceAll("\\", "/").split("/");
       if (path.at(-1) !== tab.name || !path.at(-2)?.startsWith("turing-run-"))
         return [];
+      const row = Number(match[2]) - 1;
+      const column = Number(match[3]) - 1;
+      // A line outside the compiled text cannot be converted; keep the
+      // reported column and let the editor clamp it when revealing.
+      const text = lines[row];
       const start = position({
-        line: Number(match[2]) - 1,
-        character: Number(match[3]) - 1,
+        line: row,
+        character: text === undefined ? column : utf16Column(text, column),
       });
       if (!start) return [];
       return [

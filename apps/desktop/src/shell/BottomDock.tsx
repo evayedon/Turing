@@ -1,4 +1,5 @@
 import { CircleAlert, List, Terminal, X } from "lucide-react";
+import { useState } from "react";
 
 import type { ReactNode } from "react";
 import { ExecutionOutput } from "../execution/ExecutionOutput";
@@ -12,17 +13,7 @@ import { TerminalSessions } from "../terminal/TerminalSessions";
 import { dockViews } from "../state/dock-views";
 import type { DockView } from "../state/dock-views";
 
-const details = {
-  Terminal: {
-    Icon: Terminal,
-  },
-  Problems: {
-    Icon: CircleAlert,
-  },
-  Output: {
-    Icon: List,
-  },
-};
+const icons = { Terminal, Problems: CircleAlert, Output: List };
 
 export function BottomDock({
   execution,
@@ -51,6 +42,8 @@ export function BottomDock({
   onTerminalRunning?: (running: boolean) => void;
   onTerminalLayout?: (layout: TerminalSessionLayout) => void;
 }) {
+  // Header slot where the active view (the terminal) renders its actions.
+  const [actions, setActions] = useState<HTMLDivElement | null>(null);
   return (
     <section
       id="bottom-dock"
@@ -61,7 +54,7 @@ export function BottomDock({
       <header className="dock-header">
         <div role="tablist" aria-label="Bottom dock" className="dock-tabs">
           {dockViews.map((name, index) => {
-            const { Icon } = details[name];
+            const Icon = icons[name];
             return (
               <button
                 key={name}
@@ -98,9 +91,10 @@ export function BottomDock({
             );
           })}
         </div>
+        <div ref={setActions} className="dock-actions" />
         <button
           type="button"
-          className="icon-button"
+          className="dock-action"
           aria-label="Hide bottom panel"
           title="Hide bottom panel"
           onClick={close}
@@ -119,6 +113,7 @@ export function BottomDock({
         >
           {name === "Terminal" ? (
             <TerminalSessions
+              toolbar={active === "Terminal" ? actions : null}
               native={native}
               workspaceId={workspaceId}
               activation={terminalActivation}

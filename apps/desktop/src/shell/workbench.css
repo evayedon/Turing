@@ -864,37 +864,72 @@ svg {
 }
 .dock-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding-inline: var(--nebula-s2);
-  background: var(--nebula-panel);
-  border-bottom: 1px solid var(--nebula-border);
+  gap: var(--nebula-s2);
+  min-height: 35px;
+  padding-inline: var(--nebula-s2) var(--nebula-s1);
+  background: var(--nebula-rail);
 }
 .dock-tabs {
   display: flex;
   min-width: 0;
   overflow: auto hidden;
 }
+.dock-tabs {
+  gap: var(--nebula-s1);
+}
 .dock-tabs button {
   display: flex;
   align-items: center;
-  gap: 5px;
-  min-height: 32px;
-  padding-inline: var(--nebula-s2);
+  gap: 6px;
+  min-height: 35px;
+  padding: 0 var(--nebula-s2);
   border: 0;
-  border-bottom: var(--nebula-active-indicator) solid transparent;
   background: transparent;
   color: var(--nebula-muted);
   font-size: var(--nebula-sm);
+  transition: color var(--nebula-fast);
 }
 .dock-tabs button:hover {
-  background: var(--nebula-hover);
+  color: var(--nebula-text);
 }
 .dock-tabs button[aria-selected="true"] {
-  background: var(--nebula-active);
   color: var(--nebula-text);
-  border-bottom-color: var(--nebula-accent);
-  font-weight: 600;
+  box-shadow: inset 0 -1px var(--nebula-accent);
+}
+.dock-tabs button:focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: -2px;
+}
+.dock-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-inline-start: auto;
+}
+.dock-action {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--nebula-radius);
+  background: transparent;
+  color: var(--nebula-muted);
+}
+.dock-action:hover:not(:disabled),
+.dock-action[aria-expanded="true"] {
+  background: var(--nebula-hover);
+  color: var(--nebula-text);
+}
+.dock-action:disabled {
+  opacity: 0.4;
+}
+.dock-action:focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: -2px;
 }
 .dock-tabs button[aria-selected="true"] svg {
   color: var(--nebula-accent);
@@ -1166,6 +1201,12 @@ svg {
 
 .terminal-screen .xterm {
   height: 100%;
+}
+
+/* xterm paints its viewport black; the strip below the last whole row
+   must match the terminal background instead. */
+.terminal-screen .xterm-viewport {
+  background-color: var(--nebula-rail) !important;
 }
 
 .terminal-screen:focus-within {
@@ -1525,38 +1566,186 @@ svg {
 }
 
 .terminal-sessions {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.terminal-sessions[data-list="true"] {
+  grid-template-columns: minmax(0, 1fr) clamp(120px, 22%, 200px);
+}
+.terminal-sessions[data-toolbar="inline"] {
   grid-template-rows: auto minmax(0, 1fr);
 }
+.terminal-sessions[data-toolbar="inline"] > .terminal-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  min-height: 35px;
+  padding-inline: var(--nebula-s2) var(--nebula-s1);
+  border-bottom: 1px solid var(--nebula-border);
+}
+.terminal-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
 
-.terminal-session-tabs,
 .terminal-session-tab {
   display: flex;
-  min-width: 0;
   align-items: center;
+  min-width: 0;
 }
-
-.terminal-session-tabs {
-  gap: 4px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--nebula-border);
-  padding-inline: var(--nebula-s2);
-}
-
-.terminal-session-tabs button {
-  flex-shrink: 0;
-  min-height: 26px;
-  padding-inline: var(--nebula-s2);
+.terminal-session-tab [role="tab"] {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 var(--nebula-s2);
   border: 0;
   background: transparent;
   color: var(--nebula-muted);
-  white-space: nowrap;
   font: inherit;
   font-size: var(--nebula-sm);
+  text-align: start;
+}
+.terminal-session-tab [role="tab"] span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-session-tab [role="tab"]:focus-visible,
+.terminal-tab-kill:focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: -2px;
+}
+/* One terminal: its name sits in the header, as in VS Code. */
+.terminal-actions > .terminal-session-tabs {
+  margin-inline-end: var(--nebula-s1);
+}
+.terminal-actions > .terminal-session-tabs [role="tab"] {
+  color: var(--nebula-text);
+}
+/* Several terminals: a session list beside them. */
+.terminal-sessions > .terminal-session-tabs {
+  overflow: auto;
+  padding-block: var(--nebula-s1);
+  border-inline-start: 1px solid var(--nebula-border);
+}
+.terminal-sessions > .terminal-session-tabs .terminal-session-tab:hover {
+  background: var(--nebula-hover);
+}
+.terminal-sessions
+  > .terminal-session-tabs
+  .terminal-session-tab[data-active="true"] {
+  background: var(--nebula-active);
+  box-shadow: inset 2px 0 var(--nebula-accent);
+}
+.terminal-sessions
+  > .terminal-session-tabs
+  .terminal-session-tab[data-active="true"]
+  [role="tab"] {
+  color: var(--nebula-text);
+}
+.terminal-tab-kill {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-inline-end: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--nebula-radius);
+  background: transparent;
+  color: var(--nebula-muted);
+  opacity: 0;
+}
+.terminal-session-tab:hover .terminal-tab-kill,
+.terminal-session-tab[data-active="true"] .terminal-tab-kill,
+.terminal-tab-kill:focus-visible {
+  opacity: 1;
+}
+.terminal-tab-kill:hover {
+  background: var(--nebula-hover);
+  color: var(--nebula-text);
+}
+@media (hover: none) {
+  .terminal-tab-kill {
+    opacity: 1;
+  }
 }
 
-.terminal-session-tabs button[aria-selected="true"] {
+/* Action menus in the panel header. */
+.toolbar-menu {
+  position: relative;
+  display: flex;
+}
+.toolbar-menu-list {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  display: grid;
+  min-width: 200px;
+  padding: var(--nebula-s1);
+  border: 1px solid var(--nebula-border);
+  border-radius: var(--nebula-overlay-radius);
+  background: var(--nebula-panel);
+  box-shadow: var(--nebula-elevation);
+}
+.toolbar-menu-list [role="menuitem"] {
+  padding: 5px var(--nebula-s3);
+  border: 0;
+  border-radius: var(--nebula-radius);
+  background: transparent;
+  color: var(--nebula-text);
+  font: inherit;
+  font-size: var(--nebula-sm);
+  text-align: start;
+}
+.toolbar-menu-list [role="menuitem"]:hover:not(:disabled),
+.toolbar-menu-list [role="menuitem"]:focus-visible {
+  background: var(--nebula-active);
+  outline: none;
+}
+.toolbar-menu-list [role="menuitem"]:disabled {
+  color: var(--nebula-muted);
+  opacity: 0.6;
+}
+.toolbar-menu-list [role="separator"] {
+  height: 1px;
+  margin: var(--nebula-s1) 0;
+  background: var(--nebula-border);
+}
+
+/* In the panel, a running terminal has no toolbar of its own; idle,
+   starting and exited states read as a quiet line inside the terminal. */
+.terminal-toolbar[data-chrome="minimal"] {
+  gap: var(--nebula-s3);
+  padding-block: var(--nebula-s2) var(--nebula-s1);
+}
+.terminal-toolbar[data-chrome="minimal"]:empty {
+  display: none;
+}
+.terminal-toolbar[data-chrome="minimal"] button,
+.terminal-toolbar[data-chrome="minimal"] .terminal-start:not(:disabled) {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--nebula-accent);
-  box-shadow: inset 0 -1px var(--nebula-accent);
+  font-weight: 500;
+}
+.terminal-toolbar[data-chrome="minimal"] button:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+.terminal-toolbar[data-chrome="minimal"] button:disabled {
+  color: var(--nebula-muted);
+}
+.terminal-toolbar[data-chrome="minimal"] button:focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: 2px;
 }
 
 .terminal-session-grid {
@@ -1627,7 +1816,6 @@ svg {
   cursor: row-resize;
 }
 
-.terminal-session-tabs select,
 .terminal-find input,
 .terminal-rename input {
   min-width: 0;
@@ -1652,4 +1840,14 @@ svg {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--nebula-s1);
+}
+
+/* Readable by assistive technology, not drawn on screen. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

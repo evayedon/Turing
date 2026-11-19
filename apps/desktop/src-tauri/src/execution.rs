@@ -8,13 +8,13 @@ use std::{
     collections::VecDeque,
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
         Arc, Mutex, MutexGuard,
     },
     thread::{self, JoinHandle},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, WebviewWindow};
 
@@ -361,6 +361,66 @@ fn is_executable(path: &Path) -> bool {
     metadata.is_file()
 }
 
+/// GCC 11+ reports diagnostic columns in display cells (tabs as 8, wide
+/// characters as 2); ask it for UTF-8 byte columns, which Clang and older
+/// GCC already use. Both of those reject the flag, so only a version string
+/// that is GCC's own (FSF copyright, no clang) at 11 or later gets it.
+fn column_unit_flag(version_output: &str) -> Option<&'static str> {
+    if !version_output.contains("Free Software Foundation") {
+        return None;
+    }
+    let first = version_output.lines().next()?;
+    if first.to_ascii_lowercase().contains("clang") {
+        return None;
+    }
+    let major: u32 = first
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .next()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()?;
+    (major >= 11).then_some("-fdiagnostics-column-unit=byte")
+}
+
+/// Reads `--version` from the selected compiler, bounded in time and size.
+/// Any failure yields an empty string, which adds no flag.
+fn compiler_version(executable: &Path, path: &std::ffi::OsStr, cwd: &Path) -> String {
+    use std::io::Read;
+    let Ok(mut child) = Command::new(executable)
+        .arg("--version")
+        .env("PATH", path)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return String::new();
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return String::new();
+            }
+        }
+    }
+    let mut output = String::new();
+    if let Some(stdout) = child.stdout.take() {
+        let _ = stdout.take(4096).read_to_string(&mut output);
+    }
+    output
+}
+
 fn tool(language: Language, path: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
     tools(language, path)
         .into_iter()
@@ -403,9 +463,13 @@ fn execute(snapshot: Snapshot, progress: &Arc<Progress>) -> Result<Outcome> {
             } else {
                 "program"
             });
+            let column_unit =
+                column_unit_flag(&compiler_version(&executable, &child_path, scratch.path()));
             let mut compiler = Command::new(executable);
             compiler
-                .args(["-std=c++17", "-fdiagnostics-color=never", "-x", "c++"])
+                .args(["-std=c++17", "-fdiagnostics-color=never"])
+                .args(column_unit)
+                .args(["-x", "c++"])
                 .arg(&source);
             compiler.arg("-o").arg(&binary).env("PATH", &child_path);
             let Some(status) =
@@ -546,6 +610,34 @@ mod tests {
     use super::*;
     use cap_std::ambient_authority;
     use std::time::Duration;
+
+    #[test]
+    fn only_gcc_11_and_later_are_asked_for_byte_columns() {
+        const FSF: &str = "\nCopyright (C) 2023 Free Software Foundation, Inc.\n";
+        let byte = Some("-fdiagnostics-column-unit=byte");
+        for (version, expected) in [
+            ("g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0", byte),
+            ("g++ (GCC) 13.2.1 20230801", byte),
+            ("g++.exe (Rev2, Built by MSYS2 project) 13.2.0", byte),
+            // GCC 10 already reports bytes and rejects the flag.
+            ("g++ (Debian 10.2.1-6) 10.2.1 20210110", None),
+        ] {
+            assert_eq!(
+                column_unit_flag(&format!("{version}{FSF}")),
+                expected,
+                "{version}"
+            );
+        }
+        // Clang reports bytes and rejects the flag, even when installed as g++.
+        for clang in [
+            "Apple clang version 17.0.0 (clang-1700.0.13.3)\nTarget: arm64-apple-darwin24.0.0\n",
+            "clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\n",
+            "",
+            "g++ (GCC) 13.2.1",
+        ] {
+            assert_eq!(column_unit_flag(clang), None, "{clang}");
+        }
+    }
 
     fn run_job(
         language: Language,

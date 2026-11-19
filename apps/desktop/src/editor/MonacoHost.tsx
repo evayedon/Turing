@@ -197,6 +197,12 @@ export default function MonacoHost({
           else if (triggers.has(id))
             instance.trigger("workbench", monacoActions[id], null);
         },
+        position: () => {
+          const position = instance.getPosition();
+          return position
+            ? { line: position.lineNumber, column: position.column }
+            : undefined;
+        },
         reveal: (lineNumber, column) => {
           const position = instance
             .getModel()

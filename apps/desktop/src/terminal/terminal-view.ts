@@ -35,6 +35,9 @@ export function createTerminalView(
       foreground: color("--nebula-text"),
       cursor: color("--nebula-accent"),
       selectionBackground: color("--nebula-accent-border"),
+      scrollbarSliderBackground: `${color("--nebula-muted")}33`,
+      scrollbarSliderHoverBackground: `${color("--nebula-muted")}55`,
+      scrollbarSliderActiveBackground: `${color("--nebula-accent")}66`,
     },
     linkHandler: {
       activate: (_event, target) => openLink(target),

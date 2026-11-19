@@ -140,7 +140,8 @@ describe("workspace explorer", () => {
     render(<Workbench />);
 
     await user.click(screen.getByRole("button", { name: "Open folder" }));
-    expect((await screen.findByRole("status")).textContent).toContain(
+    const explorer = within(screen.getByRole("region", { name: "Explorer" }));
+    expect((await explorer.findByRole("status")).textContent).toContain(
       "Loading folder",
     );
     rejectListing("PERMISSION_DENIED");

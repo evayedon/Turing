@@ -157,7 +157,16 @@ and tab preferences. A restored Terminal tab shows an inactive state with
 **Start terminal**. Selecting Terminal, revealing it with the activity control,
 or invoking **Open Terminal** (Ctrl+backtick) starts or focuses the selected
 session. Layout restoration and workspace changes leave idle shells stopped.
-Switching dock tabs or hiding the dock keeps the sessions and scrollback. **Close terminal** ends the shell. Shell exit leaves
+Switching dock tabs or hiding the dock keeps the sessions and scrollback.
+
+The panel header follows VS Code: text tabs on the left and the active
+terminal's actions on the right: its name (or a session list beside the
+terminals once there are several), **New Terminal**, a **Launch profile** menu
+that opens a terminal with a chosen shell, **Split**, **Kill Terminal** and
+**More** (Rename, Split Down, Find, Copy, Paste, Clear). A split uses the same
+shell as the terminal it splits. Kill removes the active terminal when others
+remain and otherwise ends its shell. The terminal-only window shows the same
+actions above its terminals. Shell exit leaves
 output visible until the next start, and failed startup offers a retry. Browser
 preview has no terminal access.
 
@@ -371,8 +380,20 @@ Problems groups errors, warnings and informational messages. Rows open the
 corresponding editor and location. The `clangd` marker owner is separate from
 `compiler`. Compiler entries come from recognized C++ build stderr for the
 current, unchanged single-file Run snapshot. Output retains raw logs.
-Compiler column numbers can differ from Monaco's UTF-16 positions in text with
-tabs or non-ASCII characters. The existing Python and C++ Run pipelines remain
+Compiler columns are converted from UTF-8 bytes to Monaco's UTF-16 columns
+using the compiled text. They never land inside a character or past the end
+of a line, and a line outside the compiled text keeps its reported column for
+the editor to clamp. Clang reports byte columns. GCC 11 and later is detected
+from `--version` output (bounded to 2 seconds) and given
+`-fdiagnostics-column-unit=byte`. Older GCC and Clang already use bytes and
+reject that flag.
+
+**Go → Next Problem** (F8) and **Previous Problem** (Shift+F8) visit problems
+in open-tab order, then by position, wrapping at either end. An unvisited
+problem under the cursor is shown first. Problems sharing a position are
+visited in turn, and problems for closed tabs are skipped. Each jump is
+announced in a polite live region as "Error 1 of 2: message (file:line:col)".
+Selecting a row in Problems continues from that problem. The existing Python and C++ Run pipelines remain
 unchanged.
 
 The pilot tracks up to 24 open documents and 200 diagnostics per document.
