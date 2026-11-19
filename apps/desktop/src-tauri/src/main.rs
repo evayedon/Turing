@@ -2,6 +2,7 @@
 
 mod commands;
 mod execution;
+mod language;
 mod terminal;
 mod windows;
 mod workspace;
@@ -35,8 +36,14 @@ fn main() {
             execution::execution_start,
             execution::execution_read,
             execution::execution_stop,
+            language::language_start,
+            language::language_apply,
+            language::language_poll,
+            language::language_stop,
             terminal::terminal_start,
+            terminal::terminal_cancel_start,
             terminal::terminal_read,
+            terminal::links::terminal_open_link,
             terminal::terminal_input,
             terminal::terminal_resize,
             terminal::terminal_close,

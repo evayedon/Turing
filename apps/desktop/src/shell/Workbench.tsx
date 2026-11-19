@@ -10,6 +10,7 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -59,6 +60,9 @@ import type {
 } from "./commands";
 import { MenuBar } from "./MenuBar";
 import { WorkbenchDialog } from "./WorkbenchDialog";
+import { ProblemsPanel } from "../language/ProblemsPanel";
+import { compilerProblems } from "../language/problems";
+import { useLanguage } from "../language/use-language";
 import { BottomDock } from "./BottomDock";
 import { CommandPalette } from "./CommandPalette";
 import { SettingsDialog } from "./SettingsDialog";
@@ -91,6 +95,18 @@ export function Workbench() {
   const explorer = useExplorer();
   const editor = useEditor(explorer.workspace?.id, explorer.native);
   const execution = useExecution();
+  const language = useLanguage(
+    explorer.workspace?.id,
+    explorer.native,
+    editor.tabs,
+  );
+  const problems = useMemo(
+    () => [
+      ...language.problems,
+      ...compilerProblems(execution.run, editor.tabs),
+    ],
+    [language.problems, execution.run, editor.tabs],
+  );
   const sidebar = useLayout((state) => state.sidebar);
   const terminal = useLayout((state) => state.terminal);
   const assistant = useLayout((state) => state.assistant);
@@ -682,6 +698,8 @@ export function Workbench() {
             )}
             <EditorWorkspace
               {...editor}
+              language={language}
+              problems={problems}
               workspaceId={explorer.workspace?.id}
               onCommandsReady={setEditorCommands}
               onSaveCommand={() => runCommand("save")}
@@ -733,6 +751,27 @@ export function Workbench() {
           {terminal && <Splitter {...layout.splitter("terminal")} />}
           <BottomDock
             execution={execution}
+            problems={
+              <ProblemsPanel
+                language={language}
+                problems={problems}
+                native={explorer.native}
+                workspaceId={explorer.workspace?.id}
+                open={(problem) => {
+                  const tab = editor.tabs.find(
+                    ({ key }) => key === problem.tabKey,
+                  );
+                  if (tab)
+                    editor.navigate(
+                      { tab },
+                      {
+                        line: problem.start.line + 1,
+                        column: problem.start.character + 1,
+                      },
+                    );
+                }}
+              />
+            }
             visible={terminal}
             active={dockView}
             native={explorer.native}

@@ -46,7 +46,9 @@ pub async fn workspace_open(
         let path = selection
             .into_path()
             .map_err(|_| WorkspaceError::OutsideWorkspace)?;
-        let workspace = service.registry()?.register(window.label(), &path)?;
+        let mut registry = service.registry()?;
+        let workspace = registry.register(window.label(), &path)?;
+        resources.language.revoke(false);
         Ok(Some(workspace))
     })
     .await
@@ -55,10 +57,11 @@ pub async fn workspace_open(
 #[tauri::command]
 pub async fn workspace_close(window: WebviewWindow, workspace_id: String) -> Result<()> {
     in_workspace(window, move |window| {
-        workbench(&window)?
-            .workspace
-            .registry()?
-            .close(window.label(), &workspace_id)
+        let resources = workbench(&window)?;
+        let mut registry = resources.workspace.registry()?;
+        registry.close(window.label(), &workspace_id)?;
+        resources.language.revoke(false);
+        Ok(())
     })
     .await
 }

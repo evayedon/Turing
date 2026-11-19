@@ -1,5 +1,6 @@
 import { CircleAlert, List, Terminal, X } from "lucide-react";
 
+import type { ReactNode } from "react";
 import { ExecutionOutput } from "../execution/ExecutionOutput";
 import type { useExecution } from "../execution/use-execution";
 import type { Ref } from "react";
@@ -17,7 +18,6 @@ const details = {
   },
   Problems: {
     Icon: CircleAlert,
-    message: "Workspace diagnostics are unavailable in this build.",
   },
   Output: {
     Icon: List,
@@ -26,6 +26,7 @@ const details = {
 
 export function BottomDock({
   execution,
+  problems,
   active,
   select,
   close,
@@ -37,6 +38,7 @@ export function BottomDock({
   onTerminalRunning,
   onTerminalLayout,
 }: {
+  problems?: ReactNode;
   execution: ReturnType<typeof useExecution>;
   active: DockView;
   select: (view: DockView) => void;
@@ -127,7 +129,7 @@ export function BottomDock({
           ) : name === "Output" ? (
             <ExecutionOutput execution={execution} native={native} />
           ) : (
-            <p className="panel-message">{details[name].message}</p>
+            problems
           )}
         </div>
       ))}

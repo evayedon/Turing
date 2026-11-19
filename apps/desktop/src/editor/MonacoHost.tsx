@@ -7,6 +7,12 @@ import JsonWorker from "monaco-editor/language/json/json.worker?worker";
 import TypeScriptWorker from "monaco-editor/language/typescript/ts.worker?worker";
 import { workspaceNavigationPath } from "./navigation";
 import type { NavigationTarget } from "./navigation";
+import { attachLanguage } from "../language/monaco-language";
+import {
+  languagePath,
+  type LanguageController,
+} from "../language/use-language";
+import type { Problem } from "../language/problems";
 import { documentLanguage } from "./languages";
 import { monacoActions } from "../shell/commands";
 import type { EditorCommands } from "../shell/commands";
@@ -53,6 +59,8 @@ export default function MonacoHost({
   onCommandsReady,
   workspaceId,
   onNavigate,
+  language,
+  problems,
 }: {
   active: EditorTab;
   reveal?: EditorLocation & { key: string };
@@ -62,12 +70,19 @@ export default function MonacoHost({
   onCommandsReady?: (commands: EditorCommands | undefined) => void;
   workspaceId?: string;
   onNavigate?: (target: NavigationTarget, location: EditorLocation) => void;
+  language?: LanguageController;
+  problems?: Problem[];
   onChange: (tab: EditorTab, value: string) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const models = useRef(new Map<string, OpenModel>());
   const syncing = useRef(false);
+  const currentTabs = useEffectEvent(() => tabs);
+  const languageRequest = useEffectEvent(
+    (...args: Parameters<LanguageController["request"]>) =>
+      language?.request(...args) ?? Promise.resolve(undefined),
+  );
   const lastReveal = useRef<typeof reveal>(undefined);
   const change = useEffectEvent((value: string) => onChange(active, value));
 
@@ -95,6 +110,19 @@ export default function MonacoHost({
               line: selection?.lineNumber ?? 1,
               column: selection?.column ?? 1,
             };
+      const relativePath = workspaceNavigationPath(resource, workspaceId);
+      const workspaceTab =
+        relativePath &&
+        tabs.find(
+          (tab) =>
+            tab.source.kind === "workspace" &&
+            tab.source.workspaceId === workspaceId &&
+            tab.source.relativePath === relativePath,
+        );
+      if (workspaceTab && !resource.query) {
+        onNavigate?.({ tab: workspaceTab }, location);
+        return;
+      }
       const known = tabs.find(
         (tab) =>
           models.current.get(tab.key)?.model.uri.toString() ===
@@ -108,7 +136,6 @@ export default function MonacoHost({
         onNavigate?.({ tab: known }, location);
         return;
       }
-      const relativePath = workspaceNavigationPath(resource, workspaceId);
       if (relativePath) onNavigate?.({ relativePath }, location);
     },
   );
@@ -138,6 +165,15 @@ export default function MonacoHost({
       onCommandsReady?.({
         supports: (id) => {
           const model = instance.getModel();
+          if (
+            id === "definition" &&
+            (model?.getLanguageId() === "cpp" || model?.getLanguageId() === "c")
+          ) {
+            return (
+              !!language?.capabilities?.definition &&
+              !!languagePath(active, workspaceId)
+            );
+          }
           if (id === "undo") return !!model?.canUndo?.();
           if (id === "redo") return !!model?.canRedo?.();
           if (id === "cut" || id === "copy" || id === "paste")
@@ -331,6 +367,51 @@ export default function MonacoHost({
     instance.revealPositionInCenter(position);
     instance.focus();
   }, [active.key, reveal]);
+
+  const capabilities = language?.capabilities;
+  useLayoutEffect(() => {
+    if (!workspaceId || !capabilities) {
+      if (editor.current) reportCommands(editor.current);
+      return;
+    }
+    const detach = attachLanguage(
+      monaco,
+      workspaceId,
+      capabilities,
+      (model) =>
+        currentTabs().find(
+          (tab) => models.current.get(tab.key)?.model === model,
+        ),
+      (...args) => languageRequest(...args),
+      (model) => editor.current?.getModel() === model,
+    );
+    if (editor.current) reportCommands(editor.current);
+    return detach;
+  }, [workspaceId, capabilities]);
+
+  useLayoutEffect(() => {
+    if (!problems || !monaco.editor.setModelMarkers) return;
+    for (const [key, { model }] of models.current)
+      for (const owner of ["clangd", "compiler"] as const) {
+        const markers = problems
+          .filter((item) => item.tabKey === key && item.source === owner)
+          .map(({ message, start, end, severity }) => ({
+            message,
+            source: owner,
+            severity:
+              severity === "error"
+                ? monaco.MarkerSeverity.Error
+                : severity === "warning"
+                  ? monaco.MarkerSeverity.Warning
+                  : monaco.MarkerSeverity.Info,
+            startLineNumber: start.line + 1,
+            startColumn: start.character + 1,
+            endLineNumber: end.line + 1,
+            endColumn: end.character + 1,
+          }));
+        monaco.editor.setModelMarkers(model, owner, markers);
+      }
+  }, [problems, active.key]);
 
   useLayoutEffect(
     () => editor.current?.updateOptions({ readOnly }),

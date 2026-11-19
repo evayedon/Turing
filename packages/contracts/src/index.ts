@@ -16,6 +16,7 @@ export type {
   TerminalCommands,
   TerminalError,
   TerminalOutput,
+  TerminalProfile,
   TerminalSize,
   TerminalStarted,
 } from "./terminal";
@@ -29,3 +30,13 @@ export type {
   ExecutionStream,
   ExecutionUpdate,
 } from "./execution";
+
+export type {
+  LanguageAction,
+  LanguageCapabilities,
+  LanguageCommands,
+  LanguageEvent,
+  LanguageFeature,
+  LanguagePosition,
+  LanguageUpdate,
+} from "./language";

@@ -154,7 +154,7 @@ impl Registry {
         Ok(())
     }
 
-    fn authorize(&self, owner: &str, id: &str) -> Result<&Dir> {
+    pub(crate) fn authorize(&self, owner: &str, id: &str) -> Result<&Dir> {
         self.active
             .as_ref()
             .filter(|workspace| workspace.owner == owner && workspace.descriptor.id == id)
@@ -227,6 +227,15 @@ impl Registry {
             encoding: "utf-8",
             version: snapshot.version,
         })
+    }
+
+    pub fn language_file(&self, owner: &str, id: &str, relative_path: &str) -> Result<()> {
+        let root = self.authorize(owner, id)?;
+        let parts = relative_parts(relative_path)?;
+        let (name, parent) = parts.split_last().ok_or(WorkspaceError::OutsideWorkspace)?;
+        let dir = directory_at(root, parent)?;
+        file::open_text(&dir, name, false)?;
+        Ok(())
     }
 
     pub fn execution_snapshot(
@@ -314,7 +323,7 @@ fn valid_component(name: &str) -> bool {
             .all(|part| matches!(part, std::path::Component::Normal(_)))
 }
 
-fn relative_parts(path: &str) -> Result<Vec<&str>> {
+pub(crate) fn relative_parts(path: &str) -> Result<Vec<&str>> {
     if path.is_empty() {
         return Ok(Vec::new());
     }

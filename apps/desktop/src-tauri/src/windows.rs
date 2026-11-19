@@ -1,5 +1,6 @@
 use crate::{
     execution::ExecutionService,
+    language::LanguageService,
     terminal::TerminalService,
     workspace::{WorkspaceError, WorkspaceService},
 };
@@ -20,6 +21,7 @@ pub struct Resources {
     pub workspace: WorkspaceService,
     pub execution: ExecutionService,
     pub terminal: TerminalService,
+    pub language: LanguageService,
 }
 
 impl Resources {
@@ -29,10 +31,12 @@ impl Resources {
             workspace: WorkspaceService::for_window(label),
             execution: ExecutionService::default(),
             terminal: TerminalService::default(),
+            language: LanguageService::default(),
         }
     }
 
     fn shutdown(&self) {
+        self.language.revoke(true);
         self.execution.shutdown();
         self.terminal.shutdown();
         self.workspace.shutdown();

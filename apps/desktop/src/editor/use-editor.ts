@@ -29,6 +29,8 @@ export interface EditorTab {
   source: SavedSource | { kind: "untitled" };
   content: string;
   draft: string;
+  editRevision?: number;
+  savedVersion?: string;
   changedOnDisk: boolean;
   languageOverride?: string;
   saveError?: string;
@@ -370,7 +372,14 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     // Apply the edit to the current tab without replacing its saved version.
     setTabs((previous) =>
       previous.map((item) =>
-        item.key === tab.key ? { ...item, draft, saveError: undefined } : item,
+        item.key === tab.key
+          ? {
+              ...item,
+              draft,
+              editRevision: (item.editRevision ?? 0) + 1,
+              saveError: undefined,
+            }
+          : item,
       ),
     );
   }
@@ -410,6 +419,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         const version = await writeFile(source, draft);
         update(tab, {
           content: draft,
+          savedVersion: version,
           source: { ...source, version },
           changedOnDisk: false,
           saveError: undefined,

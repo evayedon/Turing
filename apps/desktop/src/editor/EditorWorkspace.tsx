@@ -2,6 +2,8 @@ import { ChevronRight, CodeXml, FileCode2, X } from "lucide-react";
 import { lazy, Suspense } from "react";
 import type { ReactNode } from "react";
 import type { EditorCommands } from "../shell/commands";
+import type { LanguageController } from "../language/use-language";
+import type { Problem } from "../language/problems";
 import type { EditorInfo } from "./editor-info";
 import type { useEditor } from "./use-editor";
 
@@ -29,8 +31,12 @@ export function EditorWorkspace({
   onInfo,
   onCommands,
   shortcut,
+  language,
+  problems,
 }: ReturnType<typeof useEditor> & {
   runControls?: ReactNode;
+  language?: LanguageController;
+  problems?: Problem[];
   workspaceId?: string;
   onCommandsReady?: (commands: EditorCommands | undefined) => void;
   onSaveCommand?: () => void;
@@ -166,6 +172,8 @@ export function EditorWorkspace({
             onCommandsReady={onCommandsReady}
             workspaceId={workspaceId}
             onNavigate={navigate}
+            language={language}
+            problems={problems}
           />
         </Suspense>
       ) : (

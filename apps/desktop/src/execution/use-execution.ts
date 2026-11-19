@@ -42,6 +42,7 @@ function appendOutput(previous: Output[], incoming: Output[]) {
 const streams = ["buildStdout", "buildStderr", "stdout", "stderr"] as const;
 type Output = { stream: ExecutionStream; text: string };
 type Run = {
+  document: { key: string; version: string };
   name: string;
   language: ExecutionLanguage;
   phase: ExecutionPhase;
@@ -89,6 +90,7 @@ export function useExecution() {
     current.current = request;
     setBusy(true);
     setRun({
+      document: { key: tab.key, version: tab.source.version },
       name: tab.title,
       language,
       phase: "preparing",

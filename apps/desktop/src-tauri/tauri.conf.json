@@ -38,6 +38,7 @@
             "allow-editor-selected-files",
             "allow-interactive-terminal",
             "allow-run-build",
+            "allow-managed-clangd",
             "allow-turing-windows"
           ]
         },

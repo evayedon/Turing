@@ -12,8 +12,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import { Workbench } from "../shell/Workbench";
+import { TerminalSessions } from "./TerminalSessions";
 import { useLayout } from "../state/layout";
-import { TerminalPanel } from "./TerminalPanel";
+import { TerminalPanel, terminalStartupDeadline } from "./TerminalPanel";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -345,11 +346,16 @@ describe("TerminalPanel", () => {
     render(<TerminalPanel native workspaceId="approved" />);
     await user.click(screen.getByRole("button", { name: "Start terminal" }));
     const close = await screen.findByRole("button", { name: "Close terminal" });
-    expect(mocks.invoke).toHaveBeenCalledWith("terminal_start", {
-      rows: 18,
-      cols: 100,
-      workspaceId: "approved",
-    });
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "terminal_start",
+      expect.objectContaining({
+        rows: 18,
+        cols: 100,
+        workspaceId: "approved",
+        attempt: expect.any(String),
+        profile: "system",
+      }),
+    );
     await act(async () =>
       output.resolve({
         bytes: [226, 152, 131],
@@ -455,4 +461,105 @@ describe("TerminalPanel", () => {
       screen.getByRole("button", { name: "Restart terminal" }),
     ).toBeTruthy();
   });
+});
+
+it("ends an unresponsive start, retries, and cleans up a late reply", async () => {
+  const old = deferred<{ id: string; workspaceDirectory: boolean }>();
+  const never = deferred<never>();
+  let count = 0;
+  mocks.invoke.mockImplementation((command: string) => {
+    if (command === "terminal_start")
+      return ++count === 1
+        ? old.promise
+        : Promise.resolve({ id: "replacement", workspaceDirectory: false });
+    if (command === "terminal_read") return never.promise;
+    return Promise.resolve();
+  });
+  render(<TerminalPanel native />);
+  const user = userEvent.setup();
+  const original = globalThis.setTimeout;
+  const deadline = vi
+    .spyOn(globalThis, "setTimeout")
+    .mockImplementation((callback, delay, ...args) =>
+      original(
+        callback,
+        delay === terminalStartupDeadline ? 30 : delay,
+        ...args,
+      ),
+    );
+  try {
+    await user.click(screen.getByRole("button", { name: "Start terminal" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(
+      /did not start in time/,
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_cancel_start", {
+      attempt: expect.any(String),
+    });
+    await user.click(screen.getByRole("button", { name: "Retry terminal" }));
+    await screen.findByRole("button", { name: "Close terminal" });
+    await act(async () =>
+      old.resolve({ id: "late", workspaceDirectory: false }),
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith("terminal_close", { id: "late" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    deadline.mockRestore();
+  }
+});
+
+it("renames sessions, keeps a vertical group on tab switches, and reuses display numbers", async () => {
+  const pending = deferred<never>();
+  let count = 0;
+  mocks.invoke.mockImplementation((command: string) => {
+    if (command === "terminal_start")
+      return Promise.resolve({
+        id: String(++count),
+        workspaceDirectory: false,
+        shell: "bash",
+      });
+    if (command === "terminal_read") return pending.promise;
+    return Promise.resolve();
+  });
+  const user = userEvent.setup();
+  render(<TerminalSessions native activation={0} />);
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Shell profile for new terminals" }),
+    "bash",
+  );
+  await user.click(screen.getByRole("button", { name: "Split down" }));
+  const separator = screen.getByRole("separator");
+  expect(separator.getAttribute("aria-orientation")).toBe("horizontal");
+  await screen.findByRole("tab", { name: "bash 2" });
+  expect(
+    mocks.invoke.mock.calls.filter(([command]) => command === "terminal_start"),
+  ).toEqual(
+    Array.from({ length: 2 }, () => [
+      "terminal_start",
+      expect.objectContaining({ profile: "bash" }),
+    ]),
+  );
+  await user.click(screen.getByRole("button", { name: "Rename" }));
+  await user.clear(screen.getByRole("textbox", { name: "Terminal name" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "Terminal name" }),
+    "Build{Enter}",
+  );
+  expect(
+    screen.getByRole("tab", { name: "Build" }).getAttribute("aria-selected"),
+  ).toBe("true");
+  await user.click(
+    screen.getByRole("button", { name: "New terminal session" }),
+  );
+  await screen.findByRole("tab", { name: "bash 3" });
+  expect(screen.queryByRole("separator")).toBeNull();
+  await user.click(screen.getByRole("tab", { name: "Build" }));
+  expect(screen.getByRole("separator").getAttribute("aria-orientation")).toBe(
+    "horizontal",
+  );
+  await user.click(screen.getByRole("button", { name: "Remove Build" }));
+  await user.click(
+    screen.getByRole("button", { name: "New terminal session" }),
+  );
+  await screen.findByRole("tab", { name: "bash 2" });
+  expect(count).toBe(4);
 });

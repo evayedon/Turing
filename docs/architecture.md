@@ -127,7 +127,7 @@ preferences. These preferences contain only layout values.
 
 The bottom dock offers Terminal, Problems, and Output views and uses the same
 layout controls as the side panels. Output shows Run & Build progress.
-Problems remains an availability surface.
+Problems displays live clangd diagnostics and recognized C++ compiler diagnostics.
 
 ## Integrated terminal
 
@@ -300,3 +300,105 @@ F5 is **Run Without Debugging**. Debugging remains unavailable until Turing
 has a scoped debug-adapter transport, authorized launch and stop handling,
 verified breakpoint mapping, and paused-process controls. No generic debugger
 launch command or debugger shortcut is registered.
+
+## Managed C/C++ language intelligence and Problems
+
+Open a workspace and select **Problems → Enable clangd**. The native dialog
+identifies the exact executable and asks for permission for this session.
+Rust discovers an installed `clangd` from platform LLVM locations or absolute
+PATH entries. It fingerprints the executable before and after confirmation.
+The approval is never restored on launch or carried across workspace changes.
+There is no download, frontend-supplied process path, shell invocation, or
+generic JSON-RPC forwarding command. Only workbench windows have the four
+language IPC permissions.
+
+Rust owns one session per workbench with a live workspace grant and opaque
+session ID. It reuses handle-relative file checks, and publishes a limited
+temporary mirror of open C/C++ sources and headers to clangd. Saved file copies
+are obtained through the authorized file API. Unsaved drafts are sent over
+stdio. The mirror is owner-only on Unix and inherits the user temp directory's ACL on
+Windows. The server runs with the user's OS privileges and can read include
+files outside the mirror. The mirror limits the workspace data Turing hands to clangd;
+it does not provide OS-level process isolation. Definitions only return
+mapped open files, revalidated against the active workspace. Project settings,
+compilation databases, query-driver execution, clang-tidy and background
+indexing are disabled. There is no recursive workspace discovery.
+
+The client negotiates UTF-16 positions and tracks monotonic document versions
+separately from saved file versions. Opening, editing, saving, renaming and
+closing tabs drive LSP document notifications. A rename closes the old URI
+and opens the new path without replacing the Monaco model. The bridge accepts
+hover, completion, definition and cancellation. It rejects stale or
+unversioned diagnostics, ignores stale responses, rejects server-initiated
+requests, and bounds frame size, queues and pending requests. Renderer results
+are checked against the current editor revision before they reach Monaco.
+Monaco completion supports plain-text insertions; additional source edits,
+commands and snippets are excluded. Missing or crashed servers show a retry
+action. Explicit Stop requests shutdown and exit with a bounded deadline.
+Workspace replacement, workspace close and window destruction revoke the
+session and force process cleanup. Unix uses a process group and Windows uses
+a kill-on-close Job Object. A desktop crash can leave temporary files behind.
+
+Problems groups errors, warnings and informational messages. Rows open the
+corresponding editor and location. The `clangd` marker owner is separate from
+`compiler`. Compiler entries come from recognized C++ build stderr for the
+current, unchanged single-file Run snapshot. Output retains raw logs.
+Compiler column numbers can differ from Monaco's UTF-16 positions in text with
+tabs or non-ASCII characters. The existing Python and C++ Run pipelines remain
+unchanged.
+
+The pilot tracks up to 24 open documents and 200 diagnostics per document.
+Standalone files and untitled buffers are excluded until they belong to an
+authorized workspace. Opening a header makes it available in the mirror.
+Unopened project files, project compiler flags and build-aware indexing are
+follow-up work. Cross-platform CI and native GUI tests should verify executable
+discovery, approval, and shutdown on each platform.
+
+The default Rust suite has framing, authorization and malformed-server cleanup
+tests. An opt-in integration test runs a trusted already-installed clangd.
+
+```sh
+TURING_TEST_CLANGD=/absolute/path/to/clangd cargo test --release --locked \
+  --manifest-path apps/desktop/src-tauri/Cargo.toml installed_clangd -- --ignored
+```
+
+Protocol and configuration references are the [LSP specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) and [clangd configuration manual](https://clangd.llvm.org/config).
+
+## Milestone 4B terminal reliability
+
+Terminal startup reserves a window-owned slot before opening the PTY and
+releases the registry lock during the platform launch. Existing sessions
+can keep reading, resizing, or closing while another session starts. The
+renderer gives startup 12 seconds and then offers Retry. Cancel and timeout
+mark the reservation for disposal, and any successful late IPC reply is
+closed. A pending reservation continues to count against the existing four
+sessions per window until its platform call returns. Removing a tab frees its
+display number independently of its internal session key and native UUID.
+
+The session toolbar selects an installed system profile, renames tabs, and
+splits right or down. A two-pane group retains its layout when another session
+is selected. The divider accepts arrow keys in the direction of its resize.
+The pane toolbar offers text search within rendered scrollback rows, copy
+selection, paste into the active shell, and clear. Web links and OSC 8 links
+go through a native confirmation for a parsed credential-free HTTP(S)
+address. Turing uses the system browser association and does not navigate its
+own webview. The native bridge still has no arbitrary executable or argument
+interface.
+
+The design follows the public terminal process and lifecycle findings in the
+[terminal research](research/rea-vscode-xcode/05_Terminal_Debugging_and_Build_Systems.md),
+and the existing owner checks are verified in the Rust and frontend tests.
+The VS Code artifact material with recorded integrity contradictions did not
+inform these implementation decisions.
+
+| Limitation and evidence                                                                                                                                                                                 | Severity, impact and resolution                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The native PTY open/spawn call is synchronous. Controlled delay tests show the renderer can recover and sibling sessions remain responsive, while the cancelled call retains its slot until it returns. | Medium. A permanently stalled start consumes a slot until the app exits. A separate PTY helper with a supervised process would provide harder isolation, at the cost of a new IPC and ownership boundary. Defer until a platform trace justifies it. Introducing the helper is a separate architecture decision.                                                                                  |
+| Windows still starts outside the workspace because ConPTY does not consume the approved directory handle. Unix process groups and Windows Job Objects have the descendant limitations documented above. | Medium. Working-directory and cleanup behavior can differ by OS now. Keep the existing safe fallback and investigate a handle-aware launcher in a separate security review. Passing the workspace path directly would weaken the directory replacement guarantee. No approval is needed for keeping the fallback.                                                                                 |
+| Built-in choices use system paths, each group has two panes, and search and plain-text link detection operate per rendered row.                                                                         | Low. Nonstandard shell installs, deeper split trees, and matches crossing wrapped rows are follow-ups. A permissioned custom profile workflow and a maintained search/link provider are alternatives if demand warrants them. The current IDs, group metadata and native profiles are replaceable without changing existing session ownership. No approval is needed to defer these enhancements. |
+
+The workbench and platform verification gates still apply to the terminal
+before proceeding to the Run console. Later slices follow the existing
+[roadmap](research/rea-vscode-xcode/11_Prioritized_Implementation_Roadmap.md)
+for managed language tooling, shared project context, editor workflows,
+Git, testing and debugging, extension isolation, and supervised AI.

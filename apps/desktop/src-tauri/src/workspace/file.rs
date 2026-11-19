@@ -10,7 +10,7 @@ pub(super) struct Snapshot {
     metadata: Metadata,
 }
 
-fn open_text(directory: &Dir, name: &str, writable: bool) -> Result<File> {
+pub(super) fn open_text(directory: &Dir, name: &str, writable: bool) -> Result<File> {
     let metadata = directory.symlink_metadata(name)?;
     if metadata.is_symlink() {
         return Err(WorkspaceError::OutsideWorkspace);

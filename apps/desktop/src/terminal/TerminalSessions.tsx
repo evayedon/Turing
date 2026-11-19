@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { TerminalProfile } from "@turing/contracts";
 import type { Ref } from "react";
 import { TerminalPanel } from "./TerminalPanel";
 import type { TerminalActions } from "./TerminalPanel";
@@ -35,6 +36,19 @@ export function TerminalSessions({
   const [active, setActive] = useState(1);
   const [running, setRunning] = useState<Record<number, boolean>>({});
   const [activations, setActivations] = useState<Record<number, number>>({});
+  const groups = useRef(
+    new Map<
+      number,
+      { pair: [number, number]; axis: "columns" | "rows"; ratio: number }
+    >(),
+  );
+  const [direction, setDirection] = useState<"columns" | "rows">("columns");
+  const [profile, setProfile] = useState<TerminalProfile>("system");
+  const [profiles, setProfiles] = useState<Record<number, TerminalProfile>>({});
+  const [labels, setLabels] = useState<Record<number, number>>({ 1: 1 });
+  const [names, setNames] = useState<Record<number, string>>({});
+  const [shells, setShells] = useState<Record<number, string>>({});
+  const [rename, setRename] = useState<{ id: number; name: string }>();
   const [ratio, setRatio] = useState(50);
   const idSequence = useRef(1);
   const started = useRef(new Set<number>());
@@ -66,7 +80,7 @@ export function TerminalSessions({
       restoreTabFocus.current = false;
       activeTab.current?.focus();
     }
-  }, [active, slots]);
+  }, [active, slots, rename]);
 
   function requestActivation(id: number) {
     setActivations((previous) => ({
@@ -77,16 +91,32 @@ export function TerminalSessions({
 
   function select(id: number) {
     if (id === active) return;
-    if (!visible.includes(id))
-      setVisible(
-        visible.length === 2
-          ? visible.map((item) => (item === active ? id : item))
-          : [id],
-      );
+    if (!visible.includes(id)) {
+      const group = groups.current.get(id);
+      setVisible(group?.pair ?? [id]);
+      if (group) {
+        setDirection(group.axis);
+        setRatio(group.ratio);
+      }
+    }
     setActive(id);
   }
 
-  function create(split: boolean) {
+  function label(id: number) {
+    const number = labels[id];
+    return (
+      names[id] ||
+      (shells[id]
+        ? `${shells[id]}${number > 1 ? ` ${number}` : ""}`
+        : `Terminal ${number}`)
+    );
+  }
+
+  function startRename(id: number) {
+    setRename({ id, name: label(id) });
+  }
+
+  function create(split: boolean, axis: "columns" | "rows" = "columns") {
     if (!native || slots.length >= 4 || (split && visible.length > 1)) return;
     const reuseIdle =
       !split &&
@@ -95,28 +125,75 @@ export function TerminalSessions({
       !started.current.has(1) &&
       !activations[1];
     if (reuseIdle) {
+      setProfiles((old) => ({ ...old, 1: profile }));
       requestActivation(1);
       return;
     }
     if (split && !running[active]) requestActivation(active);
+    if (split) {
+      setDirection(axis);
+      setRatio(50);
+    }
     const id = ++idSequence.current;
+    const used = new Set(slots.map((slot) => labels[slot]));
+    let number = 1;
+    while (used.has(number)) number++;
+    setLabels((old) => ({ ...old, [id]: number }));
+    setProfiles((old) => ({ ...old, [id]: profile }));
     setSlots((previous) => [...previous, id]);
-    setVisible(
-      split
-        ? [active, id]
-        : visible.length === 2
-          ? visible.map((item) => (item === active ? id : item))
-          : [id],
-    );
+    if (split) {
+      const group = { pair: [active, id] as [number, number], axis, ratio: 50 };
+      groups.current.set(active, group);
+      groups.current.set(id, group);
+      setVisible(group.pair);
+    } else {
+      setVisible([id]);
+    }
     setActive(id);
     requestActivation(id);
   }
 
   function remove(id: number) {
+    const group = groups.current.get(id);
+    if (group) for (const member of group.pair) groups.current.delete(member);
     const remaining = slots.filter((slot) => slot !== id);
     const next = remaining.length ? remaining : [++idSequence.current];
     const shown = visible.filter((slot) => slot !== id);
     setSlots(next);
+    started.current.delete(id);
+    setNames((old) =>
+      Object.fromEntries(
+        Object.entries(old).filter(([key]) => Number(key) !== id),
+      ),
+    );
+    setShells((old) =>
+      Object.fromEntries(
+        Object.entries(old).filter(([key]) => Number(key) !== id),
+      ),
+    );
+    setProfiles((old) =>
+      Object.fromEntries(
+        Object.entries(old).filter(([key]) => Number(key) !== id),
+      ),
+    );
+    setRunning((old) =>
+      Object.fromEntries(
+        Object.entries(old).filter(([key]) => Number(key) !== id),
+      ),
+    );
+    setActivations((old) =>
+      Object.fromEntries(
+        Object.entries(old).filter(([key]) => Number(key) !== id),
+      ),
+    );
+    setLabels((old) =>
+      remaining.length
+        ? Object.fromEntries(
+            Object.entries(old).filter(([key]) => Number(key) !== id),
+          )
+        : { [next[0]]: 1 },
+    );
+    if (rename?.id === id) setRename(undefined);
     setVisible(shown.length ? shown : [next[0]]);
     if (active === id) setActive(shown[0] ?? next[0]);
     restoreTabFocus.current = true;
@@ -129,8 +206,25 @@ export function TerminalSessions({
   }));
 
   function changeRatio(value: number) {
-    setRatio(Math.min(80, Math.max(20, value)));
+    const ratio = Math.min(80, Math.max(20, value));
+    setRatio(ratio);
+    const group = groups.current.get(active);
+    if (group) group.ratio = ratio;
   }
+
+  const windows = /Windows/i.test(navigator.userAgent);
+  const profilesAvailable: { id: TerminalProfile; label: string }[] = windows
+    ? [
+        { id: "powershell", label: "PowerShell" },
+        { id: "cmd", label: "Command Prompt" },
+      ]
+    : [
+        { id: "bash", label: "Bash" },
+        { id: "zsh", label: "Zsh" },
+        { id: "sh", label: "POSIX sh" },
+      ];
+  const split = visible.length > 1;
+  const tracks = `minmax(0, ${ratio}fr) 6px minmax(0, ${100 - ratio}fr)`;
 
   if (!native) return <TerminalPanel native={false} />;
 
@@ -152,7 +246,13 @@ export function TerminalSessions({
               aria-selected={active === id}
               aria-controls={`terminal-session-${id}`}
               onClick={() => select(id)}
+              onDoubleClick={() => startRename(id)}
               onKeyDown={(event) => {
+                if (event.key === "F2") {
+                  event.preventDefault();
+                  startRename(id);
+                  return;
+                }
                 if (event.key !== "ArrowRight" && event.key !== "ArrowLeft")
                   return;
                 event.preventDefault();
@@ -168,12 +268,12 @@ export function TerminalSessions({
                   ?.focus();
               }}
             >
-              Terminal {id}
+              {label(id)}
             </button>
             {slots.length > 1 && (
               <button
                 type="button"
-                aria-label={`Remove Terminal ${id}`}
+                aria-label={`Remove ${label(id)}`}
                 onClick={() => remove(id)}
               >
                 ×
@@ -181,6 +281,59 @@ export function TerminalSessions({
             )}
           </div>
         ))}
+        {rename && (
+          <form
+            className="terminal-rename"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const name = rename.name.trim();
+              setNames((old) => ({ ...old, [rename.id]: name }));
+              restoreTabFocus.current = true;
+              setRename(undefined);
+            }}
+          >
+            <input
+              aria-label="Terminal name"
+              autoFocus
+              maxLength={40}
+              value={rename.name}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) =>
+                setRename({ ...rename, name: event.target.value })
+              }
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  restoreTabFocus.current = true;
+                  setRename(undefined);
+                }
+              }}
+            />
+          </form>
+        )}
+        <select
+          aria-label="Shell profile for new terminals"
+          value={profile}
+          onChange={(event) => {
+            const selected = profilesAvailable.find(
+              (item) => item.id === event.target.value,
+            );
+            const next = selected?.id ?? "system";
+            setProfile(next);
+            if (!running[active])
+              setProfiles((old) => ({ ...old, [active]: next }));
+          }}
+        >
+          <option value="system">Default shell</option>
+          {profilesAvailable.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={() => startRename(active)}>
+          Rename
+        </button>
         <button
           type="button"
           disabled={slots.length >= 4}
@@ -197,17 +350,24 @@ export function TerminalSessions({
           title="Split terminal pane"
           onClick={() => create(true)}
         >
-          Split
+          Split right
+        </button>
+        <button
+          type="button"
+          disabled={slots.length >= 4 || split}
+          onClick={() => create(true, "rows")}
+        >
+          Split down
         </button>
       </div>
       <div
         ref={grid}
         className="terminal-session-grid"
         style={
-          visible.length > 1
-            ? {
-                gridTemplateColumns: `minmax(0, ${ratio}fr) 6px minmax(0, ${100 - ratio}fr)`,
-              }
+          split
+            ? direction === "columns"
+              ? { gridTemplateColumns: tracks }
+              : { gridTemplateRows: tracks }
             : undefined
         }
       >
@@ -219,13 +379,20 @@ export function TerminalSessions({
             aria-labelledby={`terminal-tab-${id}`}
             hidden={!visible.includes(id)}
             className="terminal-session-pane"
-            style={{ gridColumn: visible.indexOf(id) === 1 ? 3 : 1 }}
+            style={
+              direction === "columns"
+                ? { gridColumn: visible.indexOf(id) === 1 ? 3 : 1, gridRow: 1 }
+                : { gridColumn: 1, gridRow: visible.indexOf(id) === 1 ? 3 : 1 }
+            }
+            data-active={active === id}
             onFocusCapture={() => setActive(id)}
           >
             <TerminalPanel
               native={native}
               workspaceId={workspaceId}
               activation={activations[id]}
+              profile={profiles[id]}
+              onShell={(shell) => setShells((old) => ({ ...old, [id]: shell }))}
               focusOnStart={active === id}
               actionsRef={(handle) => {
                 if (handle) handles.current.set(id, handle);
@@ -248,7 +415,10 @@ export function TerminalSessions({
             role="separator"
             tabIndex={0}
             aria-label="Resize terminal panes"
-            aria-orientation="vertical"
+            aria-orientation={
+              direction === "columns" ? "vertical" : "horizontal"
+            }
+            data-direction={direction}
             aria-valuemin={20}
             aria-valuemax={80}
             aria-valuenow={ratio}
@@ -260,18 +430,23 @@ export function TerminalSessions({
               if (!event.currentTarget.hasPointerCapture(event.pointerId))
                 return;
               const bounds = grid.current?.getBoundingClientRect();
-              if (bounds?.width)
-                changeRatio(
-                  Math.round(
-                    ((event.clientX - bounds.left) / bounds.width) * 100,
-                  ),
-                );
+              if (!bounds) return;
+              const length =
+                direction === "columns" ? bounds.width : bounds.height;
+              const offset =
+                direction === "columns"
+                  ? event.clientX - bounds.left
+                  : event.clientY - bounds.top;
+              if (length) changeRatio(Math.round((offset / length) * 100));
             }}
             onKeyDown={(event) => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
-                return;
+              const [before, after] =
+                direction === "columns"
+                  ? ["ArrowLeft", "ArrowRight"]
+                  : ["ArrowUp", "ArrowDown"];
+              if (event.key !== before && event.key !== after) return;
               event.preventDefault();
-              changeRatio(ratio + (event.key === "ArrowLeft" ? -5 : 5));
+              changeRatio(ratio + (event.key === before ? -5 : 5));
             }}
           />
         )}

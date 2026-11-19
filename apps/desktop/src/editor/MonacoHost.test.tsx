@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
   let active: unknown;
   return {
     setLanguage: vi.fn(),
+    setMarkers: vi.fn(),
     trigger: vi.fn(),
     find: vi.fn(),
     definition: vi.fn(),
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("monaco-editor", () => ({
+  MarkerSeverity: { Error: 8, Warning: 4, Info: 2 },
   Uri: { from: vi.fn(() => ({})) },
   editor: {
     defineTheme: vi.fn(),
@@ -45,6 +47,7 @@ vi.mock("monaco-editor", () => ({
     }),
     createModel: mocks.createModel,
     setModelLanguage: mocks.setLanguage,
+    setModelMarkers: mocks.setMarkers,
   },
 }));
 
@@ -114,4 +117,56 @@ it("changes language on the same model after a rename and a manual selection", (
   expect(report).toHaveBeenLastCalledWith(
     expect.objectContaining({ language: "Markdown", line: 8, column: 4 }),
   );
+});
+
+it("updates and clears clangd and compiler markers independently", () => {
+  const model = {
+    getLanguageId: () => "cpp",
+    getValue: () => "int x;",
+    getEOL: () => "\n",
+    dispose: vi.fn(),
+    canUndo: () => false,
+  };
+  mocks.createModel.mockReturnValue(model);
+  const tab: EditorTab = {
+    key: "cpp",
+    name: "main.cpp",
+    title: "main.cpp",
+    source: { kind: "untitled" },
+    content: "int x;",
+    draft: "int x;",
+    changedOnDisk: false,
+  };
+  const view = (show: boolean) => (
+    <MonacoHost
+      active={tab}
+      tabs={[tab]}
+      readOnly={false}
+      onInfo={vi.fn()}
+      onChange={vi.fn()}
+      problems={
+        show
+          ? [
+              {
+                id: "clangd:cpp:0",
+                tabKey: "cpp",
+                filename: "main.cpp",
+                source: "clangd",
+                severity: "error",
+                message: "error",
+                start: { line: 0, character: 1 },
+                end: { line: 0, character: 2 },
+              },
+            ]
+          : []
+      }
+    />
+  );
+  const { rerender } = render(view(true));
+  expect(mocks.setMarkers).toHaveBeenCalledWith(model, "clangd", [
+    expect.objectContaining({ startColumn: 2, severity: 8 }),
+  ]);
+  expect(mocks.setMarkers).toHaveBeenCalledWith(model, "compiler", []);
+  rerender(view(false));
+  expect(mocks.setMarkers).toHaveBeenCalledWith(model, "clangd", []);
 });

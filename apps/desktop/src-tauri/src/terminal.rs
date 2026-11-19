@@ -1,8 +1,9 @@
+pub(crate) mod links;
 pub(crate) mod platform;
 
 use crate::windows::resource;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{
     io::{self, Read, Write},
@@ -27,6 +28,7 @@ pub enum TerminalError {
     SessionLimit,
     SessionClosed,
     InvalidSize,
+    InvalidLink,
     InputTooLarge,
     InputBusy,
     ShellUnavailable,
@@ -39,6 +41,7 @@ type Result<T> = std::result::Result<T, TerminalError>;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalStarted {
+    shell: String,
     pub(crate) id: String,
     workspace_directory: bool,
 }
@@ -51,9 +54,20 @@ pub struct TerminalOutput {
     exit_code: Option<u32>,
 }
 
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Profile {
+    #[default]
+    System,
+    Bash,
+    Zsh,
+    Sh,
+    PowerShell,
+    Cmd,
+}
+
 struct Session {
     owner: String,
-    id: String,
     master: Option<Box<dyn MasterPty + Send>>,
     child: Box<dyn Child + Send + Sync>,
     platform_guard: Option<platform::ProcessGuard>,
@@ -88,7 +102,8 @@ impl Session {
         owner: &str,
         size: PtySize,
         directory: Option<cap_std::fs::Dir>,
-    ) -> Result<(Self, bool)> {
+        profile: Profile,
+    ) -> Result<(Self, bool, String)> {
         let pair = native_pty_system()
             .openpty(size)
             .map_err(|_| TerminalError::PtyUnavailable)?;
@@ -97,7 +112,7 @@ impl Session {
             .master
             .take_writer()
             .map_err(|_| TerminalError::PtyUnavailable)?;
-        let (child, workspace_directory) = platform::spawn(&pair, directory)?;
+        let (child, workspace_directory, shell) = platform::spawn(&pair, directory, profile)?;
         drop(pair.slave);
 
         let (tx, output) = mpsc::sync_channel(32);
@@ -106,7 +121,6 @@ impl Session {
         let input_failed = Arc::new(AtomicBool::new(false));
         let mut session = Self {
             owner: owner.into(),
-            id: uuid::Uuid::new_v4().to_string(),
             master: Some(pair.master),
             child,
             platform_guard: None,
@@ -134,7 +148,7 @@ impl Session {
                 .spawn(move || write_input(writer, rx, &stop, &input_failed))
                 .map_err(|_| TerminalError::IoError)?,
         );
-        Ok((session, workspace_directory))
+        Ok((session, workspace_directory, shell))
     }
 
     fn read(&mut self) -> Result<TerminalOutput> {
@@ -236,6 +250,7 @@ fn write_input(
 pub struct TerminalService {
     sessions: Mutex<HashMap<String, Option<Session>>>,
     shutting_down: AtomicBool,
+    starting: Mutex<HashMap<String, (String, bool)>>,
 }
 
 impl TerminalService {
@@ -249,26 +264,117 @@ impl TerminalService {
         drop(sessions);
     }
 
+    #[cfg(test)]
     pub(crate) fn start(
         &self,
         owner: &str,
         size: PtySize,
         directory: Option<cap_std::fs::Dir>,
     ) -> Result<TerminalStarted> {
-        let mut sessions = self.sessions.lock().map_err(|_| TerminalError::IoError)?;
-        if self.shutting_down.load(Ordering::Relaxed) {
-            return Err(TerminalError::SessionClosed);
-        }
-        if sessions.len() >= 4 {
-            return Err(TerminalError::SessionLimit);
-        }
-        let (session, workspace_directory) = Session::start(owner, size, directory)?;
-        let id = session.id.clone();
-        sessions.insert(id.clone(), Some(session));
-        Ok(TerminalStarted {
-            id,
-            workspace_directory,
+        self.start_with(
+            owner,
+            uuid::Uuid::new_v4().to_string(),
+            size,
+            directory,
+            Profile::System,
+        )
+    }
+
+    fn start_with(
+        &self,
+        owner: &str,
+        id: String,
+        size: PtySize,
+        directory: Option<cap_std::fs::Dir>,
+        profile: Profile,
+    ) -> Result<TerminalStarted> {
+        self.start_reserved(owner, id, || {
+            Session::start(owner, size, directory, profile)
         })
+    }
+
+    fn start_reserved(
+        &self,
+        owner: &str,
+        id: String,
+        launch: impl FnOnce() -> Result<(Session, bool, String)>,
+    ) -> Result<TerminalStarted> {
+        {
+            let mut sessions = self.sessions.lock().map_err(|_| TerminalError::IoError)?;
+            if self.shutting_down.load(Ordering::Relaxed) {
+                return Err(TerminalError::SessionClosed);
+            }
+            if sessions.len() >= 4 || sessions.contains_key(&id) {
+                return Err(TerminalError::SessionLimit);
+            }
+            self.starting
+                .lock()
+                .map_err(|_| TerminalError::IoError)?
+                .insert(id.clone(), (owner.to_owned(), false));
+            sessions.insert(id.clone(), None);
+        }
+        let launch = launch();
+        let mut sessions = self.sessions.lock().map_err(|_| TerminalError::IoError)?;
+        let cancelled = self
+            .starting
+            .lock()
+            .map_err(|_| TerminalError::IoError)?
+            .remove(&id)
+            .is_some_and(|(_, cancelled)| cancelled);
+        if cancelled {
+            sessions.remove(&id);
+        }
+        let Some(slot) = sessions.get_mut(&id) else {
+            drop(sessions);
+            drop(launch);
+            return Err(TerminalError::SessionClosed);
+        };
+        match launch {
+            Ok((session, workspace_directory, shell)) => {
+                *slot = Some(session);
+                Ok(TerminalStarted {
+                    id,
+                    workspace_directory,
+                    shell,
+                })
+            }
+            Err(error) => {
+                sessions.remove(&id);
+                Err(error)
+            }
+        }
+    }
+
+    fn cancel_start(&self, owner: &str, id: &str) -> Result<()> {
+        let session = {
+            let mut sessions = self.sessions.lock().map_err(|_| TerminalError::IoError)?;
+            if sessions
+                .get(id)
+                .and_then(Option::as_ref)
+                .is_some_and(|session| session.owner != owner)
+            {
+                return Err(TerminalError::PermissionDenied);
+            }
+            // Retain an in-flight reservation until the blocking call returns,
+            // including when a retry is requested.
+            if matches!(sessions.get(id), Some(None)) {
+                if let Some((pending_owner, cancelled)) = self
+                    .starting
+                    .lock()
+                    .map_err(|_| TerminalError::IoError)?
+                    .get_mut(id)
+                {
+                    if pending_owner != owner {
+                        return Err(TerminalError::PermissionDenied);
+                    }
+                    *cancelled = true;
+                }
+                return Ok(());
+            }
+            sessions.remove(id).flatten()
+        };
+        drop(session);
+        Ok(())
     }
 
     fn with_session<T>(
@@ -320,6 +426,8 @@ async fn in_terminal<T: Send + 'static>(
 #[tauri::command]
 pub async fn terminal_start(
     window: WebviewWindow,
+    attempt: Option<String>,
+    profile: Option<Profile>,
     workspace_id: Option<String>,
     rows: u16,
     cols: u16,
@@ -333,10 +441,33 @@ pub async fn terminal_start(
             .map(|id| registry.terminal_directory(window.label(), &id))
             .transpose()
             .map_err(|_| TerminalError::PermissionDenied)?;
+        drop(registry);
+        resources.terminal.start_with(
+            window.label(),
+            attempt
+                .map(|id| {
+                    uuid::Uuid::parse_str(&id)
+                        .map(|id| id.to_string())
+                        .map_err(|_| TerminalError::PermissionDenied)
+                })
+                .transpose()?
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            size,
+            directory,
+            profile.unwrap_or_default(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn terminal_cancel_start(window: WebviewWindow, attempt: String) -> Result<()> {
+    let id = uuid::Uuid::parse_str(&attempt).map_err(|_| TerminalError::PermissionDenied)?;
+    in_terminal(window, move |window| {
         resource(&window)
             .map_err(|_| TerminalError::PermissionDenied)?
             .terminal
-            .start(window.label(), size, directory)
+            .cancel_start(window.label(), &id.to_string())
     })
     .await
 }
@@ -349,11 +480,14 @@ pub async fn terminal_read(window: WebviewWindow, id: String) -> Result<Terminal
             .terminal
             .with_session(window.label(), &id, |slot| {
                 let result = slot.as_mut().ok_or(TerminalError::SessionClosed)?.read();
-                if result.as_ref().map_or(true, |output| output.finished) {
-                    slot.take();
-                }
-                result
-            })
+                let removed = if result.as_ref().map_or(true, |output| output.finished) {
+                    slot.take()
+                } else {
+                    None
+                };
+                Ok((result, removed))
+            })?
+            .0
     })
     .await
 }
@@ -410,10 +544,8 @@ pub async fn terminal_close(window: WebviewWindow, id: String) -> Result<()> {
         resource(&window)
             .map_err(|_| TerminalError::PermissionDenied)?
             .terminal
-            .with_session(window.label(), &id, |slot| {
-                slot.take();
-                Ok(())
-            })
+            .with_session(window.label(), &id, |slot| Ok(slot.take()))
+            .map(drop)
     })
     .await
 }
@@ -488,6 +620,39 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn a_pending_start_does_not_block_siblings_and_cancel_discards_a_late_pty() {
+        let service = Arc::new(TerminalService::default());
+        let first = service
+            .start("owner", dimensions(24, 80).unwrap(), None)
+            .unwrap();
+        let (entered, waiting) = mpsc::channel();
+        let (continue_start, released) = mpsc::channel();
+        let blocked = {
+            let service = service.clone();
+            thread::spawn(move || {
+                service.start_reserved("owner", "late".into(), || {
+                    entered.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Session::start("owner", dimensions(24, 80).unwrap(), None, Profile::System)
+                })
+            })
+        };
+        waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        let siblings = service.with_session("owner", &first.id, |slot| Ok(slot.is_some()));
+        let denied = service.cancel_start("another window", "late");
+        service.cancel_start("owner", "late").unwrap();
+        continue_start.send(()).unwrap();
+        assert!(siblings.unwrap());
+        assert_eq!(denied, Err(TerminalError::PermissionDenied));
+        assert!(matches!(
+            blocked.join().unwrap(),
+            Err(TerminalError::SessionClosed)
+        ));
+        assert_eq!(service.sessions.lock().unwrap().len(), 1);
+        service.shutdown();
     }
 
     #[test]
