@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EditorLocation, EditorTab } from "./use-editor";
 import { Workbench } from "../shell/Workbench";
+import { clearRecents } from "../shell/recent";
 import { useLayout } from "../state/layout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
@@ -53,6 +54,7 @@ const entries = ["main.ts", "notes.md"].map((name) => ({
   name,
   relativePath: name,
   kind: "file",
+  identity: `${name}-identity`,
 }));
 const snapshot = (relativePath: string, content: string, version = "v1") => ({
   relativePath,
@@ -116,6 +118,231 @@ describe("editor workspace", () => {
     expect(
       screen.getByRole("tab", { name: "notes.md", selected: true }),
     ).toBeTruthy();
+  });
+
+  it("creates a named workspace file and enables Run for its saved extension", async () => {
+    const user = userEvent.setup();
+    render(<Workbench />);
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
+    await user.click(
+      screen.getByRole("button", { name: "New workspace file" }),
+    );
+    const name = screen.getByRole("textbox", { name: "New filename" });
+    expect(document.activeElement).toBe(name);
+    ipc.mockResolvedValueOnce(snapshot("hello.py", "", "created"));
+    await user.type(name, "hello.py{Enter}");
+    expect(
+      await screen.findByRole("tab", { name: "hello.py", selected: true }),
+    ).toBeTruthy();
+    expect(ipc).toHaveBeenCalledWith("workspace_create_file", {
+      workspaceId: "project",
+      parent: "",
+      name: "hello.py",
+    });
+    expect(
+      screen.getByRole("button", { name: "Run File" }).hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  it("renames a dirty file with F2, preserves its buffer, and saves with the new path", async () => {
+    const { user, editor } = await openFile();
+    fireEvent.change(editor, { target: { value: "my draft" } });
+    const row = screen.getByRole("button", { name: "main.ts" });
+    row.focus();
+    await user.keyboard("{F2}");
+    const rename = screen.getByRole("textbox", { name: "Rename entry" });
+    await user.clear(rename);
+    ipc.mockResolvedValueOnce("main.py").mockResolvedValueOnce([
+      {
+        name: "main.py",
+        kind: "file",
+        relativePath: "main.py",
+        identity: "updated",
+      },
+    ]);
+    await user.type(rename, "main.py{Enter}");
+    expect(
+      await screen.findByRole("tab", { name: "main.py (unsaved)" }),
+    ).toBeTruthy();
+    expect(editor.value).toBe("my draft");
+    expect(
+      screen.getByRole("button", { name: "Language mode: Python" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Run File" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(ipc).toHaveBeenCalledWith("workspace_rename_entry", {
+      workspaceId: "project",
+      relativePath: "main.ts",
+      name: "main.py",
+      expectedIdentity: "main.ts-identity",
+    });
+    ipc.mockResolvedValueOnce("v2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Run File" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    expect(ipc).toHaveBeenCalledWith("fs_write_file", {
+      workspaceId: "project",
+      relativePath: "main.py",
+      content: "my draft",
+      expectedVersion: "v1",
+    });
+  });
+
+  it("renames a folder from its context action and updates descendant tabs", async () => {
+    const user = userEvent.setup();
+    const folder = {
+      name: "src",
+      relativePath: "src",
+      kind: "directory",
+      identity: "folder",
+    };
+    const child = {
+      name: "app.py",
+      relativePath: "src/app.py",
+      kind: "file",
+      identity: "child",
+    };
+    render(<Workbench />);
+    ipc
+      .mockResolvedValueOnce({ id: "project", name: "Project" })
+      .mockResolvedValueOnce([folder]);
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
+    const row = await screen.findByRole("button", { name: "src/" });
+    ipc.mockResolvedValueOnce([child]);
+    await user.click(row);
+    await user.click(await screen.findByRole("button", { name: "app.py" }));
+    const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "File editor",
+    });
+    fireEvent.change(editor, { target: { value: "dirty child" } });
+    fireEvent.contextMenu(row);
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    const field = screen.getByRole("textbox", { name: "Rename entry" });
+    await user.clear(field);
+    ipc
+      .mockResolvedValueOnce("code")
+      .mockResolvedValueOnce([
+        { ...folder, name: "code", relativePath: "code" },
+      ]);
+    await user.type(field, "code{Enter}");
+    const tab = await screen.findByRole("tab", { name: "app.py (unsaved)" });
+    expect(tab.getAttribute("title")).toBe("code/app.py");
+    expect(editor.value).toBe("dirty child");
+    expect(await screen.findByRole("button", { name: "app.py" })).toBeTruthy();
+  });
+
+  it("retains the name field on a conflict and cancels with Escape", async () => {
+    const { user } = await openFile();
+    const row = screen.getByRole("button", { name: "main.ts" });
+    row.focus();
+    await user.keyboard("{F2}");
+    const field = screen.getByRole("textbox", { name: "Rename entry" });
+    await user.clear(field);
+    ipc.mockRejectedValueOnce("NAME_TAKEN");
+    await user.type(field, "notes.md{Enter}");
+    expect((await screen.findByRole("alert")).textContent).toMatch(
+      /already in use/,
+    );
+    expect(screen.getByRole("textbox", { name: "Rename entry" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox", { name: "Rename entry" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "main.ts" })).toBeTruthy();
+  });
+
+  it("suggests Python in an untitled buffer and manual mode cannot enable Run", async () => {
+    const user = userEvent.setup();
+    render(<Workbench />);
+    await fileAction(user, "New Text File");
+    const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "File editor",
+    });
+    const content = "def greet():\n    print('hello')";
+    fireEvent.change(editor, { target: { value: content } });
+    expect(
+      screen.getByRole("button", { name: "Language mode: Python" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Run File" }).hasAttribute("disabled"),
+    ).toBe(true);
+    ipc.mockResolvedValueOnce({
+      ...savedFile,
+      name: "hello.py",
+      displayPath: "/picked/hello.py",
+    });
+    await user.click(screen.getByRole("button", { name: "Save As…" }));
+    expect(await screen.findByRole("tab", { name: "hello.py" })).toBeTruthy();
+    expect(ipc).toHaveBeenCalledWith("file_save_as", {
+      content,
+      suggestedName: "Untitled-1.py",
+    });
+    await user.click(
+      screen.getByRole("button", { name: "Language mode: Python" }),
+    );
+    await user.click(
+      within(
+        screen.getByRole("group", { name: "Select language mode" }),
+      ).getByRole("button", { name: "Markdown" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Language mode: Markdown" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Run File" }).hasAttribute("disabled"),
+    ).toBe(false);
+    expect(editor.value).toBe(content);
+  });
+
+  it("keeps a non-executable saved filename blocked after a Python override", async () => {
+    const { user } = await openFile();
+    await user.click(
+      screen.getByRole("button", { name: "Language mode: TypeScript" }),
+    );
+    await user.click(
+      within(
+        screen.getByRole("group", { name: "Select language mode" }),
+      ).getByRole("button", { name: "Python" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Language mode: Python" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Run File" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("finds an unopened nested file from Go to File using scoped listing", async () => {
+    const user = userEvent.setup();
+    const folder = { name: "src", relativePath: "src", kind: "directory" };
+    render(<Workbench />);
+    ipc
+      .mockResolvedValueOnce({ id: "project", name: "Project" })
+      .mockResolvedValueOnce([folder]);
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
+    await screen.findByRole("button", { name: "src/" });
+    ipc
+      .mockResolvedValueOnce([folder])
+      .mockResolvedValueOnce([
+        { name: "nested.py", relativePath: "src/nested.py", kind: "file" },
+      ]);
+    fireEvent.keyDown(document.body, { key: "p", ctrlKey: true });
+    await user.type(
+      await screen.findByRole("combobox", { name: "Search files" }),
+      "nested",
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "src/nested.py" }),
+    );
+    expect(await screen.findByRole("tab", { name: "nested.py" })).toBeTruthy();
+    expect(ipc).toHaveBeenCalledWith("fs_read_file", {
+      workspaceId: "project",
+      relativePath: "src/nested.py",
+    });
   });
 
   it("opens search results using scoped reads and reveals repeated hits in an existing tab", async () => {
@@ -297,10 +524,14 @@ async function fileAction(
   name: string,
 ) {
   await user.click(
-    screen.getByRole("button", { name: "File", expanded: false }),
+    screen.getByRole("menuitem", { name: "File", expanded: false }),
   );
-  const actions = within(screen.getByRole("group", { name: "File actions" }));
-  await user.click(actions.getByRole("button", { name }));
+  const actions = within(screen.getByRole("menu", { name: "File actions" }));
+  await user.click(
+    actions.getByRole(name === "Auto Save" ? "menuitemcheckbox" : "menuitem", {
+      name,
+    }),
+  );
 }
 
 const pickedFile = {
@@ -318,24 +549,88 @@ const savedFile = {
 };
 
 describe("File menu", () => {
+  it("opens windows through fixed IPC commands and reopens recent workspaces only through the picker", async () => {
+    clearRecents();
+    const user = userEvent.setup();
+    render(<Workbench />);
+    ipc.mockResolvedValueOnce(undefined);
+    await fileAction(user, "New Window");
+    expect(ipc).toHaveBeenCalledWith("window_new_workbench", undefined);
+    ipc
+      .mockResolvedValueOnce({
+        id: "project",
+        name: "Fixture",
+        displayPath: "/approved/fixture",
+      })
+      .mockResolvedValueOnce([]);
+    await fileAction(user, "Open Folder");
+    await within(screen.getByRole("region", { name: "Explorer" })).findByText(
+      "Fixture",
+    );
+    await fileAction(user, "Open Recent…");
+    const recent = await screen.findByRole("option", {
+      name: /Fixture.*\/approved\/fixture/,
+    });
+    const lists = ipc.mock.calls.filter(
+      ([command]) => command === "fs_list_directory",
+    ).length;
+    ipc.mockResolvedValueOnce(null);
+    await user.click(recent);
+    await waitFor(() =>
+      expect(ipc).toHaveBeenCalledWith("workspace_open", {
+        recentPath: "/approved/fixture",
+      }),
+    );
+    expect(
+      ipc.mock.calls.filter(([command]) => command === "fs_list_directory"),
+    ).toHaveLength(lists);
+    await fileAction(user, "Open Recent…");
+    await user.click(
+      screen.getByRole("option", { name: "Clear Recent History" }),
+    );
+    await fileAction(user, "Open Recent…");
+    expect(screen.queryByRole("option", { name: /Fixture/ })).toBeNull();
+  });
+
+  it("confirms Close All once for dirty editors and leaves them intact on cancellation", async () => {
+    const { user, editor } = await openFile();
+    fireEvent.change(editor, { target: { value: "unsaved" } });
+    await fileAction(user, "New Text File");
+    ipc.mockResolvedValueOnce(false);
+    await fileAction(user, "Close All Editors");
+    expect(ipc).toHaveBeenCalledWith("editor_confirm_discard", {
+      action: "closeAll",
+    });
+    expect(screen.getByRole("tab", { name: "main.ts (unsaved)" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Untitled-1" })).toBeTruthy();
+    ipc.mockResolvedValueOnce(true);
+    await fileAction(user, "Close All Editors");
+    await waitFor(() =>
+      expect(screen.queryByRole("tab", { name: "Untitled-1" })).toBeNull(),
+    );
+    expect(screen.queryByRole("tab", { name: "main.ts (unsaved)" })).toBeNull();
+  });
+
   it("shows and toggles the session Auto Save state from the File menu", async () => {
     const user = userEvent.setup();
     render(<Workbench />);
 
     await fileAction(user, "Auto Save");
-    expect(screen.queryByRole("group", { name: "File actions" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "File" }));
-    const activeToggle = screen.getByRole("button", {
+    expect(screen.queryByRole("menu", { name: "File actions" })).toBeNull();
+    await user.click(screen.getByRole("menuitem", { name: "File" }));
+    const activeToggle = screen.getByRole("menuitemcheckbox", {
       name: "Auto Save",
-      pressed: true,
+      checked: true,
     });
-    expect(activeToggle.textContent).toContain("On");
+    expect(activeToggle.getAttribute("aria-checked")).toBe("true");
     await user.click(activeToggle);
-    await user.click(screen.getByRole("button", { name: "File" }));
+    await user.click(screen.getByRole("menuitem", { name: "File" }));
     expect(
-      screen.getByRole("button", { name: "Auto Save", pressed: false })
-        .textContent,
-    ).toContain("Off");
+      screen.getByRole("menuitemcheckbox", {
+        name: "Auto Save",
+        checked: false,
+      }).textContent,
+    ).toContain("Auto Save");
   });
 
   it("opens a native selection without a workspace and revokes its grant on close", async () => {
@@ -355,7 +650,7 @@ describe("File menu", () => {
     expect(screen.getByText("No workspace")).toBeTruthy();
 
     ipc.mockResolvedValueOnce(undefined);
-    await fileAction(user, "Close File");
+    await fileAction(user, "Close Editor");
     expect(ipc).toHaveBeenLastCalledWith("file_close", {
       fileId: pickedFile.fileId,
     });
@@ -401,7 +696,7 @@ describe("File menu", () => {
   it("creates an untitled buffer, uses the picker on first save, and uses its grant afterward", async () => {
     const user = userEvent.setup();
     render(<Workbench />);
-    await fileAction(user, "New File");
+    await fileAction(user, "New Text File");
     const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", {
       name: "File editor",
     });
@@ -417,7 +712,7 @@ describe("File menu", () => {
     await screen.findByRole("tab", { name: "saved.ts", selected: true });
     expect(ipc).toHaveBeenLastCalledWith("file_save_as", {
       content: "const created = true;",
-      suggestedName: undefined,
+      suggestedName: "Untitled-1",
     });
     expect(editor.value).toBe("const created = true;");
 
@@ -435,7 +730,7 @@ describe("File menu", () => {
   it("can save an empty untitled buffer and retains it when the picker is canceled", async () => {
     const user = userEvent.setup();
     render(<Workbench />);
-    await fileAction(user, "New File");
+    await fileAction(user, "New Text File");
     ipc.mockResolvedValueOnce(null);
     await fileAction(user, "Save");
     expect(
@@ -443,7 +738,7 @@ describe("File menu", () => {
     ).toBeTruthy();
     expect(ipc).toHaveBeenLastCalledWith("file_save_as", {
       content: "",
-      suggestedName: undefined,
+      suggestedName: "Untitled-1",
     });
     expect(screen.queryByRole("alert")).toBeNull();
 
@@ -509,17 +804,17 @@ describe("File menu", () => {
     vi.mocked(isTauri).mockReturnValue(false);
     render(<Workbench />);
 
-    await fileAction(user, "New File");
+    await fileAction(user, "New Text File");
     const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", {
       name: "File editor",
     });
     fireEvent.change(editor, { target: { value: "only in memory" } });
-    await user.click(screen.getByRole("button", { name: "File" }));
-    const actions = within(screen.getByRole("group", { name: "File actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "File" }));
+    const actions = within(screen.getByRole("menu", { name: "File actions" }));
     for (const name of ["Open File", "Open Folder", "Save", "Save As"]) {
       expect(
-        actions.getByRole<HTMLButtonElement>("button", { name }).disabled,
-      ).toBe(true);
+        actions.getByRole("menuitem", { name }).getAttribute("aria-disabled"),
+      ).toBe("true");
     }
     expect(editor.value).toBe("only in memory");
     expect(ipc).not.toHaveBeenCalled();

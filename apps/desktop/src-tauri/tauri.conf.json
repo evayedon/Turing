@@ -29,15 +29,25 @@
         {
           "identifier": "workspace-editor",
           "description": "Scoped workspace and editor lifecycle commands for the local workbench.",
-          "webviews": ["main"],
+          "webviews": ["main", "workbench-*"],
           "permissions": [
             "allow-workspace-readonly",
             "allow-workspace-search",
             "allow-workspace-edit",
+            "allow-workspace-entry-mutations",
             "allow-editor-selected-files",
             "allow-interactive-terminal",
-            "allow-git"
+            "allow-git",
+            "allow-run-build",
+            "allow-managed-clangd",
+            "allow-turing-windows"
           ]
+        },
+        {
+          "identifier": "terminal-window",
+          "description": "Manage PTYs owned by a dedicated local terminal window.",
+          "webviews": ["terminal-*"],
+          "permissions": ["allow-interactive-terminal"]
         }
       ]
     }

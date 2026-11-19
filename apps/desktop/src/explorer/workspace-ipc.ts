@@ -11,6 +11,7 @@ export function invokeWorkspace<Command extends keyof WorkspaceCommands>(
 }
 
 const messages = {
+  WINDOW_LIMIT: "Close a Turing window before opening another.",
   BUSY: "A folder picker is already open.",
   PERMISSION_DENIED: "The desktop app could not access this file or workspace.",
   OUTSIDE_WORKSPACE:
@@ -18,6 +19,13 @@ const messages = {
   NOT_FOUND: "This file or folder no longer exists.",
   NOT_DIRECTORY: "This path is no longer a folder.",
   NOT_FILE: "This path is not a regular file.",
+  INVALID_NAME:
+    "Enter a valid filename without path separators, reserved characters, or trailing spaces.",
+  ENTRY_CHANGED:
+    "The entry changed on disk. Refresh its parent folder and try again.",
+  NAME_TAKEN: "That name is already in use. Choose a different name.",
+  RENAME_RACE:
+    "A concurrent change interrupted the rename. The original entry may be in a .turing-save-*.rename recovery folder.",
   INVALID_ENCODING: "This file is not UTF-8 text.",
   FILE_CONFLICT:
     "The file changed on disk. Save was blocked to protect newer content.",

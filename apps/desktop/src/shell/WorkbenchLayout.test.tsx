@@ -63,7 +63,7 @@ describe("Nebula workbench", () => {
     expect(document.activeElement).toBe(problems);
     expect(
       screen.getByRole("tabpanel", { name: "Problems" }).textContent,
-    ).toContain("unavailable");
+    ).toContain("Live diagnostics require the desktop app.");
     await user.keyboard("{End}");
     expect(
       screen.getByRole("tabpanel", { name: "Output" }).textContent,

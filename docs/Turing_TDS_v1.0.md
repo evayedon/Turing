@@ -204,3 +204,23 @@ v0.1 passes documented Windows/macOS/Linux development builds; file edit/save/re
 ## 18. Validation backlog
 
 Prototype Monaco under each WebView, portable-pty shells, Git CLI availability, LSP adapters, SQLite recovery, Nebula accessibility/performance, packaging. Performance figures from the SRS remain targets, not measured results.
+
+## Milestone 3C Run & Build implementation
+
+The local workbench sends an authorized workspace or standalone source reference
+and its saved revision to `execution_start`. Rust validates and stages the
+snapshot before accepting the job. `execution_read` drains bounded output
+batches, and `execution_stop` cancels the caller-bound job. The per-job
+channel reports state changes. See [the current architecture](architecture.md)
+for language, toolchain, path, stdin, and cleanup details.
+
+## Milestone 4A implementation
+
+The initial native LSP adapter is installed clangd for C/C++ workspace files.
+The desktop exposes only `language_start`, `language_apply`, `language_poll`,
+and `language_stop` through the workbench capability. The shared contract
+restricts operations to versioned document synchronization, supported
+features and cancellation. Session identity and the current workspace grant
+are checked in Rust. Monaco and Problems consume diagnostics keyed by
+producer, workspace path and revision. See [Architecture](architecture.md#managed-cc-language-intelligence-and-problems)
+for the approval model, mirror, lifecycle and verification procedure.

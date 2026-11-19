@@ -1,4 +1,4 @@
-use super::{Result, TerminalError};
+use super::{Profile, Result, TerminalError};
 use cap_std::fs::Dir;
 use portable_pty::{Child, MasterPty, PtyPair};
 use std::io::Read;
@@ -60,7 +60,11 @@ impl Read for UnixReader {
 }
 
 #[cfg(unix)]
-pub fn spawn(pair: &PtyPair, directory: Option<Dir>) -> Result<(Shell, bool)> {
+pub fn spawn(
+    pair: &PtyPair,
+    directory: Option<Dir>,
+    profile: Profile,
+) -> Result<(Shell, bool, String)> {
     use std::{
         fs::OpenOptions,
         io,
@@ -107,10 +111,17 @@ pub fn spawn(pair: &PtyPair, directory: Option<Dir>) -> Result<(Shell, bool)> {
     } else {
         "/bin/bash"
     };
-    let candidates = configured
-        .iter()
-        .map(PathBuf::as_path)
-        .chain([Path::new(fallback), Path::new("/bin/sh")]);
+    let candidates: Vec<&Path> = match profile {
+        Profile::System => configured
+            .iter()
+            .map(PathBuf::as_path)
+            .chain([Path::new(fallback), Path::new("/bin/sh")])
+            .collect(),
+        Profile::Bash => vec![Path::new("/bin/bash")],
+        Profile::Zsh => vec![Path::new("/bin/zsh")],
+        Profile::Sh => vec![Path::new("/bin/sh")],
+        _ => return Err(TerminalError::ShellUnavailable),
+    };
 
     for executable in candidates {
         let mut command = Command::new(executable);
@@ -154,7 +165,15 @@ pub fn spawn(pair: &PtyPair, directory: Option<Dir>) -> Result<(Shell, bool)> {
             });
         }
         if let Ok(child) = command.spawn() {
-            return Ok((Box::new(child), workspace_directory));
+            return Ok((
+                Box::new(child),
+                workspace_directory,
+                executable
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Shell")
+                    .to_owned(),
+            ));
         }
     }
     Err(TerminalError::ShellUnavailable)
@@ -228,7 +247,7 @@ pub fn reader(master: &dyn MasterPty) -> Result<Box<dyn Read + Send>> {
 }
 
 #[cfg(windows)]
-pub fn spawn(pair: &PtyPair, _: Option<Dir>) -> Result<(Shell, bool)> {
+pub fn spawn(pair: &PtyPair, _: Option<Dir>, profile: Profile) -> Result<(Shell, bool, String)> {
     use portable_pty::CommandBuilder;
     use std::path::PathBuf;
 
@@ -248,6 +267,12 @@ pub fn spawn(pair: &PtyPair, _: Option<Dir>) -> Result<(Shell, bool)> {
         ),
         (system32.join("cmd.exe"), &["/D"]),
     ];
+    let candidates = match profile {
+        Profile::System => &candidates[..],
+        Profile::PowerShell => &candidates[..1],
+        Profile::Cmd => &candidates[1..],
+        _ => return Err(TerminalError::ShellUnavailable),
+    };
     for (exe, args) in candidates {
         if !exe.is_file() {
             continue;
@@ -257,7 +282,16 @@ pub fn spawn(pair: &PtyPair, _: Option<Dir>) -> Result<(Shell, bool)> {
         command.cwd(&home);
         command.env("TERM", "xterm-256color");
         if let Ok(child) = pair.slave.spawn_command(command) {
-            return Ok((child, false));
+            return Ok((
+                child,
+                false,
+                if exe.ends_with("cmd.exe") {
+                    "Command Prompt"
+                } else {
+                    "PowerShell"
+                }
+                .into(),
+            ));
         }
     }
     Err(TerminalError::ShellUnavailable)

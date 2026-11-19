@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod execution;
 mod git;
+mod language;
 mod terminal;
+mod windows;
 mod workspace;
 
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -10,10 +13,13 @@ use tauri::{Manager, RunEvent, WindowEvent};
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(workspace::WorkspaceService::default())
-        .manage(terminal::TerminalService::default())
+        .manage(windows::Windows::default())
         .invoke_handler(tauri::generate_handler![
+            windows::window_new_workbench,
+            windows::window_new_terminal,
             commands::workspace_open,
+            commands::workspace_create_file,
+            commands::workspace_rename_entry,
             commands::workspace_close,
             commands::fs_list_directory,
             commands::fs_read_file,
@@ -28,8 +34,17 @@ fn main() {
             commands::file_save_as,
             commands::editor_confirm_discard,
             commands::editor_exit,
+            execution::execution_start,
+            execution::execution_read,
+            execution::execution_stop,
+            language::language_start,
+            language::language_apply,
+            language::language_poll,
+            language::language_stop,
             terminal::terminal_start,
+            terminal::terminal_cancel_start,
             terminal::terminal_read,
+            terminal::links::terminal_open_link,
             terminal::terminal_input,
             terminal::terminal_resize,
             terminal::terminal_close,
@@ -45,28 +60,44 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to start Turing Core")
         .run(|app, event| {
-            if matches!(event, RunEvent::Exit)
-                || matches!(event, RunEvent::WindowEvent {
-                ref label, event: WindowEvent::Destroyed, ..
-            } if label == "main")
-            {
-                app.state::<terminal::TerminalService>().shutdown();
-                return;
-            }
-            if let Some(window) = app.get_webview_window("main") {
-                match event {
-                    RunEvent::WindowEvent {
-                        label,
-                        event: WindowEvent::CloseRequested { api, .. },
-                        ..
-                    } if label == "main" => api.prevent_close(),
-                    RunEvent::ExitRequested {
-                        code: None, api, ..
-                    } => api.prevent_exit(),
-                    _ => return,
+            let resources = app.state::<windows::Windows>();
+            match event {
+                RunEvent::Exit => resources.shutdown(),
+                RunEvent::WindowEvent {
+                    label,
+                    event: WindowEvent::Destroyed,
+                    ..
+                } => resources.remove(&label),
+                RunEvent::WindowEvent {
+                    label,
+                    event: WindowEvent::CloseRequested { api, .. },
+                    ..
+                } => {
+                    if resources
+                        .get(&label)
+                        .is_some_and(|resource| resource.kind == windows::Kind::Workbench)
+                    {
+                        if let Some(window) = app.get_webview_window(&label) {
+                            api.prevent_close();
+                            let _ = window
+                                .eval("window.dispatchEvent(new Event('turing-close-requested'))");
+                        }
+                    }
                 }
-                // Deliver a fixed signal without granting webview eval or general event permissions.
-                let _ = window.eval("window.dispatchEvent(new Event('turing-close-requested'))");
+                RunEvent::ExitRequested {
+                    code: None, api, ..
+                } => {
+                    let windows = app.webview_windows();
+                    if windows.keys().any(|label| resources.get(label).is_some()) {
+                        api.prevent_exit();
+                        for (label, window) in windows {
+                            if resources.get(&label).is_some() {
+                                let _ = window.close();
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         });
 }

@@ -1,13 +1,32 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
-import type { TerminalSize } from "@turing/contracts";
+import type { Ref } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
+import type { TerminalProfile, TerminalSize } from "@turing/contracts";
 import { invokeTerminal, terminalErrorMessage } from "./terminal-ipc";
 import type { createTerminalView } from "./terminal-view";
+
+let terminalViewModule: Promise<typeof import("./terminal-view")> | undefined;
+
+function loadTerminalView() {
+  terminalViewModule ??= import("./terminal-view").catch((error: unknown) => {
+    terminalViewModule = undefined;
+    throw error;
+  });
+  return terminalViewModule;
+}
 
 type View = ReturnType<typeof createTerminalView>;
 type Session = {
   id?: string;
   focusFrom: Element | null;
   view?: View;
+  attempt?: string;
+  deadline?: ReturnType<typeof setTimeout>;
   poll?: ReturnType<typeof setTimeout>;
   observer?: ResizeObserver;
   pending: Uint8Array[];
@@ -21,6 +40,15 @@ type Status =
   | { phase: "idle" | "starting" | "closing" }
   | { phase: "running"; workspaceDirectory: boolean }
   | { phase: "exited"; exitCode: number | null };
+
+export const terminalStartupDeadline = 12000;
+
+function cancelStarting(session: Session) {
+  if (session.attempt && !session.id)
+    void invokeTerminal("terminal_cancel_start", {
+      attempt: session.attempt,
+    }).catch(() => {});
+}
 
 const inputChunk = 8192;
 const inputLimit = 128 * 1024;
@@ -43,20 +71,33 @@ async function closeNative(id: string) {
 
 function stopWatching(session: Session) {
   clearTimeout(session.poll);
+  clearTimeout(session.deadline);
   session.observer?.disconnect();
   session.view?.disableInput();
   session.pending = [];
   session.pendingBytes = 0;
 }
 
+export type TerminalActions = { close: () => void; clear: () => void };
+
 export function TerminalPanel({
   native,
   workspaceId,
   activation = 0,
+  focusOnStart = true,
+  actionsRef,
+  onRunningChange,
+  profile = "system",
+  onShell,
 }: {
   native: boolean;
   workspaceId?: string;
+  profile?: TerminalProfile;
+  onShell?: (shell: string) => void;
   activation?: number;
+  focusOnStart?: boolean;
+  actionsRef?: Ref<TerminalActions>;
+  onRunningChange?: (running: boolean) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const current = useRef<Session | null>(null);
@@ -66,6 +107,9 @@ export function TerminalPanel({
   const restoreFocus = useRef<Element | null | undefined>(undefined);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const [error, setError] = useState("");
+  const [search, setSearch] = useState(false);
+  const [query, setQuery] = useState("");
+  const [noMatch, setNoMatch] = useState(false);
 
   const activateTerminal = useEffectEvent(() => {
     if (!host.current || host.current.closest("[hidden]")) return;
@@ -96,6 +140,7 @@ export function TerminalPanel({
       current.current = null;
       if (session) {
         stopWatching(session);
+        cancelStarting(session);
         if (session.id) void closeNative(session.id).catch(() => {});
       }
       lastView.current?.dispose();
@@ -137,6 +182,24 @@ export function TerminalPanel({
     setError(failure);
     setStatus({ phase: "exited", exitCode });
   }
+
+  function closeSession(from: Element | null) {
+    if (!current.current) return;
+    cancelStarting(current.current);
+    restoreFocus.current = from;
+    void end(current.current);
+  }
+
+  useImperativeHandle(actionsRef, () => ({
+    close: () =>
+      closeSession(host.current?.ownerDocument.activeElement ?? null),
+    clear: () => current.current?.view?.clear(),
+  }));
+
+  useEffect(
+    () => onRunningChange?.(status.phase === "running"),
+    [onRunningChange, status.phase],
+  );
 
   async function sendInput(session: Session) {
     const id = session.id;
@@ -233,7 +296,7 @@ export function TerminalPanel({
     if (!native || !element || current.current || status.phase === "closing")
       return;
     const session: Session = {
-      focusFrom: element.ownerDocument.activeElement,
+      focusFrom: focusOnStart ? element.ownerDocument.activeElement : null,
       pending: [],
       pendingBytes: 0,
       writing: false,
@@ -243,12 +306,27 @@ export function TerminalPanel({
     restoreFocus.current = undefined;
     setError("");
     setStatus({ phase: "starting" });
+    session.deadline = setTimeout(() => {
+      if (current.current !== session) return;
+      restoreFocus.current = session.focusFrom;
+      cancelStarting(session);
+      void end(session, terminalErrorMessage("START_TIMEOUT"));
+    }, terminalStartupDeadline);
     try {
-      const { createTerminalView } = await import("./terminal-view");
+      const { createTerminalView } = await loadTerminalView();
       if (current.current !== session) return;
       lastView.current?.dispose();
-      const view = createTerminalView(element, (bytes) =>
-        receiveInput(session, bytes),
+      const view = createTerminalView(
+        element,
+        (bytes) => receiveInput(session, bytes),
+        (target) => {
+          void invokeTerminal("terminal_open_link", { target }).catch(
+            (cause: unknown) => {
+              if (host.current === element)
+                setError(terminalErrorMessage(cause));
+            },
+          );
+        },
       );
       lastView.current = session.view = view;
       const measure = () => {
@@ -260,15 +338,28 @@ export function TerminalPanel({
       session.observer.observe(element);
       measure();
       const size = session.dimensions ?? { rows: 24, cols: 80 };
+      session.attempt = Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      )
+        .join("")
+        .replace(
+          /^(........)(....)(....)(....)(............)$/,
+          "$1-$2-$3-$4-$5",
+        );
       const started = await invokeTerminal("terminal_start", {
         ...size,
         workspaceId,
+        attempt: session.attempt,
+        profile,
       });
       if (current.current !== session) {
-        await closeNative(started.id);
+        await closeNative(started.id).catch(() => {});
         return;
       }
+      clearTimeout(session.deadline);
       session.id = started.id;
+      if (started.shell) onShell?.(started.shell);
       session.sent = size;
       setStatus({
         phase: "running",
@@ -276,10 +367,12 @@ export function TerminalPanel({
       });
       void resize(session);
       if (
-        canMoveFocus(element, session.focusFrom) ||
-        (session.focusFrom === startButton.current &&
-          element.ownerDocument.activeElement === element.ownerDocument.body &&
-          !element.closest("[hidden]"))
+        focusOnStart &&
+        (canMoveFocus(element, session.focusFrom) ||
+          (session.focusFrom === startButton.current &&
+            element.ownerDocument.activeElement ===
+              element.ownerDocument.body &&
+            !element.closest("[hidden]")))
       )
         view.focus();
       void read(session);
@@ -293,15 +386,25 @@ export function TerminalPanel({
     return <p className="panel-message">Terminal requires the desktop app.</p>;
 
   return (
-    <div className="terminal-panel">
+    <div
+      className="terminal-panel"
+      onKeyDown={(event) => {
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          event.key.toLowerCase() === "f" &&
+          lastView.current
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          setSearch(true);
+        }
+      }}
+    >
       <div className="terminal-toolbar">
         {status.phase === "running" ? (
           <button
             type="button"
-            onClick={(event) => {
-              restoreFocus.current = event.currentTarget;
-              if (current.current) void end(current.current);
-            }}
+            onClick={(event) => closeSession(event.currentTarget)}
           >
             Close terminal
           </button>
@@ -324,6 +427,53 @@ export function TerminalPanel({
                   : "Start terminal"}
           </button>
         )}
+        {status.phase === "starting" && (
+          <button
+            type="button"
+            onClick={(event) => closeSession(event.currentTarget)}
+          >
+            Cancel
+          </button>
+        )}
+        {(status.phase === "running" || status.phase === "exited") &&
+          lastView.current && (
+            <>
+              <button type="button" onClick={() => setSearch(!search)}>
+                Find
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void lastView.current
+                    ?.copy?.()
+                    .catch(() =>
+                      setError("Could not copy terminal selection."),
+                    );
+                }}
+              >
+                Copy
+              </button>
+              {status.phase === "running" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void lastView.current
+                      ?.paste?.()
+                      .catch(() =>
+                        setError(
+                          "Could not read the clipboard. Try the keyboard shortcut.",
+                        ),
+                      );
+                  }}
+                >
+                  Paste
+                </button>
+              )}
+              <button type="button" onClick={() => lastView.current?.clear()}>
+                Clear
+              </button>
+            </>
+          )}
         {status.phase === "idle" && <span>No terminal session running.</span>}
         {status.phase === "running" &&
           workspaceId &&
@@ -334,6 +484,53 @@ export function TerminalPanel({
           <span role="status">Shell exited with code {status.exitCode}.</span>
         )}
       </div>
+      {search && (
+        <form
+          className="terminal-find"
+          role="search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setNoMatch(!!query && !lastView.current?.find?.(query));
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              setSearch(false);
+              lastView.current?.focus();
+            }
+          }}
+        >
+          <input
+            aria-label="Find in terminal"
+            autoFocus
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setNoMatch(false);
+            }}
+          />
+          {noMatch && <span role="status">No matches</span>}
+          <button type="submit">Next match</button>
+          <button
+            type="button"
+            onClick={() =>
+              setNoMatch(!!query && !lastView.current?.find?.(query, true))
+            }
+          >
+            Previous match
+          </button>
+          <button
+            type="button"
+            aria-label="Close terminal search"
+            onClick={() => {
+              setSearch(false);
+              lastView.current?.focus();
+            }}
+          >
+            ×
+          </button>
+        </form>
+      )}
       {error && (
         <p className="terminal-error" role="alert">
           {error}

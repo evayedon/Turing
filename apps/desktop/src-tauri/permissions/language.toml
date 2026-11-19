@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-managed-clangd"
+description = "Manage an explicitly approved clangd process for the current workbench workspace."
+commands.allow = ["language_start", "language_apply", "language_poll", "language_stop"]
