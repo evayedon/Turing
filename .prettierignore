@@ -2,3 +2,4 @@ pnpm-lock.yaml
 **/target/
 **/gen/
 graphify-out/
+.claude/
