@@ -11,8 +11,10 @@ import {
 import type {
   SelectedFileSnapshot,
   TextFile,
+  WorkspaceChanges,
   WorkspaceCommands,
 } from "@turing/contracts";
+import { touches } from "../explorer/use-workspace-watcher";
 import {
   invokeWorkspace,
   workspaceErrorMessage,
@@ -111,6 +113,26 @@ function writeFile(source: SavedSource, content: string) {
     content,
     expectedVersion,
   });
+}
+
+/** Read failures that mean the saved source no longer matches disk. */
+const missingOnDisk = [
+  "FILE_CONFLICT",
+  "NOT_FOUND",
+  "NOT_FILE",
+  "OUTSIDE_WORKSPACE",
+  "INVALID_ENCODING",
+  "FILE_TOO_LARGE",
+];
+
+/** Compares disk with the saved version; `undefined` if it cannot tell. */
+async function diskChanged(source: SavedSource) {
+  try {
+    const file = await readFile(source);
+    return file.version !== source.version;
+  } catch (cause) {
+    return missingOnDisk.includes(String(cause)) ? true : undefined;
+  }
 }
 
 export const AUTO_SAVE_DELAY_MS = 1000;
@@ -640,27 +662,43 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const checkActive = useEffectEvent(async () => {
     const tab = active;
     if (!tab || tab.source.kind === "untitled" || pending.current) return;
-    let changed: boolean;
-    try {
-      const latest = await readFile(tab.source);
-      changed = latest.version !== tab.source.version;
-    } catch (cause) {
-      if (
-        ![
-          "FILE_CONFLICT",
-          "NOT_FOUND",
-          "NOT_FILE",
-          "OUTSIDE_WORKSPACE",
-          "INVALID_ENCODING",
-          "FILE_TOO_LARGE",
-        ].includes(String(cause))
-      )
-        return;
-      changed = true;
-    }
+    const changed = await diskChanged(tab.source);
+    if (changed === undefined) return;
     if (!pending.current && changed !== tab.changedOnDisk)
       update(tab, { changedOnDisk: changed });
   });
+
+  /**
+   * Revalidates every open tab of `id` that a watcher change set touches
+   * (all of them on rescan). Only the saved version is compared: drafts are
+   * never replaced, and a tab whose file was renamed or removed outside
+   * Turing is flagged instead of silently following the new name. Replies
+   * apply only to the revision they were issued for, so a concurrent save,
+   * reload or rename wins.
+   */
+  async function applyDiskChanges(id: string, changes: WorkspaceChanges) {
+    if (currentWorkspace.current !== id) return;
+    const affected = latest.current.filter(
+      (tab) =>
+        tab.source.kind === "workspace" &&
+        tab.source.workspaceId === id &&
+        touches(changes, tab.source.relativePath),
+    );
+    await Promise.all(
+      affected.map(async (tab) => {
+        if (tab.source.kind !== "workspace") return;
+        const changed = await diskChanged(tab.source);
+        const current = find(tab.key);
+        if (
+          changed === undefined ||
+          current?.revision !== tab.revision ||
+          current.changedOnDisk === changed
+        )
+          return;
+        update(tab, { changedOnDisk: changed });
+      }),
+    );
+  }
 
   useEffect(() => {
     if (!activeKey || !native) return;
@@ -700,5 +738,6 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     setLanguage,
     reload,
     changeWorkspace,
+    applyDiskChanges,
   };
 }

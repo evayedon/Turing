@@ -128,7 +128,9 @@ document. The editor retains its draft and reports the conflict. Ordinary Unix
 permission bits are carried forward. Replacement creates a new inode, so hard
 link associations, extended attributes, and custom ACLs are outside the current
 save guarantees. File checks on focus and every four seconds cover the active
-tab. Each save checks its version independently.
+tab, and workspace watcher events revalidate every touched tab (see
+[Workspace watcher](#workspace-watcher)). Each save checks its version
+independently.
 
 The File menu's Auto Save setting is off at startup and applies for the current
 session. It waits one second before saving changed, already named desktop tabs
@@ -155,6 +157,61 @@ path that keeps a synchronous copy of the latest state, so resumed work never
 writes back a stale snapshot. A file read or creation that finishes after its
 workspace was closed or replaced is discarded instead of opening a tab, and a
 revoked grant surfaces as a save error that keeps the draft.
+
+## Workspace watcher
+
+Rust starts one recursive OS watcher (the `notify` crate: FSEvents, inotify or
+ReadDirectoryChangesW) for each approved workspace registration when
+`workspace_open` succeeds. The watcher is created without holding the registry
+lock and is attached only if the same caller and registration are still
+active, so a watcher that finishes starting after a close or replacement is
+dropped. Watching is best effort: if it cannot start, the workspace still
+opens and the views keep their manual and periodic checks.
+
+**Security model.** Events are hints, never grants. The webview can only poll
+`workspace_watch_poll` (permission `allow-workspace-watch`) for the caller's
+active registration; any other ID is `PERMISSION_DENIED`. The watcher does not
+follow symbolic links. OS event paths are converted to workspace-relative
+paths under the canonical root and dropped if they lie outside it, contain a
+non-normal or unrepresentable component, or fall inside `.turing-save-*`
+staging. At poll time each path is checked against the retained root handle,
+and paths below an existing link or reparse point are dropped. Each poll also
+compares the canonical root path with the approved handle. If the root was
+moved, deleted or replaced, the watcher stops and reports one rescan, so
+events from an unapproved directory at the old path are never forwarded.
+Views act on hints only through the authorized listing and read commands.
+
+**Coalescing.** Pending paths form a set in which a path stands for itself and
+everything below it, so an ancestor absorbs its descendants. A burst is
+delivered once no event has arrived for 150 ms or its first event is one
+second old. Reads and opens are ignored.
+
+**Overflow.** A queue overflow, any watcher error, an event without paths, a
+change to the root itself, or more than 256 distinct pending paths replaces
+the per-path set with a single `rescan` signal. On rescan the Explorer
+re-lists every loaded folder and the editor revalidates every workspace tab.
+
+**Lifecycle.** Each watcher belongs to one registration. Closing or replacing
+the workspace, a page load and window destruction or app exit drop it. Before
+the OS watcher stops, its inbox is closed, so late callbacks are discarded and
+cannot reach a later registration.
+
+**Frontend.** The workbench polls every 500 ms while the document is visible,
+backs off to 2 s after a transient failure and stops on `PERMISSION_DENIED`.
+Replies for a workspace that is no longer current are dropped. The Explorer
+re-lists each loaded folder that contains a changed path or lies below one,
+and forgets folders that no longer exist, moving the browse location to the
+parent. The editor re-reads touched workspace tabs and sets `changedOnDisk`
+when the version differs or the file is gone. It never replaces drafts, and a
+reply applies only to the revision it was issued for, so Turing's own saves
+and renames win. A tab whose file was renamed outside Turing is flagged as
+changed, not moved to the new name. Its save is refused as a conflict until the
+user reloads or uses Save As.
+
+The active-tab check on focus and every four seconds remains as a fallback.
+`notify` cannot report a ReadDirectoryChangesW buffer overflow on Windows, and
+network or virtual filesystems may not deliver events. Runtime behavior on
+Linux and Windows is covered only by CI unit tests, not GUI smoke tests.
 
 ## Workbench layout
 

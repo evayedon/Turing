@@ -1,6 +1,11 @@
 import { rememberRecent } from "../shell/recent";
 import { useRef, useState } from "react";
-import type { DirectoryEntry, WorkspaceDescriptor } from "@turing/contracts";
+import type {
+  DirectoryEntry,
+  WorkspaceChanges,
+  WorkspaceDescriptor,
+} from "@turing/contracts";
+import { foldersToRefresh } from "./use-workspace-watcher";
 import {
   invokeWorkspace,
   nativeWorkspaceAvailable,
@@ -100,6 +105,55 @@ export function useExplorer() {
     }
   }
 
+  /** Drops a folder that vanished, and everything loaded below it. */
+  function forget(path: string) {
+    const within = (item: string) =>
+      item === path || item.startsWith(`${path}/`);
+    setFolders(
+      (previous) =>
+        new Map([...previous].filter(([folder]) => !within(folder))),
+    );
+    setRelativePath((current) =>
+      within(current)
+        ? path.slice(0, Math.max(0, path.lastIndexOf("/")))
+        : current,
+    );
+  }
+
+  async function reconcile(id: string, path: string) {
+    try {
+      const entries = await invokeWorkspace("fs_list_directory", {
+        workspaceId: id,
+        relativePath: path,
+      });
+      if (currentWorkspace.current !== id) return;
+      setFolders((previous) =>
+        previous.has(path) ? new Map(previous).set(path, entries) : previous,
+      );
+    } catch (cause) {
+      if (currentWorkspace.current !== id) return;
+      if (
+        path &&
+        ["NOT_FOUND", "NOT_DIRECTORY", "OUTSIDE_WORKSPACE"].includes(
+          String(cause),
+        )
+      )
+        forget(path);
+      else if (!path) setError(workspaceErrorMessage(cause));
+      // Other failures keep the listing; Reload folder reports them.
+    }
+  }
+
+  /** Re-lists the loaded folders that a watcher change set may affect. */
+  async function applyChanges(id: string, changes: WorkspaceChanges) {
+    if (currentWorkspace.current !== id) return;
+    await Promise.all(
+      foldersToRefresh(changes, folders.keys()).map((path) =>
+        reconcile(id, path),
+      ),
+    );
+  }
+
   function renamed(old: string, next: string, name: string) {
     const move = (path: string) =>
       path === old || path.startsWith(`${old}/`)
@@ -133,6 +187,7 @@ export function useExplorer() {
     close,
     refresh,
     renamed,
+    applyChanges,
     browse: (path: string) => workspace && readDirectory(workspace.id, path),
   };
 }

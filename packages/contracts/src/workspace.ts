@@ -19,6 +19,17 @@ export interface TextFile {
   version: string;
 }
 
+/**
+ * Coalesced change hints for the active workspace. Each path stands for
+ * itself and everything below it. `rescan` means individual paths were lost
+ * and every loaded view must be revalidated. Hints grant no access: views
+ * re-list and re-read through the authorized commands.
+ */
+export interface WorkspaceChanges {
+  paths: string[];
+  rescan: boolean;
+}
+
 export interface SelectedFileVersion {
   fileId: string;
   name: string;
@@ -94,6 +105,10 @@ export interface WorkspaceCommands {
     result: string;
   };
   workspace_close: { args: { workspaceId: string }; result: void };
+  workspace_watch_poll: {
+    args: { workspaceId: string };
+    result: WorkspaceChanges;
+  };
   fs_list_directory: { args: WorkspacePath; result: DirectoryEntry[] };
   fs_read_file: { args: WorkspacePath; result: TextFile };
   workspace_search_begin: {

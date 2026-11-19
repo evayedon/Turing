@@ -8,6 +8,7 @@ export type {
   SearchOptions,
   SearchResponse,
   TextFile,
+  WorkspaceChanges,
   WorkspaceCommands,
   WorkspaceDescriptor,
   WorkspaceError,

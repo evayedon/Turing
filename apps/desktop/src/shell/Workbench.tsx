@@ -33,6 +33,7 @@ import {
 import { clearRecents, useRecents } from "./recent";
 import type { Recent } from "./recent";
 import { useExplorer } from "../explorer/use-explorer";
+import { useWorkspaceWatcher } from "../explorer/use-workspace-watcher";
 import { GitPanel } from "../git/GitPanel";
 import { useGit } from "../git/use-git";
 import {
@@ -105,6 +106,14 @@ export function Workbench() {
   const explorer = useExplorer();
   const editor = useEditor(explorer.workspace?.id, explorer.native);
   const git = useGit(explorer.workspace?.id, explorer.native);
+  useWorkspaceWatcher(
+    explorer.workspace?.id,
+    explorer.native,
+    (id, changes) => {
+      void explorer.applyChanges(id, changes);
+      void editor.applyDiskChanges(id, changes);
+    },
+  );
   const execution = useExecution();
   const language = useLanguage(
     explorer.workspace?.id,

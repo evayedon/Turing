@@ -2,9 +2,11 @@ mod file;
 mod mutations;
 mod search;
 mod selected;
+mod watch;
 
 pub use search::{SearchOptions, SearchResponse};
 pub use selected::{PickedFile, SelectedFileSnapshot, SelectedFileVersion};
+pub use watch::WorkspaceChanges;
 
 use cap_fs_ext::DirExt;
 use cap_std::{ambient_authority, fs::Dir};
@@ -103,6 +105,25 @@ struct Workspace {
     root: Dir,
     /// Canonical filesystem path of the workspace root; used by git subprocess.
     canonical_path: std::path::PathBuf,
+    /// Change notifications for this registration only; dropped with it.
+    watch: Option<watch::Watch>,
+}
+
+impl Workspace {
+    /// True when the canonical path no longer names the approved directory
+    /// (moved, deleted or replaced), so path-based OS events are untrusted.
+    fn root_replaced(&self) -> bool {
+        use cap_fs_ext::MetadataExt;
+        let Ok(current) = Dir::open_ambient_dir(&self.canonical_path, ambient_authority()) else {
+            return true;
+        };
+        match (current.dir_metadata(), self.root.dir_metadata()) {
+            (Ok(current), Ok(approved)) => {
+                current.dev() != approved.dev() || current.ino() != approved.ino()
+            }
+            _ => true,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -148,6 +169,7 @@ impl Registry {
             descriptor: descriptor.clone(),
             root,
             canonical_path: canonical,
+            watch: None,
         });
         Ok(descriptor)
     }
@@ -157,6 +179,53 @@ impl Registry {
         self.revoke_search();
         self.active = None;
         Ok(())
+    }
+
+    fn active_mut(&mut self, owner: &str, id: &str) -> Result<&mut Workspace> {
+        self.active
+            .as_mut()
+            .filter(|workspace| workspace.owner == owner && workspace.descriptor.id == id)
+            .ok_or(WorkspaceError::PermissionDenied)
+    }
+
+    /// Binds a watcher to the registration it was started for. A watcher
+    /// that finished starting after its registration was closed or replaced
+    /// is refused and dropped.
+    pub fn attach_watch(&mut self, owner: &str, id: &str, watch: watch::Watch) -> Result<()> {
+        self.active_mut(owner, id)?.watch = Some(watch);
+        Ok(())
+    }
+
+    pub fn stop_watch(&mut self) {
+        if let Some(workspace) = self.active.as_mut() {
+            workspace.watch = None;
+        }
+    }
+
+    /// Returns coalesced changes for the caller's active registration only.
+    /// Without a running watcher this reports nothing; a replaced root stops
+    /// the watcher and reports one rescan.
+    pub fn poll_changes(
+        &mut self,
+        owner: &str,
+        id: &str,
+        now: std::time::Instant,
+    ) -> Result<WorkspaceChanges> {
+        let workspace = self.active_mut(owner, id)?;
+        let Some(watch) = workspace.watch.as_ref() else {
+            return Ok(WorkspaceChanges::default());
+        };
+        if workspace.root_replaced() {
+            workspace.watch = None;
+            return Ok(WorkspaceChanges {
+                paths: Vec::new(),
+                rescan: true,
+            });
+        }
+        let mut changes = watch.take(now);
+        let root = &workspace.root;
+        changes.paths.retain(|path| watch::reachable(root, path));
+        Ok(changes)
     }
 
     pub(crate) fn authorize(&self, owner: &str, id: &str) -> Result<&Dir> {
@@ -303,6 +372,21 @@ impl WorkspaceService {
             registry.revoke_search();
             registry.active = None;
             registry.selected.clear();
+        }
+    }
+
+    /// Starts watching the caller's active registration. The OS watcher is
+    /// created without the registry lock (a recursive watch can take a while)
+    /// and attached only if the same registration is still active.
+    pub fn watch(&self, owner: &str, id: &str) -> Result<()> {
+        let root = self.registry()?.workspace_path(owner, id)?.to_path_buf();
+        let watch = watch::Watch::start(&root)?;
+        self.registry()?.attach_watch(owner, id, watch)
+    }
+
+    pub fn stop_watch(&self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.stop_watch();
         }
     }
 
@@ -565,6 +649,236 @@ mod tests {
         );
     }
 
+    /// Polls until `accept` holds or a generous deadline passes; OS
+    /// watchers deliver asynchronously and CI machines can be slow.
+    fn poll_until(
+        registry: &mut Registry,
+        id: &str,
+        mut accept: impl FnMut(&WorkspaceChanges) -> bool,
+    ) -> Vec<WorkspaceChanges> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            let changes = registry
+                .poll_changes(OWNER, id, std::time::Instant::now())
+                .unwrap();
+            if changes != WorkspaceChanges::default() {
+                let done = accept(&changes);
+                seen.push(changes);
+                if done {
+                    return seen;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("watcher did not converge; saw {seen:?}");
+    }
+
+    fn watched() -> (TempDir, Registry, WorkspaceDescriptor) {
+        let (folder, mut registry, workspace) = approved();
+        let root = registry
+            .workspace_path(OWNER, &workspace.id)
+            .unwrap()
+            .to_path_buf();
+        let watch = watch::Watch::start(&root).unwrap();
+        registry.attach_watch(OWNER, &workspace.id, watch).unwrap();
+        (folder, registry, workspace)
+    }
+
+    #[test]
+    fn a_real_rename_burst_is_reported_as_relative_paths() {
+        let (folder, mut registry, workspace) = watched();
+        fs::create_dir(folder.path().join("src")).unwrap();
+        // Give slower backends a moment to arm the new subdirectory watch.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        for index in 0..5 {
+            fs::write(folder.path().join(format!("src/{index}.txt")), "x").unwrap();
+        }
+        for index in 0..5 {
+            fs::rename(
+                folder.path().join(format!("src/{index}.txt")),
+                folder.path().join(format!("src/renamed-{index}.txt")),
+            )
+            .unwrap();
+        }
+        let mut reported = std::collections::BTreeSet::new();
+        let mut rescanned = false;
+        poll_until(&mut registry, &workspace.id, |changes| {
+            rescanned |= changes.rescan;
+            reported.extend(changes.paths.iter().cloned());
+            // A path stands for its subtree, so "src" covers every rename.
+            rescanned
+                || reported.contains("src")
+                || (0..5).all(|index| reported.contains(&format!("src/renamed-{index}.txt")))
+        });
+        for path in &reported {
+            assert!(
+                path == "src" || path.starts_with("src/"),
+                "unexpected path {path}"
+            );
+        }
+        // The listing that a view refreshes to matches disk.
+        let listed: Vec<_> = registry
+            .list(OWNER, &workspace.id, "src")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(
+            listed,
+            (0..5)
+                .map(|index| format!("renamed-{index}.txt"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn closing_or_replacing_a_workspace_stops_its_watcher_and_never_resurrects_it() {
+        let (folder, mut registry, workspace) = watched();
+        let old_inbox = registry
+            .active
+            .as_ref()
+            .unwrap()
+            .watch
+            .as_ref()
+            .unwrap()
+            .inbox();
+        let replacement = registry.register(OWNER, folder.path()).unwrap();
+        assert!(registry.active.as_ref().unwrap().watch.is_none());
+        assert!(old_inbox.lock().unwrap().is_closed());
+        fs::write(folder.path().join("after.txt"), "x").unwrap();
+        assert_eq!(
+            registry
+                .poll_changes(OWNER, &workspace.id, std::time::Instant::now())
+                .unwrap_err(),
+            WorkspaceError::PermissionDenied
+        );
+        // A watcher started for the stale registration cannot be attached.
+        let root = folder.path().canonicalize().unwrap();
+        let late = watch::Watch::start(&root).unwrap();
+        assert_eq!(
+            registry.attach_watch(OWNER, &workspace.id, late),
+            Err(WorkspaceError::PermissionDenied)
+        );
+        let stranger = watch::Watch::start(&root).unwrap();
+        assert_eq!(
+            registry.attach_watch("other", &replacement.id, stranger),
+            Err(WorkspaceError::PermissionDenied)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(
+            registry
+                .poll_changes(OWNER, &replacement.id, std::time::Instant::now())
+                .unwrap(),
+            WorkspaceChanges::default(),
+            "the replacement has no watcher and inherits no stale events"
+        );
+
+        let (_folder, mut registry, workspace) = watched();
+        let inbox = registry
+            .active
+            .as_ref()
+            .unwrap()
+            .watch
+            .as_ref()
+            .unwrap()
+            .inbox();
+        registry.close(OWNER, &workspace.id).unwrap();
+        assert!(inbox.lock().unwrap().is_closed());
+        assert_eq!(
+            registry
+                .poll_changes(OWNER, &workspace.id, std::time::Instant::now())
+                .unwrap_err(),
+            WorkspaceError::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn reload_and_shutdown_stop_the_watcher() {
+        let (_folder, registry, workspace) = watched();
+        let service = WorkspaceService {
+            registry: Mutex::new(registry),
+            picker: Mutex::new(()),
+        };
+        let inbox = {
+            let registry = service.registry().unwrap();
+            registry
+                .active
+                .as_ref()
+                .unwrap()
+                .watch
+                .as_ref()
+                .unwrap()
+                .inbox()
+        };
+        service.stop_watch();
+        assert!(inbox.lock().unwrap().is_closed());
+        assert_eq!(
+            service
+                .registry()
+                .unwrap()
+                .poll_changes(OWNER, &workspace.id, std::time::Instant::now())
+                .unwrap(),
+            WorkspaceChanges::default()
+        );
+        service.watch(OWNER, &workspace.id).unwrap();
+        let inbox = {
+            let registry = service.registry().unwrap();
+            registry
+                .active
+                .as_ref()
+                .unwrap()
+                .watch
+                .as_ref()
+                .unwrap()
+                .inbox()
+        };
+        service.shutdown();
+        assert!(inbox.lock().unwrap().is_closed());
+        assert_eq!(
+            service.watch(OWNER, &workspace.id),
+            Err(WorkspaceError::PermissionDenied)
+        );
+    }
+
+    // Windows refuses to rename a directory while its handle is retained.
+    #[cfg(unix)]
+    #[test]
+    fn a_moved_root_reports_one_rescan_and_stops_watching() {
+        let parent = tempfile::tempdir().unwrap();
+        let selected = parent.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        let mut registry = Registry::default();
+        let workspace = registry.register(OWNER, &selected).unwrap();
+        let root = registry
+            .workspace_path(OWNER, &workspace.id)
+            .unwrap()
+            .to_path_buf();
+        registry
+            .attach_watch(OWNER, &workspace.id, watch::Watch::start(&root).unwrap())
+            .unwrap();
+        fs::rename(&selected, parent.path().join("moved")).unwrap();
+        fs::create_dir(&selected).unwrap();
+        fs::write(selected.join("impostor.txt"), "outside").unwrap();
+        assert_eq!(
+            registry
+                .poll_changes(OWNER, &workspace.id, std::time::Instant::now())
+                .unwrap(),
+            WorkspaceChanges {
+                paths: Vec::new(),
+                rescan: true
+            }
+        );
+        assert!(registry.active.as_ref().unwrap().watch.is_none());
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(
+            registry
+                .poll_changes(OWNER, &workspace.id, std::time::Instant::now())
+                .unwrap(),
+            WorkspaceChanges::default()
+        );
+    }
+
     #[test]
     fn text_reads_reject_invalid_encoding_and_oversized_files() {
         let (folder, registry, workspace) = approved();
@@ -817,5 +1131,23 @@ mod contract_tests {
             },
         );
         fixture::assert_case_count("TextFile", 1);
+
+        fixture::assert_payload(
+            "WorkspaceChanges",
+            0,
+            &WorkspaceChanges {
+                paths: vec!["src/main.rs".into(), "docs/ünï".into()],
+                rescan: false,
+            },
+        );
+        fixture::assert_payload(
+            "WorkspaceChanges",
+            1,
+            &WorkspaceChanges {
+                paths: Vec::new(),
+                rescan: true,
+            },
+        );
+        fixture::assert_case_count("WorkspaceChanges", 2);
     }
 }

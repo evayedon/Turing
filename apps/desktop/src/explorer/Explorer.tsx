@@ -22,7 +22,7 @@ export type ExplorerActions = {
 
 type Props = Omit<
   ReturnType<typeof useExplorer>,
-  "open" | "close" | "refresh" | "renamed"
+  "open" | "close" | "refresh" | "renamed" | "applyChanges"
 > & {
   open: () => void;
   close: () => void;

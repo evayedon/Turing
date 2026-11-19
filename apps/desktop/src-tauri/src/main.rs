@@ -39,6 +39,7 @@ fn main() {
             commands::workspace_create_file,
             commands::workspace_rename_entry,
             commands::workspace_close,
+            commands::workspace_watch_poll,
             commands::fs_list_directory,
             commands::fs_read_file,
             commands::workspace_search_begin,

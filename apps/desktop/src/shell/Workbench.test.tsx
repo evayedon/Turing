@@ -13,6 +13,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+// The workspace watcher polls in the background; hold it out of IPC sequences.
+vi.mock("../explorer/watch-ipc", () => ({
+  pollWorkspaceChanges: vi.fn(() => new Promise(() => {})),
+}));
+
 beforeEach(() => {
   const storage = new Map<string, string>();
   vi.stubGlobal("localStorage", {
