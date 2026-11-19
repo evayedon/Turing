@@ -19,6 +19,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 const MAX_DOCUMENTS: usize = 24;
 const MAX_PENDING: usize = 16;
+const MAX_MESSAGES_PER_POLL: usize = 32;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -232,6 +234,12 @@ fn notify(method: &str, params: Value) -> Value {
 
 impl Session {
     fn start(workspace_id: String, executable: &Path) -> Result<Self> {
+        let staging = Self::staging()?;
+        let process = Process::start(executable, staging.path())?;
+        Self::begin(workspace_id, staging, process)
+    }
+
+    fn staging() -> Result<tempfile::TempDir> {
         let temp_root = std::env::temp_dir()
             .canonicalize()
             .map_err(|_| Error::StartFailed)?;
@@ -242,11 +250,15 @@ impl Session {
             use std::os::unix::fs::PermissionsExt;
             builder.permissions(std::fs::Permissions::from_mode(0o700));
         }
-        let staging = builder
+        builder
             .tempdir_in(temp_root)
-            .map_err(|_| Error::StartFailed)?;
+            .map_err(|_| Error::StartFailed)
+    }
+
+    /// Sends `initialize` over an already connected transport. Capabilities
+    /// are accepted later by `poll`; until then every action is `NotReady`.
+    fn begin(workspace_id: String, staging: tempfile::TempDir, process: Process) -> Result<Self> {
         let root_uri = Url::from_directory_path(staging.path()).map_err(|_| Error::StartFailed)?;
-        let process = Process::start(executable, staging.path())?;
         process.send(json!({
             "jsonrpc":"2.0","id":1,"method":"initialize","params":{
                 "processId":std::process::id(), "rootUri":root_uri.as_str(),
@@ -418,7 +430,7 @@ impl Session {
         if self.capabilities.is_none() && self.started.elapsed() > Duration::from_secs(8) {
             return Err(Error::StartFailed);
         }
-        for _ in 0..8 {
+        for _ in 0..MAX_MESSAGES_PER_POLL {
             let Some(message) = self.process.next()? else {
                 break;
             };
@@ -484,8 +496,19 @@ impl Session {
                 }
             }
         }
-        self.pending
-            .retain(|_, request| request.started.elapsed() < Duration::from_secs(10));
+        let expired: Vec<u32> = self
+            .pending
+            .iter()
+            .filter(|(_, request)| request.started.elapsed() >= REQUEST_TIMEOUT)
+            .map(|(id, _)| *id)
+            .collect();
+        for request_id in expired {
+            self.pending.remove(&request_id);
+            // Best effort: the server may stop work it no longer owes.
+            let _ = self
+                .process
+                .send(notify("$/cancelRequest", json!({"id":request_id})));
+        }
         Ok(Update {
             capabilities: self.capabilities,
             events,
@@ -926,7 +949,412 @@ mod tests {
         });
         let bad = json!({"uri":"file:///outside.hpp","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}});
         assert_eq!(session.definitions(&bad, &registry, "owner"), json!([]));
-        session.process.shutdown();
+        assert_eq!(
+            session.process.shutdown(),
+            super::process::Shutdown::Graceful
+        );
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    //! Deterministic LSP lifecycle coverage against a scripted server over
+    //! real OS pipes, so every platform's default suite exercises
+    //! initialize, document sync, cancellation and shutdown.
+    use super::process::{Process, Shutdown};
+    use super::*;
+    use std::{
+        io::BufReader,
+        sync::{Arc, Mutex as StdMutex},
+        thread,
+    };
+
+    #[derive(Clone, Copy, Default)]
+    struct Script {
+        encoding: Option<&'static str>,
+        server_request: bool,
+        hold_hover: bool,
+        flood: usize,
+        ignore_shutdown: bool,
+        linger_after_exit: bool,
+        crash_on_open: bool,
+    }
+
+    type Log = Arc<StdMutex<Vec<Value>>>;
+
+    fn reply(id: &Value, result: Value) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"result":result})
+    }
+
+    fn serve(
+        script: Script,
+        input: std::io::PipeReader,
+        mut output: std::io::PipeWriter,
+        log: Log,
+    ) {
+        let mut input = BufReader::new(input);
+        let mut send = |message: Value| framing::write(&mut output, &message).is_ok();
+        while let Ok(message) = framing::read(&mut input) {
+            log.lock().unwrap().push(message.clone());
+            let id = message.get("id").cloned().unwrap_or(Value::Null);
+            let params = &message["params"];
+            match message.get("method").and_then(Value::as_str) {
+                Some("initialize") => {
+                    let mut capabilities = json!({
+                        "hoverProvider": true,
+                        "completionProvider": {},
+                        "definitionProvider": true,
+                    });
+                    if let Some(encoding) = script.encoding {
+                        capabilities["positionEncoding"] = json!(encoding);
+                    }
+                    send(reply(&id, json!({ "capabilities": capabilities })));
+                    if script.server_request {
+                        send(
+                            json!({"jsonrpc":"2.0","id":"s1","method":"window/workDoneProgress/create","params":{"token":"t"}}),
+                        );
+                    }
+                    for index in 0..script.flood {
+                        send(
+                            json!({"jsonrpc":"2.0","method":"window/logMessage","params":{"type":4,"message":format!("burst {index}")}}),
+                        );
+                    }
+                }
+                Some("textDocument/didOpen" | "textDocument/didChange") => {
+                    if script.crash_on_open {
+                        return;
+                    }
+                    let document = &params["textDocument"];
+                    let version = document["version"].as_u64().unwrap();
+                    for stale in [version - 1, version] {
+                        send(
+                            json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{
+                                "uri": document["uri"], "version": stale,
+                                "diagnostics": [{"message": format!("v{stale}")}],
+                            }}),
+                        );
+                    }
+                }
+                Some("textDocument/hover") if script.hold_hover => {}
+                Some("textDocument/hover" | "textDocument/completion") => {
+                    send(reply(&id, json!({"contents": "answer"})));
+                }
+                Some("textDocument/definition") => {
+                    send(reply(
+                        &id,
+                        json!([{"uri": params["textDocument"]["uri"], "range": {"start":{"line":0,"character":4},"end":{"line":0,"character":10}}}]),
+                    ));
+                }
+                Some("$/cancelRequest") => {
+                    // A late, cancelled reply that the client must ignore.
+                    send(
+                        json!({"jsonrpc":"2.0","id":params["id"],"error":{"code":-32800,"message":"cancelled"}}),
+                    );
+                    send(reply(&params["id"], json!({"contents": "too late"})));
+                }
+                Some("shutdown") if !script.ignore_shutdown => {
+                    send(reply(&id, Value::Null));
+                }
+                Some("exit") if !script.linger_after_exit => return,
+                _ => {}
+            }
+        }
+    }
+
+    fn connect(script: Script) -> (Process, Log) {
+        let (server_input, client_output) = std::io::pipe().unwrap();
+        let (client_input, server_output) = std::io::pipe().unwrap();
+        let log = Log::default();
+        let server_log = log.clone();
+        thread::spawn(move || serve(script, server_input, server_output, server_log));
+        (Process::connect(client_output, client_input).unwrap(), log)
+    }
+
+    struct Fixture {
+        _root: tempfile::TempDir,
+        registry: Registry,
+        session: Session,
+        log: Log,
+    }
+
+    fn fixture(script: Script) -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("hello.cpp"), "int main() {}\n").unwrap();
+        let mut registry = Registry::default();
+        let workspace = registry.register("owner", root.path()).unwrap();
+        let (process, log) = connect(script);
+        let session = Session::begin(workspace.id, Session::staging().unwrap(), process).unwrap();
+        Fixture {
+            _root: root,
+            registry,
+            session,
+            log,
+        }
+    }
+
+    impl Fixture {
+        fn poll(&mut self) -> Result<Update> {
+            self.session.poll(&self.registry, "owner")
+        }
+
+        /// Polls until `found` matches an update, failing after a deadline.
+        fn until(&mut self, mut found: impl FnMut(&Update) -> bool) -> Update {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let update = self.poll().expect("session stays alive");
+                if found(&update) {
+                    return update;
+                }
+                assert!(Instant::now() < deadline, "lifecycle deadline");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn ready(&mut self) -> Capabilities {
+            self.until(|update| update.capabilities.is_some())
+                .capabilities
+                .unwrap()
+        }
+
+        fn apply(&mut self, action: Action) -> Result<()> {
+            self.session.apply(&self.registry, "owner", action)
+        }
+
+        fn sync(&mut self, version: u32, saved: bool) -> Result<()> {
+            self.apply(Action::Sync {
+                path: "hello.cpp".into(),
+                version,
+                text: format!("int main() {{ return {version}; }}\n"),
+                saved,
+            })
+        }
+
+        fn request(&mut self, request_id: u32, version: u32, feature: Feature) -> Result<()> {
+            self.apply(Action::Request {
+                path: "hello.cpp".into(),
+                version,
+                position: Position {
+                    line: 0,
+                    character: 4,
+                },
+                feature,
+                request_id,
+            })
+        }
+
+        /// Methods the server received, in order. Client replies to
+        /// server requests carry no method and are left out.
+        fn methods(&self) -> Vec<String> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|message| message.get("method")?.as_str().map(String::from))
+                .collect()
+        }
+
+        fn received(&self, matches: impl Fn(&Value) -> bool) -> bool {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if self.log.lock().unwrap().iter().any(&matches) {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    fn response(update: &Update, id: u32) -> Option<&Value> {
+        update.events.iter().find_map(|event| match event {
+            Event::Response { request_id, value } if *request_id == id => Some(value),
+            _ => None,
+        })
+    }
+
+    fn diagnostic_versions(update: &Update) -> Vec<u32> {
+        update
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Diagnostics { version, .. } => Some(*version),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn server_initializes_syncs_cancels_and_shuts_down() {
+        let mut test = fixture(Script {
+            server_request: true,
+            hold_hover: true,
+            ..Script::default()
+        });
+
+        // Initialize: nothing is accepted until capabilities are negotiated.
+        assert_eq!(test.sync(1, false), Err(Error::NotReady));
+        let capabilities = test.ready();
+        assert!(capabilities.hover && capabilities.completion && capabilities.definition);
+        let initialize = test.log.lock().unwrap()[0].clone();
+        assert_eq!(initialize["method"], "initialize");
+        assert_eq!(
+            initialize.pointer("/params/capabilities/general/positionEncodings"),
+            Some(&json!(["utf-16"]))
+        );
+        assert!(test.received(|message| message["method"] == "initialized"));
+        // Server-initiated requests are refused rather than forwarded.
+        assert!(test.received(|message| {
+            message["id"] == "s1" && message.pointer("/error/code") == Some(&json!(-32601))
+        }));
+
+        // Sync: open, then change and save; only current versions surface.
+        test.sync(1, false).unwrap();
+        let first = test.until(|update| !diagnostic_versions(update).is_empty());
+        assert_eq!(diagnostic_versions(&first), vec![1]);
+        assert!(test.session.staging.path().join("hello.cpp").is_file());
+        test.sync(2, true).unwrap();
+        let second = test.until(|update| !diagnostic_versions(update).is_empty());
+        assert_eq!(diagnostic_versions(&second), vec![2]);
+        assert_eq!(test.sync(2, false), Err(Error::InvalidDocument));
+        assert_eq!(
+            test.request(3, 1, Feature::Hover),
+            Err(Error::InvalidDocument)
+        );
+
+        // Cancel: the server is told, and its late replies are dropped.
+        test.request(3, 2, Feature::Hover).unwrap();
+        test.apply(Action::Cancel { request_id: 3 }).unwrap();
+        assert!(test.received(|message| {
+            message["method"] == "$/cancelRequest" && message["params"]["id"] == 3
+        }));
+        test.request(4, 2, Feature::Completion).unwrap();
+        let answered = test.until(|update| response(update, 4).is_some());
+        assert_eq!(response(&answered, 4), Some(&json!({"contents": "answer"})));
+        assert!(response(&answered, 3).is_none());
+        for _ in 0..10 {
+            assert!(response(&test.poll().unwrap(), 3).is_none());
+        }
+
+        // Responses for a request made before an edit are withheld.
+        test.request(5, 2, Feature::Definition).unwrap();
+        test.sync(3, false).unwrap();
+        let stale = test.until(|update| response(update, 5).is_some());
+        assert_eq!(response(&stale, 5), Some(&Value::Null));
+
+        // Expired requests are cancelled on the server too.
+        test.request(6, 3, Feature::Hover).unwrap();
+        test.session.pending.get_mut(&6).unwrap().started =
+            Instant::now().checked_sub(REQUEST_TIMEOUT).unwrap();
+        test.poll().unwrap();
+        assert!(!test.session.pending.contains_key(&6));
+        assert!(test.received(|message| {
+            message["method"] == "$/cancelRequest" && message["params"]["id"] == 6
+        }));
+
+        // Close removes the document and its mirror.
+        test.apply(Action::Close {
+            path: "hello.cpp".into(),
+        })
+        .unwrap();
+        assert!(test.session.documents.is_empty());
+        assert!(!test.session.staging.path().join("hello.cpp").exists());
+
+        // Shutdown: request, reply, exit, and the server closes its output.
+        assert_eq!(test.session.process.shutdown(), Shutdown::Graceful);
+        assert_eq!(
+            test.methods(),
+            [
+                "initialize",
+                "initialized",
+                "textDocument/didOpen",
+                "textDocument/didChange",
+                "textDocument/didSave",
+                "textDocument/hover",
+                "$/cancelRequest",
+                "textDocument/completion",
+                "textDocument/definition",
+                "textDocument/didChange",
+                "textDocument/hover",
+                "$/cancelRequest",
+                "textDocument/didClose",
+                "shutdown",
+                "exit",
+            ]
+        );
+    }
+
+    #[test]
+    fn shutdown_reports_servers_that_do_not_cooperate() {
+        let mut silent = fixture(Script {
+            ignore_shutdown: true,
+            ..Script::default()
+        });
+        silent.ready();
+        assert_eq!(silent.session.process.shutdown(), Shutdown::NoReply);
+
+        let mut lingering = fixture(Script {
+            linger_after_exit: true,
+            ..Script::default()
+        });
+        lingering.ready();
+        assert_eq!(lingering.session.process.shutdown(), Shutdown::NoExit);
+        assert!(lingering.received(|message| message["method"] == "exit"));
+    }
+
+    #[test]
+    fn a_crashed_server_ends_the_session() {
+        let mut test = fixture(Script {
+            crash_on_open: true,
+            ..Script::default()
+        });
+        test.ready();
+        test.sync(1, false).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            match test.poll() {
+                Err(error) => break error,
+                Ok(_) => assert!(Instant::now() < deadline, "crash not reported"),
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(error, Error::ServerExited);
+        assert_eq!(test.session.process.shutdown(), Shutdown::AlreadyExited);
+    }
+
+    #[test]
+    fn servers_without_utf16_positions_are_rejected() {
+        let mut test = fixture(Script {
+            encoding: Some("utf-8"),
+            ..Script::default()
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match test.poll() {
+                Err(error) => {
+                    assert_eq!(error, Error::StartFailed);
+                    break;
+                }
+                Ok(update) => assert!(update.capabilities.is_none()),
+            }
+            assert!(Instant::now() < deadline, "encoding was not rejected");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn message_bursts_apply_backpressure_without_ending_the_session() {
+        // Far more than the 16-message inbound queue between polls.
+        let mut test = fixture(Script {
+            flood: 400,
+            ..Script::default()
+        });
+        thread::sleep(Duration::from_millis(100));
+        test.ready();
+        test.sync(1, false).unwrap();
+        let update = test.until(|update| !diagnostic_versions(update).is_empty());
+        assert_eq!(diagnostic_versions(&update), vec![1]);
     }
 }
 

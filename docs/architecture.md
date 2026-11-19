@@ -355,10 +355,17 @@ requests, and bounds frame size, queues and pending requests. Renderer results
 are checked against the current editor revision before they reach Monaco.
 Monaco completion supports plain-text insertions; additional source edits,
 commands and snippets are excluded. Missing or crashed servers show a retry
-action. Explicit Stop requests shutdown and exit with a bounded deadline.
-Workspace replacement, workspace close and window destruction revoke the
-session and force process cleanup. Unix uses a process group and Windows uses
-a kill-on-close Job Object. A desktop crash can leave temporary files behind.
+action. Requests that are cancelled, or that expire after 10 seconds, send
+`$/cancelRequest`; late replies are dropped. Server messages pass through a
+bounded queue with backpressure, so a burst slows the server instead of
+ending the session. Explicit Stop sends `shutdown` and waits up to 750 ms for
+the reply, then sends `exit` and waits up to 750 ms for the server to close its
+output. The result is reported as graceful, already exited, no reply or no
+exit, and anything but graceful falls through to forced cleanup. Workspace
+replacement, workspace close and window destruction revoke the session and
+force process cleanup. Unix uses a process group, signalled before the
+child is reaped so the group ID cannot be reused; Windows uses a
+kill-on-close Job Object. A desktop crash can leave temporary files behind.
 
 Problems groups errors, warnings and informational messages. Rows open the
 corresponding editor and location. The `clangd` marker owner is separate from
@@ -376,7 +383,13 @@ follow-up work. Cross-platform CI and native GUI tests should verify executable
 discovery, approval, and shutdown on each platform.
 
 The default Rust suite has framing, authorization and malformed-server cleanup
-tests. An opt-in integration test runs a trusted already-installed clangd.
+tests, plus `lifecycle_tests`: a scripted LSP server over OS pipes that
+checks initialize and UTF-16 negotiation, server-request refusal, open, change,
+save and close sync, stale diagnostic and response filtering, cancellation
+and expiry, burst backpressure, crash detection, and each shutdown outcome.
+They need no external tools, so CI runs them on macOS, Windows and Linux. An
+opt-in integration test runs a trusted, already-installed clangd and requires
+a graceful shutdown.
 
 ```sh
 TURING_TEST_CLANGD=/absolute/path/to/clangd cargo test --release --locked \

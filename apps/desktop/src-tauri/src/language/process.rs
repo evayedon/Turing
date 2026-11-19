@@ -1,20 +1,40 @@
 use super::{framing, Error, Result};
 use serde_json::{json, Value};
 use std::{
-    io::BufReader,
+    io::{BufReader, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError},
     thread,
     time::{Duration, Instant},
 };
 
+/// Budget for the server to answer `shutdown`, then separately to exit
+/// after `exit`. Revocation and window destruction skip this and kill.
+const SHUTDOWN_REPLY: Duration = Duration::from_millis(750);
+const SHUTDOWN_EXIT: Duration = Duration::from_millis(750);
+const SHUTDOWN_ID: u64 = 2;
+
+/// How an explicit stop ended. Anything but `Graceful` falls back to the
+/// forced cleanup in `Drop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shutdown {
+    /// The server answered `shutdown` and closed its output after `exit`.
+    Graceful,
+    /// The server had already exited or could not accept `shutdown`.
+    AlreadyExited,
+    /// No `shutdown` reply arrived within the budget.
+    NoReply,
+    /// The server replied but did not exit within the budget.
+    NoExit,
+}
+
 pub struct Process {
-    child: Child,
+    child: Option<Child>,
     send: SyncSender<Vec<Value>>,
     pub receive: Receiver<Value>,
     #[cfg(windows)]
-    _job: crate::terminal::platform::ProcessGuard,
+    _job: Option<crate::terminal::platform::ProcessGuard>,
 }
 
 impl Process {
@@ -61,23 +81,42 @@ impl Process {
             })?;
             (child, job)
         };
+        let mut child = child;
+        let abandon = |mut child: Child| {
+            let _ = child.kill();
+            let _ = child.wait();
+            Error::StartFailed
+        };
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(abandon(child));
+        };
+        let mut process = match Self::connect(stdin, stdout) {
+            Ok(process) => process,
+            Err(_) => return Err(abandon(child)),
+        };
+        process.child = Some(child);
+        #[cfg(windows)]
+        {
+            process._job = Some(job);
+        }
+        Ok(process)
+    }
+
+    /// Runs the framed JSON-RPC transport over any byte streams. `start`
+    /// uses the child's pipes; tests use in-memory pipes and a scripted
+    /// server.
+    pub fn connect(
+        mut input: impl Write + Send + 'static,
+        output: impl Read + Send + 'static,
+    ) -> Result<Self> {
         let (send, outbound) = mpsc::sync_channel::<Vec<Value>>(8);
         let (inbound, receive) = mpsc::sync_channel(16);
-        let mut process = Self {
-            child,
-            send,
-            receive,
-            #[cfg(windows)]
-            _job: job,
-        };
-        let mut stdin = process.child.stdin.take().ok_or(Error::StartFailed)?;
-        let stdout = process.child.stdout.take().ok_or(Error::StartFailed)?;
         thread::Builder::new()
             .name("clangd-input".into())
             .spawn(move || {
                 while let Ok(messages) = outbound.recv() {
                     for message in messages {
-                        if framing::write(&mut stdin, &message).is_err() {
+                        if framing::write(&mut input, &message).is_err() {
                             return;
                         }
                     }
@@ -87,15 +126,23 @@ impl Process {
         thread::Builder::new()
             .name("clangd-output".into())
             .spawn(move || {
-                let mut stdout = BufReader::new(stdout);
-                while let Ok(message) = framing::read(&mut stdout) {
-                    if inbound.try_send(message).is_err() {
+                let mut output = BufReader::new(output);
+                // A full queue blocks this thread, which in turn makes the
+                // server wait on its pipe: bounded backpressure, not loss.
+                while let Ok(message) = framing::read(&mut output) {
+                    if inbound.send(message).is_err() {
                         break;
                     }
                 }
             })
             .map_err(|_| Error::StartFailed)?;
-        Ok(process)
+        Ok(Self {
+            child: None,
+            send,
+            receive,
+            #[cfg(windows)]
+            _job: None,
+        })
     }
 
     pub fn send(&self, message: Value) -> Result<()> {
@@ -117,28 +164,47 @@ impl Process {
         }
     }
 
-    pub fn shutdown(&mut self) {
+    /// Requests `shutdown`, then `exit`, within bounded budgets. The child
+    /// is never reaped here, so the Unix process group cannot be recycled
+    /// before `Drop` signals it.
+    pub fn shutdown(&mut self) -> Shutdown {
         if self
-            .send(json!({"jsonrpc":"2.0","id":2,"method":"shutdown"}))
+            .send(json!({"jsonrpc":"2.0","id":SHUTDOWN_ID,"method":"shutdown"}))
             .is_err()
         {
-            return;
+            return Shutdown::AlreadyExited;
         }
-        let deadline = Instant::now() + Duration::from_millis(160);
-        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        let deadline = Instant::now() + SHUTDOWN_REPLY;
+        loop {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Shutdown::NoReply;
+            };
             match self.receive.recv_timeout(remaining) {
-                Ok(message) if message.get("id").and_then(Value::as_u64) == Some(2) => {
-                    let _ = self.send(json!({"jsonrpc":"2.0","method":"exit"}));
-                    while Instant::now() < deadline {
-                        if matches!(self.child.try_wait(), Ok(Some(_))) {
-                            return;
-                        }
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    return;
+                Ok(message)
+                    if message.get("id").and_then(Value::as_u64) == Some(SHUTDOWN_ID)
+                        && message.get("method").is_none() =>
+                {
+                    break
                 }
                 Ok(_) => {}
-                Err(_) => return,
+                Err(RecvTimeoutError::Timeout) => return Shutdown::NoReply,
+                Err(RecvTimeoutError::Disconnected) => return Shutdown::AlreadyExited,
+            }
+        }
+        if self.send(json!({"jsonrpc":"2.0","method":"exit"})).is_err() {
+            return Shutdown::Graceful;
+        }
+        // The server closing its output is the exit signal; draining keeps
+        // a blocked output thread from holding the pipe open.
+        let deadline = Instant::now() + SHUTDOWN_EXIT;
+        loop {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Shutdown::NoExit;
+            };
+            match self.receive.recv_timeout(remaining) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => return Shutdown::NoExit,
+                Err(RecvTimeoutError::Disconnected) => return Shutdown::Graceful,
             }
         }
     }
@@ -146,12 +212,17 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        // The unreaped leader keeps the group ID reserved, so this signal
+        // cannot reach an unrelated process group.
         #[cfg(unix)]
         unsafe {
-            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -171,7 +242,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let process = Process::start(&script, fixture.path()).unwrap();
-        let pid = process.child.id() as libc::pid_t;
+        let pid = process.child.as_ref().unwrap().id() as libc::pid_t;
         assert_eq!(
             process.receive.recv_timeout(Duration::from_secs(3)),
             Err(mpsc::RecvTimeoutError::Disconnected)
