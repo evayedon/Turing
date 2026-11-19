@@ -1,4 +1,5 @@
 mod file;
+mod mutations;
 mod search;
 mod selected;
 
@@ -22,6 +23,7 @@ const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum WorkspaceError {
     Busy,
+    WindowLimit,
     PermissionDenied,
     OutsideWorkspace,
     NotFound,
@@ -31,6 +33,10 @@ pub enum WorkspaceError {
     FileTooLarge,
     FileConflict,
     SaveRace,
+    InvalidName,
+    EntryChanged,
+    NameTaken,
+    RenameRace,
     DirectoryTooLarge,
     InvalidSearch,
     SearchCancelled,
@@ -58,8 +64,9 @@ pub fn validate_save_content(content: &str) -> Result<()> {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceDescriptor {
-    id: String,
+    pub(crate) id: String,
     name: String,
+    display_path: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -75,6 +82,7 @@ pub struct DirectoryEntry {
     name: String,
     relative_path: String,
     kind: EntryKind,
+    identity: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +104,7 @@ struct Workspace {
 #[derive(Default)]
 pub struct Registry {
     generation: u64,
+    namespace: Option<String>,
     active: Option<Workspace>,
     search: Option<search::SearchJob>,
     selected: HashMap<String, selected::SelectedGrant>,
@@ -118,7 +127,11 @@ impl Registry {
             .checked_add(1)
             .ok_or(WorkspaceError::IoError)?;
         let descriptor = WorkspaceDescriptor {
-            id: self.generation.to_string(),
+            id: match &self.namespace {
+                Some(namespace) => format!("{namespace}-{}", self.generation),
+                None => self.generation.to_string(),
+            },
+            display_path: selected.to_string_lossy().into_owned(),
             name: canonical
                 .file_name()
                 .unwrap_or(canonical.as_os_str())
@@ -157,6 +170,7 @@ impl Registry {
         let root = self.authorize(owner, id)?;
         let parts = relative_parts(relative_path)?;
         let directory = directory_at(root, &parts)?;
+        let identity_parent = directory.dir_metadata()?;
         let mut entries = Vec::new();
         for (index, entry) in directory.entries()?.enumerate() {
             if index >= MAX_DIRECTORY_ENTRIES {
@@ -166,13 +180,20 @@ impl Registry {
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if !valid_component(&name) {
+            if !valid_component(&name) || name.starts_with(".turing-save-") {
                 continue;
             }
-            let file_type = entry.file_type()?;
-            let kind = if file_type.is_dir() {
+            let metadata = match directory.symlink_metadata(&name) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if is_workspace_link(&metadata) {
+                continue;
+            }
+            let kind = if metadata.is_dir() {
                 EntryKind::Directory
-            } else if file_type.is_file() {
+            } else if metadata.is_file() {
                 EntryKind::File
             } else {
                 continue;
@@ -186,6 +207,7 @@ impl Registry {
                 name,
                 relative_path: path,
                 kind,
+                identity: mutations::identity(&identity_parent, &metadata),
             });
         }
         entries.sort_unstable_by(|left, right| {
@@ -205,6 +227,17 @@ impl Registry {
             encoding: "utf-8",
             version: snapshot.version,
         })
+    }
+
+    pub fn execution_snapshot(
+        &self,
+        owner: &str,
+        id: &str,
+        relative_path: &str,
+    ) -> Result<(String, String, Dir)> {
+        let root = self.authorize(owner, id)?;
+        let snapshot = file::read(root, relative_path)?;
+        Ok((snapshot.content, snapshot.version, root.try_clone()?))
     }
 
     pub fn write(
@@ -227,8 +260,26 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
+    pub fn for_window(label: &str) -> Self {
+        Self {
+            registry: Mutex::new(Registry {
+                namespace: Some(format!("{label}-{}", uuid::Uuid::new_v4())),
+                ..Registry::default()
+            }),
+            picker: Mutex::new(()),
+        }
+    }
+
     pub fn registry(&self) -> Result<MutexGuard<'_, Registry>> {
         self.registry.lock().map_err(|_| WorkspaceError::IoError)
+    }
+
+    pub fn shutdown(&self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.revoke_search();
+            registry.active = None;
+            registry.selected.clear();
+        }
     }
 
     pub fn begin_picker(&self) -> Result<MutexGuard<'_, ()>> {
@@ -275,8 +326,20 @@ fn relative_parts(path: &str) -> Result<Vec<&str>> {
     }
 }
 
+fn is_workspace_link(metadata: &cap_std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use cap_std::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    metadata.is_symlink()
+}
+
 fn open_child_dir(parent: &Dir, name: &Path) -> Result<Dir> {
-    if parent.symlink_metadata(name)?.is_symlink() {
+    if is_workspace_link(&parent.symlink_metadata(name)?) {
         return Err(WorkspaceError::OutsideWorkspace);
     }
     Ok(parent.open_dir_nofollow(name)?)

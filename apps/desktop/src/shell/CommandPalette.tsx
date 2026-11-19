@@ -1,15 +1,25 @@
 import { Search } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
-import type { MenuAction } from "./ActionMenu";
+import type { Command } from "./commands";
 
-export function CommandPalette({
+type PaletteEntry = Pick<Command, "label" | "disabled" | "hidden" | "hint">;
+
+export function CommandPalette<Action extends PaletteEntry>({
   actions,
   dismiss,
   run,
+  title = "Command palette",
+  inputLabel = "Search commands",
+  placeholder = "Search commands…",
+  notice,
 }: {
-  actions: MenuAction[];
+  actions: Action[];
   dismiss: () => void;
-  run: (action: MenuAction) => void;
+  run: (action: Action) => void;
+  title?: string;
+  inputLabel?: string;
+  placeholder?: string;
+  notice?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -19,15 +29,18 @@ export function CommandPalette({
     dialog.current?.close?.();
     dismiss();
   }
-  function execute(action: MenuAction) {
+  function execute(action: Action) {
     dialog.current?.close?.();
     run(action);
   }
   const words = query.trim().toLowerCase().split(/\s+/);
-  const matches = actions.filter(
-    ({ label, disabled }) =>
-      !disabled && words.every((word) => label.toLowerCase().includes(word)),
+  const matching = actions.filter(
+    ({ label, disabled, hidden }) =>
+      !disabled &&
+      !hidden &&
+      words.every((word) => label.toLowerCase().includes(word)),
   );
+  const matches = matching.slice(0, 100);
   const selected = Math.min(index, matches.length - 1);
 
   useLayoutEffect(() => {
@@ -52,7 +65,7 @@ export function CommandPalette({
     <dialog
       ref={dialog}
       className="palette"
-      aria-label="Command palette"
+      aria-label={title}
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -73,13 +86,13 @@ export function CommandPalette({
           <input
             ref={input}
             role="combobox"
-            aria-label="Search commands"
+            aria-label={inputLabel}
             aria-expanded="true"
             aria-controls="palette-results"
             aria-activedescendant={
               selected >= 0 ? `palette-option-${selected}` : undefined
             }
-            placeholder="Search commands…"
+            placeholder={placeholder}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -115,7 +128,7 @@ export function CommandPalette({
           {matches.map((action, i) => (
             <li
               id={`palette-option-${i}`}
-              key={action.label}
+              key={`${action.label}:${i}`}
               role="option"
               aria-selected={i === selected}
               onMouseDown={(event) => event.preventDefault()}
@@ -129,6 +142,16 @@ export function CommandPalette({
         {!matches.length && (
           <p className="panel-message" role="status">
             No matching commands.
+          </p>
+        )}
+        {matching.length > matches.length && (
+          <p className="panel-message" role="status">
+            Keep typing to narrow the results.
+          </p>
+        )}
+        {notice && (
+          <p className="panel-message" role="status">
+            {notice}
           </p>
         )}
         <footer>

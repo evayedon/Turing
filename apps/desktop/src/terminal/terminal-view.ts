@@ -59,6 +59,7 @@ export function createTerminalView(
         terminal.write(Uint8Array.from(bytes), resolve),
       ),
     focus: () => terminal.focus(),
+    clear: () => terminal.clear(),
     disableInput: () => {
       terminal.options.disableStdin = true;
     },

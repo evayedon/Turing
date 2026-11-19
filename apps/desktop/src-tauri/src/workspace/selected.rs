@@ -144,6 +144,21 @@ impl Registry {
         })
     }
 
+    pub fn selected_execution_snapshot(
+        &self,
+        owner: &str,
+        file_id: &str,
+    ) -> Result<(String, String, String, Dir)> {
+        let picked = self.selected_grant(owner, file_id)?;
+        let snapshot = file::read(&picked.directory, &picked.name)?;
+        Ok((
+            picked.name.clone(),
+            snapshot.content,
+            snapshot.version,
+            picked.directory.try_clone()?,
+        ))
+    }
+
     pub fn read_selected(&self, owner: &str, file_id: &str) -> Result<SelectedFileSnapshot> {
         let picked = self.selected_grant(owner, file_id)?;
         let snapshot = file::read(&picked.directory, &picked.name)?;

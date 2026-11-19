@@ -10,7 +10,7 @@ export type TerminalOutput = {
 
 export type TerminalError =
   | "PERMISSION_DENIED"
-  | "ALREADY_RUNNING"
+  | "SESSION_LIMIT"
   | "SESSION_CLOSED"
   | "INVALID_SIZE"
   | "INPUT_TOO_LARGE"

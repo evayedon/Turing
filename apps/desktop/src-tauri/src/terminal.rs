@@ -1,8 +1,9 @@
-mod platform;
+pub(crate) mod platform;
 
-use crate::workspace::WorkspaceService;
+use crate::windows::resource;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::{
     io::{self, Read, Write},
     sync::{
@@ -13,7 +14,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use tauri::{Manager, WebviewWindow};
+use tauri::WebviewWindow;
 
 const CHUNK: usize = 8192;
 const OUTPUT_BATCH: usize = 4;
@@ -23,7 +24,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(8);
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TerminalError {
     PermissionDenied,
-    AlreadyRunning,
+    SessionLimit,
     SessionClosed,
     InvalidSize,
     InputTooLarge,
@@ -38,7 +39,7 @@ type Result<T> = std::result::Result<T, TerminalError>;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalStarted {
-    id: String,
+    pub(crate) id: String,
     workspace_directory: bool,
 }
 
@@ -233,34 +234,37 @@ fn write_input(
 
 #[derive(Default)]
 pub struct TerminalService {
-    session: Mutex<Option<Session>>,
+    sessions: Mutex<HashMap<String, Option<Session>>>,
     shutting_down: AtomicBool,
 }
 
 impl TerminalService {
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
-        if let Ok(mut slot) = self.session.lock() {
-            slot.take();
-        }
+        let sessions = self
+            .sessions
+            .lock()
+            .ok()
+            .map(|mut sessions| std::mem::take(&mut *sessions));
+        drop(sessions);
     }
 
-    fn start(
+    pub(crate) fn start(
         &self,
         owner: &str,
         size: PtySize,
         directory: Option<cap_std::fs::Dir>,
     ) -> Result<TerminalStarted> {
-        let mut slot = self.session.lock().map_err(|_| TerminalError::IoError)?;
+        let mut sessions = self.sessions.lock().map_err(|_| TerminalError::IoError)?;
         if self.shutting_down.load(Ordering::Relaxed) {
             return Err(TerminalError::SessionClosed);
         }
-        if slot.is_some() {
-            return Err(TerminalError::AlreadyRunning);
+        if sessions.len() >= 4 {
+            return Err(TerminalError::SessionLimit);
         }
         let (session, workspace_directory) = Session::start(owner, size, directory)?;
         let id = session.id.clone();
-        *slot = Some(session);
+        sessions.insert(id.clone(), Some(session));
         Ok(TerminalStarted {
             id,
             workspace_directory,
@@ -273,14 +277,21 @@ impl TerminalService {
         id: &str,
         operation: impl FnOnce(&mut Option<Session>) -> Result<T>,
     ) -> Result<T> {
-        let mut slot = self.session.lock().map_err(|_| TerminalError::IoError)?;
-        match slot.as_ref() {
-            Some(session) if session.owner != owner || session.id != id => {
-                Err(TerminalError::PermissionDenied)
-            }
-            Some(_) => operation(&mut slot),
-            None => Err(TerminalError::SessionClosed),
+        let mut sessions = self.sessions.lock().map_err(|_| TerminalError::IoError)?;
+        if sessions.is_empty() {
+            return Err(TerminalError::SessionClosed);
         }
+        let slot = sessions
+            .get_mut(id)
+            .ok_or(TerminalError::PermissionDenied)?;
+        if slot.as_ref().is_none_or(|session| session.owner != owner) {
+            return Err(TerminalError::PermissionDenied);
+        }
+        let result = operation(slot);
+        if slot.is_none() {
+            sessions.remove(id);
+        }
+        result
     }
 }
 
@@ -300,9 +311,7 @@ async fn in_terminal<T: Send + 'static>(
     window: WebviewWindow,
     operation: impl FnOnce(WebviewWindow) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    if window.label() != "main" {
-        return Err(TerminalError::PermissionDenied);
-    }
+    resource(&window).map_err(|_| TerminalError::PermissionDenied)?;
     tauri::async_runtime::spawn_blocking(move || operation(window))
         .await
         .map_err(|_| TerminalError::IoError)?
@@ -317,14 +326,16 @@ pub async fn terminal_start(
 ) -> Result<TerminalStarted> {
     in_terminal(window, move |window| {
         let size = dimensions(rows, cols)?;
-        let workspace = window.state::<WorkspaceService>();
+        let resources = resource(&window).map_err(|_| TerminalError::PermissionDenied)?;
+        let workspace = &resources.workspace;
         let registry = workspace.registry().map_err(|_| TerminalError::IoError)?;
         let directory = workspace_id
             .map(|id| registry.terminal_directory(window.label(), &id))
             .transpose()
             .map_err(|_| TerminalError::PermissionDenied)?;
-        window
-            .state::<TerminalService>()
+        resource(&window)
+            .map_err(|_| TerminalError::PermissionDenied)?
+            .terminal
             .start(window.label(), size, directory)
     })
     .await
@@ -333,8 +344,9 @@ pub async fn terminal_start(
 #[tauri::command]
 pub async fn terminal_read(window: WebviewWindow, id: String) -> Result<TerminalOutput> {
     in_terminal(window, move |window| {
-        window
-            .state::<TerminalService>()
+        resource(&window)
+            .map_err(|_| TerminalError::PermissionDenied)?
+            .terminal
             .with_session(window.label(), &id, |slot| {
                 let result = slot.as_mut().ok_or(TerminalError::SessionClosed)?.read();
                 if result.as_ref().map_or(true, |output| output.finished) {
@@ -352,8 +364,9 @@ pub async fn terminal_input(window: WebviewWindow, id: String, data: Vec<u8>) ->
         return Err(TerminalError::InputTooLarge);
     }
     in_terminal(window, move |window| {
-        window
-            .state::<TerminalService>()
+        resource(&window)
+            .map_err(|_| TerminalError::PermissionDenied)?
+            .terminal
             .with_session(window.label(), &id, |slot| {
                 let input = slot
                     .as_ref()
@@ -377,8 +390,9 @@ pub async fn terminal_resize(
 ) -> Result<()> {
     let size = dimensions(rows, cols)?;
     in_terminal(window, move |window| {
-        window
-            .state::<TerminalService>()
+        resource(&window)
+            .map_err(|_| TerminalError::PermissionDenied)?
+            .terminal
             .with_session(window.label(), &id, |slot| {
                 slot.as_ref()
                     .and_then(|session| session.master.as_ref())
@@ -393,8 +407,9 @@ pub async fn terminal_resize(
 #[tauri::command]
 pub async fn terminal_close(window: WebviewWindow, id: String) -> Result<()> {
     in_terminal(window, move |window| {
-        window
-            .state::<TerminalService>()
+        resource(&window)
+            .map_err(|_| TerminalError::PermissionDenied)?
+            .terminal
             .with_session(window.label(), &id, |slot| {
                 slot.take();
                 Ok(())
@@ -492,12 +507,6 @@ mod tests {
             .start("main", dimensions(24, 80).unwrap(), None)
             .unwrap();
         assert!(!started.workspace_directory);
-        assert_eq!(
-            service
-                .start("main", dimensions(24, 80).unwrap(), None)
-                .unwrap_err(),
-            TerminalError::AlreadyRunning
-        );
         for (owner, id) in [("other", started.id.as_str()), ("main", "stale")] {
             assert_eq!(
                 service.with_session(owner, id, |_| Ok(())).unwrap_err(),
@@ -552,6 +561,43 @@ mod tests {
                 .unwrap_err(),
             TerminalError::SessionClosed
         );
+    }
+
+    #[test]
+    fn keeps_sessions_independent_and_enforces_the_limit() {
+        let service = TerminalService::default();
+        let size = dimensions(24, 80).unwrap();
+        let first = service.start("main", size, None).unwrap();
+        let second = service.start("main", size, None).unwrap();
+        assert_ne!(first.id, second.id);
+        for _ in 0..2 {
+            service.start("main", size, None).unwrap();
+        }
+        assert_eq!(
+            service.start("main", size, None).unwrap_err(),
+            TerminalError::SessionLimit
+        );
+        assert_eq!(
+            service
+                .with_session("foreign", &first.id, |_| Ok(()))
+                .unwrap_err(),
+            TerminalError::PermissionDenied
+        );
+        service
+            .with_session("main", &first.id, |slot| {
+                slot.take();
+                Ok(())
+            })
+            .unwrap();
+        service
+            .with_session("main", &second.id, |slot| {
+                let master = slot.as_ref().unwrap().master.as_ref().unwrap();
+                master.resize(dimensions(32, 90)?).unwrap();
+                assert_eq!(master.get_size().unwrap().cols, 90);
+                Ok(())
+            })
+            .unwrap();
+        service.start("main", size, None).unwrap();
     }
 
     #[cfg(unix)]

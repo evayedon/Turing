@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-turing-windows"
+description = "Open fixed local Turing workbench and terminal windows."
+commands.allow = ["window_new_workbench", "window_new_terminal"]

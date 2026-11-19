@@ -11,7 +11,7 @@ export function invokeTerminal<Command extends keyof TerminalCommands>(
 const messages = {
   PERMISSION_DENIED:
     "The terminal could not access the requested workspace or session.",
-  ALREADY_RUNNING: "A terminal session is already running.",
+  SESSION_LIMIT: "Close a terminal session before opening another.",
   SESSION_CLOSED: "The terminal session has closed.",
   INVALID_SIZE: "The terminal could not use the requested dimensions.",
   INPUT_TOO_LARGE: "The terminal input is too large.",

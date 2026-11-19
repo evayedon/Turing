@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
@@ -27,12 +34,14 @@ function deferred<T>() {
 }
 
 let resize: () => void;
+let observers: (() => void)[];
 let input: (bytes: Uint8Array) => void;
 let disconnect: ReturnType<typeof vi.fn>;
 let view: {
   size: ReturnType<typeof vi.fn>;
   write: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
+  clear: ReturnType<typeof vi.fn>;
   disableInput: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 };
@@ -40,11 +49,13 @@ let view: {
 beforeEach(() => {
   vi.clearAllMocks();
   disconnect = vi.fn();
+  observers = [];
   vi.stubGlobal(
     "ResizeObserver",
     class {
       constructor(callback: () => void) {
         resize = callback;
+        observers.push(callback);
       }
       observe() {}
       disconnect = disconnect;
@@ -54,6 +65,7 @@ beforeEach(() => {
     size: vi.fn(() => ({ rows: 18, cols: 100 })),
     write: vi.fn().mockResolvedValue(undefined),
     focus: vi.fn(),
+    clear: vi.fn(),
     disableInput: vi.fn(),
     dispose: vi.fn(),
   };
@@ -78,6 +90,100 @@ describe("TerminalPanel", () => {
     expect(screen.getByRole("button", { name: "Start terminal" })).toBeTruthy();
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("shows an idle terminal without starting it, then opens, clears and closes explicitly from the menu", async () => {
+    const pending = deferred<never>();
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "terminal_start")
+        return Promise.resolve({ id: "menu", workspaceDirectory: false });
+      if (command === "terminal_read") return pending.promise;
+      return Promise.resolve();
+    });
+    const user = userEvent.setup();
+    render(<Workbench />);
+    const menu = screen.getByRole("menuitem", { name: "Terminal" });
+    await user.click(menu);
+    await user.click(screen.getByRole("menuitem", { name: "Show Terminal" }));
+    expect(screen.getByRole("button", { name: "Start terminal" })).toBeTruthy();
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "terminal_start",
+      expect.anything(),
+    );
+    await user.click(menu);
+    await user.click(screen.getByRole("menuitem", { name: "Open Terminal" }));
+    await screen.findByRole("button", { name: "Close terminal" });
+    await user.click(menu);
+    await user.click(screen.getByRole("menuitem", { name: "Clear Terminal" }));
+    expect(view.clear).toHaveBeenCalledOnce();
+    await user.click(menu);
+    await user.click(screen.getByRole("menuitem", { name: "Close Terminal" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("terminal_close", {
+        id: "menu",
+      }),
+    );
+  });
+
+  it("creates two split PTYs, resizes each, and removes only the selected session", async () => {
+    const pending = deferred<never>();
+    let started = 0;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "terminal_start")
+        return Promise.resolve({
+          id: `pty-${++started}`,
+          workspaceDirectory: false,
+        });
+      if (command === "terminal_read") return pending.promise;
+      return Promise.resolve();
+    });
+    const user = userEvent.setup();
+    render(<Workbench />);
+    const menu = screen.getByRole("menuitem", { name: "Terminal" });
+    await user.click(menu);
+    await user.click(
+      screen.getByRole("menuitem", { name: "New Terminal Window" }),
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith("window_new_terminal", undefined);
+    expect(started).toBe(0);
+    await user.click(menu);
+    await user.click(screen.getByRole("menuitem", { name: "Split Terminal" }));
+    const first = await screen.findByRole("tabpanel", { name: "Terminal 1" });
+    const second = await screen.findByRole("tabpanel", { name: "Terminal 2" });
+    expect(
+      await within(first).findByRole("button", { name: "Close terminal" }),
+    ).toBeTruthy();
+    expect(
+      await within(second).findByRole("button", { name: "Close terminal" }),
+    ).toBeTruthy();
+    const divider = screen.getByRole("separator", {
+      name: "Resize terminal panes",
+    });
+    divider.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(divider.getAttribute("aria-valuenow")).toBe("55");
+    view.size.mockReturnValue({ rows: 20, cols: 73 });
+    act(() => observers.forEach((measure) => measure()));
+    for (const id of ["pty-1", "pty-2"]) {
+      expect(mocks.invoke).toHaveBeenCalledWith("terminal_resize", {
+        id,
+        rows: 20,
+        cols: 73,
+      });
+    }
+    await user.click(screen.getByRole("button", { name: "Remove Terminal 2" }));
+    expect(screen.queryByRole("tabpanel", { name: "Terminal 2" })).toBeNull();
+    expect(
+      within(first).getByRole("button", { name: "Close terminal" }),
+    ).toBeTruthy();
+    expect(
+      mocks.invoke.mock.calls.filter(
+        ([command]) => command === "terminal_close",
+      ),
+    ).toHaveLength(1);
+    expect(
+      screen.queryByRole("separator", { name: "Resize terminal panes" }),
+    ).toBeNull();
   });
 
   it("keeps restored layout idle and opens, focuses and reopens only on explicit requests", async () => {
@@ -207,7 +313,7 @@ describe("TerminalPanel", () => {
         expect.anything(),
       ),
     );
-    const file = screen.getByRole("button", { name: "File" });
+    const file = screen.getByRole("menuitem", { name: "File" });
     file.focus();
     await act(async () =>
       start.resolve({ id: "session", workspaceDirectory: false }),

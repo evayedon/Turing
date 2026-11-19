@@ -1,7 +1,24 @@
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import type { Ref } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import type { TerminalSize } from "@turing/contracts";
 import { invokeTerminal, terminalErrorMessage } from "./terminal-ipc";
 import type { createTerminalView } from "./terminal-view";
+
+let terminalViewModule: Promise<typeof import("./terminal-view")> | undefined;
+
+function loadTerminalView() {
+  terminalViewModule ??= import("./terminal-view").catch((error: unknown) => {
+    terminalViewModule = undefined;
+    throw error;
+  });
+  return terminalViewModule;
+}
 
 type View = ReturnType<typeof createTerminalView>;
 type Session = {
@@ -49,14 +66,22 @@ function stopWatching(session: Session) {
   session.pendingBytes = 0;
 }
 
+export type TerminalActions = { close: () => void; clear: () => void };
+
 export function TerminalPanel({
   native,
   workspaceId,
   activation = 0,
+  focusOnStart = true,
+  actionsRef,
+  onRunningChange,
 }: {
   native: boolean;
   workspaceId?: string;
   activation?: number;
+  focusOnStart?: boolean;
+  actionsRef?: Ref<TerminalActions>;
+  onRunningChange?: (running: boolean) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const current = useRef<Session | null>(null);
@@ -137,6 +162,23 @@ export function TerminalPanel({
     setError(failure);
     setStatus({ phase: "exited", exitCode });
   }
+
+  function closeSession(from: Element | null) {
+    if (!current.current?.id) return;
+    restoreFocus.current = from;
+    void end(current.current);
+  }
+
+  useImperativeHandle(actionsRef, () => ({
+    close: () =>
+      closeSession(host.current?.ownerDocument.activeElement ?? null),
+    clear: () => current.current?.view?.clear(),
+  }));
+
+  useEffect(
+    () => onRunningChange?.(status.phase === "running"),
+    [onRunningChange, status.phase],
+  );
 
   async function sendInput(session: Session) {
     const id = session.id;
@@ -233,7 +275,7 @@ export function TerminalPanel({
     if (!native || !element || current.current || status.phase === "closing")
       return;
     const session: Session = {
-      focusFrom: element.ownerDocument.activeElement,
+      focusFrom: focusOnStart ? element.ownerDocument.activeElement : null,
       pending: [],
       pendingBytes: 0,
       writing: false,
@@ -244,7 +286,7 @@ export function TerminalPanel({
     setError("");
     setStatus({ phase: "starting" });
     try {
-      const { createTerminalView } = await import("./terminal-view");
+      const { createTerminalView } = await loadTerminalView();
       if (current.current !== session) return;
       lastView.current?.dispose();
       const view = createTerminalView(element, (bytes) =>
@@ -276,10 +318,12 @@ export function TerminalPanel({
       });
       void resize(session);
       if (
-        canMoveFocus(element, session.focusFrom) ||
-        (session.focusFrom === startButton.current &&
-          element.ownerDocument.activeElement === element.ownerDocument.body &&
-          !element.closest("[hidden]"))
+        focusOnStart &&
+        (canMoveFocus(element, session.focusFrom) ||
+          (session.focusFrom === startButton.current &&
+            element.ownerDocument.activeElement ===
+              element.ownerDocument.body &&
+            !element.closest("[hidden]")))
       )
         view.focus();
       void read(session);
@@ -298,10 +342,7 @@ export function TerminalPanel({
         {status.phase === "running" ? (
           <button
             type="button"
-            onClick={(event) => {
-              restoreFocus.current = event.currentTarget;
-              if (current.current) void end(current.current);
-            }}
+            onClick={(event) => closeSession(event.currentTarget)}
           >
             Close terminal
           </button>

@@ -39,7 +39,7 @@ pub(super) fn same_file(left: &Metadata, right: &Metadata) -> bool {
     left.dev() == right.dev() && left.ino() == right.ino()
 }
 
-fn version(metadata: &Metadata, bytes: &[u8]) -> Result<String> {
+pub(super) fn version(metadata: &Metadata, bytes: &[u8]) -> Result<String> {
     let modified = metadata.modified()?.into_std();
     let mut digest = Sha256::new();
     digest.update(metadata.dev().to_le_bytes());

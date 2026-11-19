@@ -1,3 +1,6 @@
+import type { NavigationTarget } from "./navigation";
+import { rememberRecent } from "../shell/recent";
+import { suggestedFilename } from "./languages";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type {
   SelectedFileSnapshot,
@@ -27,6 +30,7 @@ export interface EditorTab {
   content: string;
   draft: string;
   changedOnDisk: boolean;
+  languageOverride?: string;
   saveError?: string;
 }
 
@@ -139,8 +143,8 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     );
   }
 
-  async function perform(
-    action: () => Promise<void>,
+  async function perform<T>(
+    action: () => Promise<T>,
     mode: Operation = "foreground",
   ) {
     if (pending.current) return;
@@ -148,7 +152,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     setOperation(mode);
     if (mode === "foreground") setError(undefined);
     try {
-      await action();
+      return await action();
     } catch (cause) {
       setError(workspaceErrorMessage(cause));
     } finally {
@@ -166,6 +170,16 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     if (pending.current) return;
     setActiveKey(key);
     setError(undefined);
+  }
+
+  function navigate(target: NavigationTarget, location: EditorLocation) {
+    if (pending.current) return;
+    if ("tab" in target) {
+      select(target.tab.key);
+      setReveal({ key: target.tab.key, ...location });
+    } else {
+      void open(target.relativePath, location);
+    }
   }
 
   function addTab(tab: Omit<EditorTab, "key">) {
@@ -198,11 +212,15 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     });
   }
 
-  function openFile() {
+  function openFile(recentPath?: string) {
     if (!native) return;
     return perform(async () => {
-      const file = await invokeWorkspace("file_open", undefined);
+      const file = await invokeWorkspace(
+        "file_open",
+        recentPath ? { recentPath } : undefined,
+      );
       if (!file) return;
+      rememberRecent({ kind: "file", name: file.name, path: file.displayPath });
       const existing = tabs.find(
         (tab) =>
           tab.source.kind === "selected" && tab.source.fileId === file.fileId,
@@ -227,6 +245,78 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       changedOnDisk: false,
     });
     setError(undefined);
+  }
+
+  function createWorkspaceFile(parent: string, name: string) {
+    if (!workspaceId) return;
+    return perform(async () => {
+      const target = parent ? `${parent}/${name}` : name;
+      if (
+        tabs.some(
+          ({ source }) =>
+            source.kind === "workspace" &&
+            source.workspaceId === workspaceId &&
+            source.relativePath === target,
+        )
+      )
+        throw "NAME_TAKEN";
+      const file = await invokeWorkspace("workspace_create_file", {
+        workspaceId,
+        parent,
+        name,
+      });
+      addTab(workspaceTab(file));
+      return file.relativePath;
+    });
+  }
+
+  function renameWorkspaceEntry(
+    relativePath: string,
+    name: string,
+    expectedIdentity: string,
+  ) {
+    if (!workspaceId) return;
+    const slash = relativePath.lastIndexOf("/");
+    const target = `${relativePath.slice(0, slash + 1)}${name}`;
+    const belongs = (path: string, base: string) =>
+      path === base || path.startsWith(`${base}/`);
+    return perform(async () => {
+      if (
+        tabs.some(
+          ({ source }) =>
+            source.kind === "workspace" &&
+            source.workspaceId === workspaceId &&
+            belongs(source.relativePath, target) &&
+            !belongs(source.relativePath, relativePath),
+        )
+      )
+        throw "NAME_TAKEN";
+      const next = await invokeWorkspace("workspace_rename_entry", {
+        workspaceId,
+        relativePath,
+        name,
+        expectedIdentity,
+      });
+      setTabs((previous) =>
+        previous.map((item) => {
+          const { source } = item;
+          if (
+            source.kind !== "workspace" ||
+            source.workspaceId !== workspaceId ||
+            !belongs(source.relativePath, relativePath)
+          )
+            return item;
+          const newPath = next + source.relativePath.slice(relativePath.length);
+          return {
+            ...item,
+            title: newPath,
+            name: newPath.split("/").at(-1) ?? item.name,
+            source: { ...source, relativePath: newPath },
+          };
+        }),
+      );
+      return next;
+    });
   }
 
   async function releaseFile(tab: EditorTab, otherTabs: EditorTab[]) {
@@ -257,6 +347,23 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     });
   }
 
+  function closeAll() {
+    return perform(async () => {
+      if (dirty && !(await confirmDiscard("closeAll"))) return;
+      const remaining = [...tabs];
+      try {
+        while (remaining.length) {
+          await releaseFile(remaining[0], remaining);
+          remaining.shift();
+        }
+      } finally {
+        setTabs(remaining);
+        if (!remaining.some(({ key }) => key === activeKey))
+          setActiveKey(remaining[0]?.key);
+      }
+    });
+  }
+
   function edit(tab: EditorTab, draft: string) {
     if (pending.current === "foreground") return;
     // An older draft can finish saving before Monaco delivers its next edit.
@@ -268,15 +375,20 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     );
   }
 
+  function setLanguage(languageOverride: string | undefined) {
+    if (!active) return;
+    update(active, { languageOverride });
+  }
+
   function saveAs() {
     if (!active || !native) return;
     return perform(async () => {
       const file = await invokeWorkspace("file_save_as", {
         content: active.draft,
-        suggestedName:
-          active.source.kind === "untitled" ? undefined : active.name,
+        suggestedName: suggestedFilename(active),
       });
       if (!file) return;
+      rememberRecent({ kind: "file", name: file.name, path: file.displayPath });
       update(active, {
         ...selectedTab({ ...file, content: active.draft }),
         saveError: undefined,
@@ -404,24 +516,6 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     return () => window.clearTimeout(timeout);
   }, [exitPending, busy]);
 
-  const onSaveShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (
-      native &&
-      !(
-        event.target instanceof Element &&
-        event.target.closest(".terminal-screen")
-      ) &&
-      !document.querySelector("dialog[open]") &&
-      (event.metaKey || event.ctrlKey) &&
-      !event.altKey &&
-      event.key.toLowerCase() === "s"
-    ) {
-      event.preventDefault();
-      if (event.shiftKey) void saveAs();
-      else void save();
-    }
-  });
-
   useEffect(() => {
     function onUnload(event: BeforeUnloadEvent) {
       if (dirty) {
@@ -432,15 +526,10 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     function onClose() {
       onNativeClose();
     }
-    function onKey(event: KeyboardEvent) {
-      onSaveShortcut(event);
-    }
     if (native) window.addEventListener("turing-close-requested", onClose);
-    window.addEventListener("keydown", onKey, true);
     window.addEventListener("beforeunload", onUnload);
     return () => {
       window.removeEventListener("turing-close-requested", onClose);
-      window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("beforeunload", onUnload);
     };
   }, [dirty, native]);
@@ -494,13 +583,18 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     autoSave,
     toggleAutoSave,
     select,
+    navigate,
     open,
     openFile,
     newFile,
+    createWorkspaceFile,
+    renameWorkspaceEntry,
     close,
+    closeAll,
     edit,
     save,
     saveAs,
+    setLanguage,
     reload,
     changeWorkspace,
   };

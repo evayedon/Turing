@@ -19,3 +19,13 @@ export type {
   TerminalSize,
   TerminalStarted,
 } from "./terminal";
+
+export type {
+  ExecutionError,
+  ExecutionLanguage,
+  ExecutionPhase,
+  ExecutionSource,
+  ExecutionStarted,
+  ExecutionStream,
+  ExecutionUpdate,
+} from "./execution";

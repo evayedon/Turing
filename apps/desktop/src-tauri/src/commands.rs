@@ -1,8 +1,9 @@
+use crate::windows::workbench;
 use crate::workspace::{
     validate_save_content, DirectoryEntry, PickedFile, SelectedFileSnapshot, SelectedFileVersion,
-    TextFile, WorkspaceDescriptor, WorkspaceError, WorkspaceService,
+    TextFile, WorkspaceDescriptor, WorkspaceError,
 };
-use tauri::{Manager, WebviewWindow};
+use tauri::WebviewWindow;
 use tauri_plugin_dialog::DialogExt;
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
@@ -12,26 +13,34 @@ where
     T: Send + 'static,
     F: FnOnce(WebviewWindow) -> Result<T> + Send + 'static,
 {
-    if window.label() != "main" {
-        return Err(WorkspaceError::PermissionDenied);
-    }
+    workbench(&window)?;
     tauri::async_runtime::spawn_blocking(move || operation(window))
         .await
         .map_err(|_| WorkspaceError::IoError)?
 }
 
 #[tauri::command]
-pub async fn workspace_open(window: WebviewWindow) -> Result<Option<WorkspaceDescriptor>> {
-    in_workspace(window, |window| {
-        let service = window.state::<WorkspaceService>();
+pub async fn workspace_open(
+    window: WebviewWindow,
+    recent_path: Option<String>,
+) -> Result<Option<WorkspaceDescriptor>> {
+    in_workspace(window, move |window| {
+        let resources = workbench(&window)?;
+        let service = &resources.workspace;
         let _picker = service.begin_picker()?;
-        let Some(selection) = window
+        let mut dialog = window
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("Open Workspace Folder")
-            .blocking_pick_folder()
-        else {
+            .set_title("Open Workspace Folder");
+        if let Some(path) = recent_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .filter(|path| path.is_absolute())
+        {
+            dialog = dialog.set_directory(path);
+        }
+        let Some(selection) = dialog.blocking_pick_folder() else {
             return Ok(None);
         };
         let path = selection
@@ -46,8 +55,8 @@ pub async fn workspace_open(window: WebviewWindow) -> Result<Option<WorkspaceDes
 #[tauri::command]
 pub async fn workspace_close(window: WebviewWindow, workspace_id: String) -> Result<()> {
     in_workspace(window, move |window| {
-        window
-            .state::<WorkspaceService>()
+        workbench(&window)?
+            .workspace
             .registry()?
             .close(window.label(), &workspace_id)
     })
@@ -61,7 +70,7 @@ pub async fn fs_list_directory(
     relative_path: String,
 ) -> Result<Vec<DirectoryEntry>> {
     in_workspace(window, move |window| {
-        window.state::<WorkspaceService>().registry()?.list(
+        workbench(&window)?.workspace.registry()?.list(
             window.label(),
             &workspace_id,
             &relative_path,
@@ -77,7 +86,7 @@ pub async fn fs_read_file(
     relative_path: String,
 ) -> Result<TextFile> {
     in_workspace(window, move |window| {
-        window.state::<WorkspaceService>().registry()?.read(
+        workbench(&window)?.workspace.registry()?.read(
             window.label(),
             &workspace_id,
             &relative_path,
@@ -95,7 +104,7 @@ pub async fn fs_write_file(
     content: String,
 ) -> Result<String> {
     in_workspace(window, move |window| {
-        window.state::<WorkspaceService>().registry()?.write(
+        workbench(&window)?.workspace.registry()?.write(
             window.label(),
             &workspace_id,
             &relative_path,
@@ -107,17 +116,32 @@ pub async fn fs_write_file(
 }
 
 #[tauri::command]
-pub async fn file_open(window: WebviewWindow) -> Result<Option<SelectedFileSnapshot>> {
-    in_workspace(window, |window| {
-        let service = window.state::<WorkspaceService>();
+pub async fn file_open(
+    window: WebviewWindow,
+    recent_path: Option<String>,
+) -> Result<Option<SelectedFileSnapshot>> {
+    in_workspace(window, move |window| {
+        let resources = workbench(&window)?;
+        let service = &resources.workspace;
         let _picker = service.begin_picker()?;
-        let Some(selection) = window
+        let mut dialog = window
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("Open File")
-            .blocking_pick_file()
-        else {
+            .set_title("Open File");
+        if let Some(path) = recent_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .filter(|path| path.is_absolute())
+        {
+            if let Some(parent) = path.parent() {
+                dialog = dialog.set_directory(parent);
+            }
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                dialog = dialog.set_file_name(name);
+            }
+        }
+        let Some(selection) = dialog.blocking_pick_file() else {
             return Ok(None);
         };
         let path = selection
@@ -133,8 +157,8 @@ pub async fn file_open(window: WebviewWindow) -> Result<Option<SelectedFileSnaps
 #[tauri::command]
 pub async fn file_read(window: WebviewWindow, file_id: String) -> Result<SelectedFileSnapshot> {
     in_workspace(window, move |window| {
-        window
-            .state::<WorkspaceService>()
+        workbench(&window)?
+            .workspace
             .registry()?
             .read_selected(window.label(), &file_id)
     })
@@ -149,10 +173,12 @@ pub async fn file_write(
     content: String,
 ) -> Result<String> {
     in_workspace(window, move |window| {
-        window
-            .state::<WorkspaceService>()
-            .registry()?
-            .write_selected(window.label(), &file_id, &expected_version, &content)
+        workbench(&window)?.workspace.registry()?.write_selected(
+            window.label(),
+            &file_id,
+            &expected_version,
+            &content,
+        )
     })
     .await
 }
@@ -160,8 +186,8 @@ pub async fn file_write(
 #[tauri::command]
 pub async fn file_close(window: WebviewWindow, file_id: String) -> Result<()> {
     in_workspace(window, move |window| {
-        window
-            .state::<WorkspaceService>()
+        workbench(&window)?
+            .workspace
             .registry()?
             .close_selected(window.label(), &file_id)
     })
@@ -178,7 +204,8 @@ pub async fn file_save_as(
 
     in_workspace(window, move |window| {
         validate_save_content(&content)?;
-        let service = window.state::<WorkspaceService>();
+        let resources = workbench(&window)?;
+        let service = &resources.workspace;
         let _picker = service.begin_picker()?;
         let mut dialog = window
             .dialog()
@@ -230,6 +257,7 @@ pub async fn file_save_as(
 #[serde(rename_all = "camelCase")]
 pub enum DiscardAction {
     Tab,
+    CloseAll,
     Reload,
     Workspace,
     Exit,
@@ -241,6 +269,7 @@ pub async fn editor_confirm_discard(window: WebviewWindow, action: DiscardAction
 
     let message = match action {
         DiscardAction::Tab => "Discard the unsaved changes and close this tab?",
+        DiscardAction::CloseAll => "Discard unsaved changes and close all editors?",
         DiscardAction::Reload => "Discard the unsaved changes and reload this file from disk?",
         DiscardAction::Workspace => "Discard the unsaved changes in this workspace?",
         DiscardAction::Exit => "Discard all unsaved changes and quit Turing Core?",
@@ -263,11 +292,8 @@ pub async fn editor_confirm_discard(window: WebviewWindow, action: DiscardAction
 
 #[tauri::command]
 pub fn editor_exit(window: WebviewWindow) -> Result<()> {
-    if window.label() != "main" {
-        return Err(WorkspaceError::PermissionDenied);
-    }
-    window.app_handle().exit(0);
-    Ok(())
+    workbench(&window)?;
+    window.destroy().map_err(|_| WorkspaceError::IoError)
 }
 
 #[tauri::command]
@@ -276,14 +302,11 @@ pub fn workspace_search_begin(
     workspace_id: String,
     options: crate::workspace::SearchOptions,
 ) -> Result<String> {
-    if window.label() != "main" {
-        return Err(WorkspaceError::PermissionDenied);
-    }
-    window.state::<WorkspaceService>().registry()?.begin_search(
-        window.label(),
-        &workspace_id,
-        options,
-    )
+    workbench(&window)?;
+    workbench(&window)?
+        .workspace
+        .registry()?
+        .begin_search(window.label(), &workspace_id, options)
 }
 
 #[tauri::command]
@@ -292,18 +315,18 @@ pub async fn workspace_search_run(
     workspace_id: String,
     search_id: String,
 ) -> Result<crate::workspace::SearchResponse> {
-    if window.label() != "main" {
-        return Err(WorkspaceError::PermissionDenied);
-    }
-    let task = window
-        .state::<WorkspaceService>()
-        .registry()?
-        .claim_search(window.label(), &workspace_id, &search_id)?;
+    workbench(&window)?;
+    let task = workbench(&window)?.workspace.registry()?.claim_search(
+        window.label(),
+        &workspace_id,
+        &search_id,
+    )?;
     let result = tauri::async_runtime::spawn_blocking(move || task.run()).await;
-    window
-        .state::<WorkspaceService>()
-        .registry()?
-        .finish_search(window.label(), &workspace_id, &search_id)?;
+    workbench(&window)?.workspace.registry()?.finish_search(
+        window.label(),
+        &workspace_id,
+        &search_id,
+    )?;
     result.map_err(|_| WorkspaceError::IoError)?
 }
 
@@ -313,11 +336,48 @@ pub fn workspace_search_cancel(
     workspace_id: String,
     search_id: String,
 ) -> Result<()> {
-    if window.label() != "main" {
-        return Err(WorkspaceError::PermissionDenied);
-    }
-    window
-        .state::<WorkspaceService>()
-        .registry()?
-        .cancel_search(window.label(), &workspace_id, &search_id)
+    workbench(&window)?;
+    workbench(&window)?.workspace.registry()?.cancel_search(
+        window.label(),
+        &workspace_id,
+        &search_id,
+    )
+}
+
+#[tauri::command]
+pub async fn workspace_create_file(
+    window: WebviewWindow,
+    workspace_id: String,
+    parent: String,
+    name: String,
+) -> Result<TextFile> {
+    in_workspace(window, move |window| {
+        workbench(&window)?.workspace.registry()?.create_file(
+            window.label(),
+            &workspace_id,
+            &parent,
+            &name,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn workspace_rename_entry(
+    window: WebviewWindow,
+    workspace_id: String,
+    relative_path: String,
+    name: String,
+    expected_identity: String,
+) -> Result<String> {
+    in_workspace(window, move |window| {
+        workbench(&window)?.workspace.registry()?.rename_entry(
+            window.label(),
+            &workspace_id,
+            &relative_path,
+            &name,
+            &expected_identity,
+        )
+    })
+    .await
 }

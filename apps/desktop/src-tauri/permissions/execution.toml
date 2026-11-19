@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-run-build"
+description = "Run an authorized saved editor revision and manage its output and lifecycle."
+commands.allow = ["execution_start", "execution_read", "execution_stop"]

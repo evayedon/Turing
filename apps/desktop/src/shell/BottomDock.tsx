@@ -1,6 +1,13 @@
 import { CircleAlert, List, Terminal, X } from "lucide-react";
 
-import { TerminalPanel } from "../terminal/TerminalPanel";
+import { ExecutionOutput } from "../execution/ExecutionOutput";
+import type { useExecution } from "../execution/use-execution";
+import type { Ref } from "react";
+import type {
+  TerminalSessionControls,
+  TerminalSessionLayout,
+} from "../terminal/TerminalSessions";
+import { TerminalSessions } from "../terminal/TerminalSessions";
 import { dockViews } from "../state/dock-views";
 import type { DockView } from "../state/dock-views";
 
@@ -14,11 +21,11 @@ const details = {
   },
   Output: {
     Icon: List,
-    message: "Task output is unavailable in this build.",
   },
 };
 
 export function BottomDock({
+  execution,
   active,
   select,
   close,
@@ -26,7 +33,11 @@ export function BottomDock({
   native,
   workspaceId,
   terminalActivation,
+  terminalActions,
+  onTerminalRunning,
+  onTerminalLayout,
 }: {
+  execution: ReturnType<typeof useExecution>;
   active: DockView;
   select: (view: DockView) => void;
   close: () => void;
@@ -34,6 +45,9 @@ export function BottomDock({
   native: boolean;
   workspaceId?: string;
   terminalActivation: number;
+  terminalActions?: Ref<TerminalSessionControls>;
+  onTerminalRunning?: (running: boolean) => void;
+  onTerminalLayout?: (layout: TerminalSessionLayout) => void;
 }) {
   return (
     <section
@@ -102,11 +116,16 @@ export function BottomDock({
           tabIndex={0}
         >
           {name === "Terminal" ? (
-            <TerminalPanel
+            <TerminalSessions
               native={native}
               workspaceId={workspaceId}
               activation={terminalActivation}
+              actionsRef={terminalActions}
+              onRunningChange={onTerminalRunning}
+              onLayout={onTerminalLayout}
             />
+          ) : name === "Output" ? (
+            <ExecutionOutput execution={execution} native={native} />
           ) : (
             <p className="panel-message">{details[name].message}</p>
           )}

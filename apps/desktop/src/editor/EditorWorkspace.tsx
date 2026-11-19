@@ -1,11 +1,18 @@
 import { ChevronRight, CodeXml, FileCode2, X } from "lucide-react";
 import { lazy, Suspense } from "react";
+import type { ReactNode } from "react";
+import type { EditorCommands } from "../shell/commands";
 import type { EditorInfo } from "./editor-info";
 import type { useEditor } from "./use-editor";
 
 const MonacoHost = lazy(() => import("./MonacoHost"));
 
 export function EditorWorkspace({
+  runControls,
+  onCommandsReady,
+  workspaceId,
+  navigate,
+  onSaveCommand,
   tabs,
   active,
   reveal,
@@ -17,11 +24,16 @@ export function EditorWorkspace({
   close,
   edit,
   save,
+  saveAs,
   reload,
   onInfo,
   onCommands,
   shortcut,
 }: ReturnType<typeof useEditor> & {
+  runControls?: ReactNode;
+  workspaceId?: string;
+  onCommandsReady?: (commands: EditorCommands | undefined) => void;
+  onSaveCommand?: () => void;
   onInfo: (info: EditorInfo) => void;
   onCommands: () => void;
   shortcut: string;
@@ -95,10 +107,15 @@ export function EditorWorkspace({
           <button
             type="button"
             disabled={busy || !canSave}
-            onClick={() => void save()}
+            onClick={() =>
+              onSaveCommand
+                ? onSaveCommand()
+                : void (active?.source.kind === "untitled" ? saveAs() : save())
+            }
           >
-            Save
+            {active?.source.kind === "untitled" ? "Save As…" : "Save"}
           </button>
+          {runControls}
         </div>
       )}
       {active && (
@@ -146,6 +163,9 @@ export function EditorWorkspace({
             readOnly={readOnly}
             onChange={edit}
             onInfo={onInfo}
+            onCommandsReady={onCommandsReady}
+            workspaceId={workspaceId}
+            onNavigate={navigate}
           />
         </Suspense>
       ) : (

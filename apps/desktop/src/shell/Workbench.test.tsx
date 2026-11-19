@@ -65,7 +65,7 @@ describe("workbench panels", () => {
 
     await user.tab();
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "File" }),
+      screen.getByRole("menuitem", { name: "File" }),
     );
     await user.tab();
     expect(document.activeElement).toBe(
@@ -181,9 +181,12 @@ describe("workbench panels", () => {
     expect(window.localStorage.getItem(autoSaveKey)).toBe("true");
     unmount();
     render(<Workbench />);
-    await user.click(screen.getByRole("button", { name: "File" }));
+    await user.click(screen.getByRole("menuitem", { name: "File" }));
     expect(
-      screen.getByRole("button", { name: /Auto Save/, pressed: true }),
+      screen.getByRole("menuitemcheckbox", {
+        name: "Auto Save",
+        checked: true,
+      }),
     ).toBeTruthy();
   });
 });

@@ -126,17 +126,17 @@ position when available. Panel dimensions and visibility use versioned local
 preferences. These preferences contain only layout values.
 
 The bottom dock offers Terminal, Problems, and Output views and uses the same
-layout controls as the side panels. Problems and Output display availability
-messages.
+layout controls as the side panels. Output shows Run & Build progress.
+Problems remains an availability surface.
 
 ## Integrated terminal
 
 The bottom dock starts collapsed for new profiles and honors saved visibility
 and tab preferences. A restored Terminal tab shows an inactive state with
 **Start terminal**. Selecting Terminal, revealing it with the activity control,
-or invoking **Open Terminal** (Ctrl+backtick) opens and focuses one interactive
-session. Layout restoration and workspace changes leave an idle shell stopped. Switching dock tabs or hiding the dock keeps the
-session and its scrollback. **Close terminal** ends the shell. Shell exit leaves
+or invoking **Open Terminal** (Ctrl+backtick) starts or focuses the selected
+session. Layout restoration and workspace changes leave idle shells stopped.
+Switching dock tabs or hiding the dock keeps the sessions and scrollback. **Close terminal** ends the shell. Shell exit leaves
 output visible until the next start, and failed startup offers a retry. Browser
 preview has no terminal access.
 
@@ -149,9 +149,9 @@ directory as a fallback. ConPTY's path-based launch cannot consume the retained
 workspace handle. Without a workspace, Unix starts in the user's home or root
 directory. Changing workspaces leaves an existing shell in its current directory.
 
-The local main webview capability allows only terminal start, input, output,
-resize and close. Rust checks the caller, the session ID, and any requested
-workspace grant. It accepts terminal bytes and dimensions with explicit limits.
+The local workbench and dedicated terminal webview capabilities grant terminal
+start, input, output, resize and close. Rust checks the window owner, the
+session ID, and any requested window-specific workspace grant. It accepts terminal bytes and dimensions with explicit limits.
 There is no process-launch IPC taking an executable, arguments, environment or
 filesystem path. The shell runs with the user's OS privileges. Any future AI
 terminal access requires its own authorization and integration.
@@ -160,10 +160,143 @@ xterm.js is loaded on explicit start. The renderer reads one batch at a time and
 waits for xterm to process each batch. Rust buffers up to 32 output chunks of
 8 KiB with PTY backpressure and queues up to 16 input chunks of 8 KiB. The
 renderer bounds pending input and retains 2,000 lines of scrollback. Each session
-owns its input and output workers, and closing it releases both queues. The
-application closes sessions when the main window is destroyed or the app exits.
+owns its input and output workers, and closing it releases both queues. The application closes each window's sessions when it is destroyed and
+cleans up remaining sessions at application exit.
 Unix signals the foreground and shell process groups during explicit close,
 hangs up the PTY and reaps the shell. Detached Unix processes can outlive the
 session. Windows assigns the shell to a kill-on-close Job Object after ConPTY
 starts it, so processes created before assignment or detached outside the job
 can outlive it.
+
+## Run & Build
+
+Use **Run File** or F5 in the desktop workbench to run the active saved source.
+Save changes before running. Untitled files must acquire an authorized file
+through Save As. If the saved revision changes on disk, reload the file first.
+One Run & Build job per workbench can be active while its terminal sessions
+continue.
+
+Supported sources are Python 3.7+ (`.py`) and single-file C++17 (`.cpp`,
+`.cc`, `.cxx`). The application looks for Python and for clang++ or g++ in
+absolute directories on its inherited PATH. These tools must be installed and
+functional on the host, including any system C++ headers and linker. On Windows,
+use an installed compiler with its target toolchain available. Project build
+systems, sibling imports or headers, custom flags, external libraries that
+require extra link arguments, and multiple source files are outside this
+workflow.
+
+Rust checks caller ownership and reads the versioned source through the existing
+workspace or standalone file grant. It stages those exact bytes in a unique
+OS temporary directory and constructs process arguments itself. A successful C++
+compile runs the binary created for that run. Failure leaves the compiler's
+diagnostics in Output. Scratch files are cleaned up when the worker finishes.
+Python's `__file__` and compiler diagnostic paths point at staged files.
+On Unix the child starts through the retained workspace root or standalone
+parent directory handle. On Windows the child starts in the scratch directory
+because standard process launch accepts a path for its working directory.
+
+Output distinguishes compiler stdout and stderr from program stdout and stderr.
+It reports phase, exit code, elapsed time, and Stop. Output retains at most
+256 KiB per run and decodes UTF-8 with replacement for invalid bytes, including
+legacy compiler encodings. Compiler diagnostics remain text in Output.
+Stdin is closed, so programs receive EOF. Use the integrated terminal to run
+programs that need interactive input.
+
+The dedicated local-workbench capability accepts only a saved file grant and
+version, then an opaque Run ID for reading and stopping. Phase notifications
+use a per-run Tauri channel. The shell terminal and any future AI integration
+have separate authorization paths. Code executes with the user's OS privileges.
+The compiler is limited to 60 seconds and the program to 30 seconds. Stop and
+normal app shutdown cancel active subprocesses. Unix uses a process group for
+cancellation and disables core dumps. Windows uses a Job Object. On Unix, a program that exits normally can leave
+children running. Processes that escape cancellation or start before Windows
+job assignment can also outlive a run. An app crash can leave scratch files
+for OS cleanup.
+
+## Explorer naming and language modes
+
+**New File** in the File menu still opens an untitled buffer. Its editor
+toolbar uses **Save As…** and the native picker supplies the first saved name.
+For an untitled buffer with strong syntax evidence or an explicitly chosen
+language, the picker can suggest an extension. The tab gains a native file
+grant only after the save succeeds.
+
+**New workspace file** in Explorer creates an empty named file in the current
+folder using exclusive creation. F2 or the row's **Rename** action edits a file
+or folder name inline. Rust accepts a single new name and checks the caller,
+root, parent, and listed entry identity. Rename stays within the original
+parent and never replaces a destination. On Unix it verifies the source in
+a private staging directory before publishing the new name. Windows uses a
+source handle and a parent-relative rename with replacement disabled. Refresh
+the listing if another operation replaces an entry. If a concurrent operation
+also prevents an exclusive Unix rollback, the entry is retained in a
+`.turing-save-*.rename` recovery directory.
+
+A successful Explorer rename changes the paths of workspace tabs in the
+renamed subtree while keeping the existing buffer, saved revision, and model.
+Separate standalone picker grants do not move with Explorer entries. Reopen a
+standalone file through its new path if the original grant becomes stale.
+
+The status-bar language menu can switch between automatic and explicit
+per-document modes. Saved files use filename metadata from the bundled Monaco
+language definitions. Untitled files use a small set of conservative content
+suggestions. Monaco changes tokenization on the existing model to retain undo
+and cursor state. The model's synthetic URI is stable, so filename-sensitive
+worker diagnostics can still use the original extension until the tab is
+reopened. Run File uses the authorized saved extension independently of the
+editor's language mode.
+
+## Workbench commands
+
+The Nebula menu bar, command palette, and workbench shortcuts share typed
+command identifiers and availability checks. Save, Run, and Stop reuse the
+editor and execution handlers. Monaco owns its editor bindings, clipboard
+commands, and undo stack. Symbol navigation appears when Monaco reports an
+available provider. System clipboard commands depend on the WebView's
+clipboard capabilities.
+
+Go to File lists open editors and scans the approved workspace using bounded
+directory listings. It skips generated dependency folders and also offers the
+native file picker. Close All asks once before discarding dirty editors and
+releases standalone native file grants. Show Terminal reveals the dock
+without starting a session. Open Terminal explicitly starts or focuses the
+selected session, and Clear Terminal clears its visible buffer through xterm.
+
+## Workbench windows and terminal sessions
+
+**New Window** opens a separate local Tauri workbench. The app registers its
+opaque window label before creation and keeps a distinct workspace registry,
+execution service, and terminal service for that window. The frontends keep
+their editor and dock state in separate webviews. Local preferences and
+recent history are shared. A workbench closes through its own unsaved-change
+flow. Destroying a window revokes its grants and cleans up its runs and PTYs.
+The app allows up to twelve windows.
+
+**Open Recent** stores up to twenty recent native workspace and standalone file
+paths in local preferences. Entries only seed a native picker. The user must
+make a fresh selection, and Rust then performs its normal authorization. If a
+resource moved or was deleted, select its new location or clear the history.
+
+**New Terminal** adds an independent PTY tab. **Split Terminal** shows two
+independent panes and permits keyboard or pointer resizing. The renderer keeps
+each PTY's measured dimensions in sync and can remove a tab without closing
+its neighbors. There are at most four sessions per window. **New Terminal
+Window** opens an idle terminal-only application window with no workspace,
+editor, or Run & Build capability. Use **Start terminal** or **New terminal
+session** in that window to start a shell. Closing it cleans up its sessions.
+PTYs execute with the user's operating-system privileges.
+
+## Code navigation and debugging status
+
+Definition, declaration, implementation, and references use Monaco's
+registered providers. The menu disables operations when the active model has
+no provider. Cross-file destinations must belong to an already-open document
+or use the active workspace's synthetic model URI. New workspace reads still
+go through Rust's authorized file command. Monaco's bundled providers may be
+limited to loaded models. Full project navigation for Python and C++ needs a
+language-server integration.
+
+F5 is **Run Without Debugging**. Debugging remains unavailable until Turing
+has a scoped debug-adapter transport, authorized launch and stop handling,
+verified breakpoint mapping, and paused-process controls. No generic debugger
+launch command or debugger shortcut is registered.
