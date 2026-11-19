@@ -1682,6 +1682,15 @@ svg {
   font-size: var(--nebula-sm);
   text-align: start;
 }
+.terminal-session-tab .terminal-group-line {
+  flex: none;
+  width: 1ch;
+  color: var(--nebula-muted);
+  font-family: var(--nebula-mono);
+}
+.terminal-session-tab .terminal-group-line:empty {
+  display: none;
+}
 .terminal-session-tab [role="tab"] span {
   overflow: hidden;
   text-overflow: ellipsis;

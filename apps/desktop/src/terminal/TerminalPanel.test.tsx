@@ -503,6 +503,87 @@ it("ends an unresponsive start, retries, and cleans up a late reply", async () =
   }
 });
 
+it("splits a terminal into a group of side-by-side panes without a small cap", async () => {
+  const pending = deferred<never>();
+  let count = 0;
+  mocks.invoke.mockImplementation((command: string) => {
+    if (command === "terminal_start")
+      return Promise.resolve({
+        id: String(++count),
+        workspaceDirectory: false,
+        shell: "zsh",
+      });
+    if (command === "terminal_read") return pending.promise;
+    return Promise.resolve();
+  });
+  const user = userEvent.setup();
+  render(<TerminalSessions native shown activation={0} />);
+  await running();
+  const split = screen.getByRole("button", { name: "Split terminal pane" });
+  for (let pane = 2; pane <= 5; pane++) {
+    await user.click(split);
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll(
+          '[role="tabpanel"]:not([hidden]) .terminal-panel[data-phase="running"]',
+        ),
+      ).toHaveLength(pane),
+    );
+  }
+  expect(screen.getAllByRole("separator")).toHaveLength(4);
+  // Each split lands after the active (newest) terminal, drawn as one group.
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+    "┌zsh",
+    "├zsh 2",
+    "├zsh 3",
+    "├zsh 4",
+    "└zsh 5",
+  ]);
+  expect(split.hasAttribute("disabled")).toBe(false);
+
+  // Removing a middle pane keeps the rest of the group together.
+  await user.click(screen.getByRole("button", { name: "Remove zsh 3" }));
+  expect(screen.getAllByRole("separator")).toHaveLength(3);
+  expect(
+    document.querySelectorAll('[role="tabpanel"]:not([hidden])'),
+  ).toHaveLength(4);
+});
+
+it("never holds more native sessions than visible terminals under StrictMode", async () => {
+  const pending = deferred<never>();
+  const open = new Set<string>();
+  let count = 0;
+  mocks.invoke.mockImplementation((command: string, args?: { id?: string }) => {
+    if (command === "terminal_start") {
+      // Mirrors the native per-window limit of four sessions.
+      if (open.size >= 4) return Promise.reject("SESSION_LIMIT");
+      const id = String(++count);
+      open.add(id);
+      return Promise.resolve({ id, workspaceDirectory: false, shell: "zsh" });
+    }
+    if (command === "terminal_close" && args?.id) open.delete(args.id);
+    if (command === "terminal_read") return pending.promise;
+    return Promise.resolve();
+  });
+  const user = userEvent.setup();
+  render(
+    <StrictMode>
+      <TerminalSessions native shown activation={0} />
+    </StrictMode>,
+  );
+  await running();
+  for (const action of ["New terminal session", "New terminal session"])
+    await user.click(screen.getByRole("button", { name: action }));
+  await user.click(screen.getByRole("button", { name: "Split terminal pane" }));
+  await waitFor(() =>
+    expect(
+      document.querySelectorAll('.terminal-panel[data-phase="running"]'),
+    ).toHaveLength(4),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(open.size).toBe(4);
+});
+
 it("starts a newly created terminal promptly under StrictMode", async () => {
   const pending = deferred<never>();
   let count = 0;

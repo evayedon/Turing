@@ -35,6 +35,13 @@ impl Resources {
         }
     }
 
+    /// A page (re)load starts a fresh frontend that knows none of the
+    /// previous page's sessions, so end them instead of leaking them.
+    fn reload(&self) {
+        self.language.revoke(false);
+        self.terminal.close_all();
+    }
+
     fn shutdown(&self) {
         self.language.revoke(true);
         self.execution.shutdown();
@@ -76,6 +83,12 @@ impl Windows {
 
     pub fn get(&self, label: &str) -> Option<Arc<Resources>> {
         self.0.lock().ok()?.get(label).cloned()
+    }
+
+    pub fn page_loading(&self, label: &str) {
+        if let Some(resource) = self.get(label) {
+            resource.reload();
+        }
     }
 
     pub fn remove(&self, label: &str) {

@@ -12,10 +12,7 @@ import type { ReactNode } from "react";
 import { ExecutionOutput } from "../execution/ExecutionOutput";
 import type { useExecution } from "../execution/use-execution";
 import type { Ref } from "react";
-import type {
-  TerminalSessionControls,
-  TerminalSessionLayout,
-} from "../terminal/TerminalSessions";
+import type { TerminalSessionControls } from "../terminal/TerminalSessions";
 import { TerminalSessions } from "../terminal/TerminalSessions";
 import { dockViews } from "../state/dock-views";
 import type { DockView } from "../state/dock-views";
@@ -36,7 +33,6 @@ export function BottomDock({
   terminalActivation,
   terminalActions,
   onTerminalRunning,
-  onTerminalLayout,
 }: {
   problems?: ReactNode;
   execution: ReturnType<typeof useExecution>;
@@ -51,7 +47,6 @@ export function BottomDock({
   terminalActivation: number;
   terminalActions?: Ref<TerminalSessionControls>;
   onTerminalRunning?: (running: boolean) => void;
-  onTerminalLayout?: (layout: TerminalSessionLayout) => void;
 }) {
   // Header slot where the active view (the terminal) renders its actions.
   const [actions, setActions] = useState<HTMLDivElement | null>(null);
@@ -144,7 +139,6 @@ export function BottomDock({
               activation={terminalActivation}
               actionsRef={terminalActions}
               onRunningChange={onTerminalRunning}
-              onLayout={onTerminalLayout}
             />
           ) : name === "Output" ? (
             <ExecutionOutput execution={execution} native={native} />

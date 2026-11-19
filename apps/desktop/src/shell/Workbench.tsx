@@ -24,10 +24,7 @@ import { EditorWorkspace } from "../editor/EditorWorkspace";
 import type { EditorInfo } from "../editor/editor-info";
 import { useEditor } from "../editor/use-editor";
 import type { ExplorerActions } from "../explorer/Explorer";
-import type {
-  TerminalSessionControls,
-  TerminalSessionLayout,
-} from "../terminal/TerminalSessions";
+import type { TerminalSessionControls } from "../terminal/TerminalSessions";
 import { Explorer } from "../explorer/Explorer";
 import {
   invokeWorkspace,
@@ -182,10 +179,6 @@ export function Workbench() {
   const [lineInput, setLineInput] = useState("");
   const [editorCommandsReady, setEditorCommands] = useState<EditorCommands>();
   const [terminalRunning, setTerminalRunning] = useState(false);
-  const [terminalLayout, setTerminalLayout] = useState<TerminalSessionLayout>({
-    count: 1,
-    split: false,
-  });
   const [windowError, setWindowError] = useState<string>();
   const recents = useRecents();
   const [focusedEntry, setFocusedEntry] = useState<{
@@ -359,12 +352,12 @@ export function Workbench() {
     },
     newTerminal: {
       label: "New Terminal",
-      disabled: !native || terminalLayout.count >= 4,
+      disabled: !native,
       shortcut: { key: "`", code: "Backquote", ctrl: true, shift: true },
     },
     splitTerminal: {
       label: "Split Terminal",
-      disabled: !native || terminalLayout.split || terminalLayout.count >= 4,
+      disabled: !native,
     },
     terminalWindow: { label: "New Terminal Window", disabled: !native },
     newText: {
@@ -899,7 +892,6 @@ export function Workbench() {
             terminalActivation={terminalActivation}
             terminalActions={terminalActions}
             onTerminalRunning={setTerminalRunning}
-            onTerminalLayout={setTerminalLayout}
             select={selectDock}
             maximized={dockMaximized}
             toggleMaximized={() => setDockMaximized((value) => !value)}

@@ -16,6 +16,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(windows::Windows::default())
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview
+                    .state::<windows::Windows>()
+                    .page_loading(webview.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             windows::window_new_workbench,
             windows::window_new_terminal,

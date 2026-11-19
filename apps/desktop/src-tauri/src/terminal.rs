@@ -248,16 +248,48 @@ fn write_input(
     }
 }
 
-#[derive(Default)]
+/// Sessions a window may hold at once. Not a product limit: it only stops a
+/// runaway loop from exhausting the process's file descriptors (each PTY
+/// holds several, and macOS GUI apps start with a soft limit of 256), which
+/// would also break saving files.
+const MAX_SESSIONS: usize = 64;
+
 pub struct TerminalService {
     sessions: Mutex<HashMap<String, Option<Session>>>,
     shutting_down: AtomicBool,
     starting: Mutex<HashMap<String, (String, bool)>>,
+    limit: usize,
+}
+
+impl Default for TerminalService {
+    fn default() -> Self {
+        Self {
+            sessions: Mutex::default(),
+            shutting_down: AtomicBool::default(),
+            starting: Mutex::default(),
+            limit: MAX_SESSIONS,
+        }
+    }
 }
 
 impl TerminalService {
+    #[cfg(test)]
+    fn with_limit(limit: usize) -> Self {
+        Self {
+            limit,
+            ..Self::default()
+        }
+    }
+
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+        self.close_all();
+    }
+
+    /// Ends every session and discards starts still in flight, leaving the
+    /// service usable. A reloaded page has lost its session IDs, so its
+    /// shells must not keep running or count against the session limit.
+    pub fn close_all(&self) {
         let sessions = self
             .sessions
             .lock()
@@ -306,7 +338,7 @@ impl TerminalService {
             if self.shutting_down.load(Ordering::Relaxed) {
                 return Err(TerminalError::SessionClosed);
             }
-            if sessions.len() >= 4 || sessions.contains_key(&id) {
+            if sessions.len() >= self.limit || sessions.contains_key(&id) {
                 return Err(TerminalError::SessionLimit);
             }
             self.starting
@@ -761,7 +793,7 @@ mod tests {
 
     #[test]
     fn keeps_sessions_independent_and_enforces_the_limit() {
-        let service = TerminalService::default();
+        let service = TerminalService::with_limit(4);
         let size = dimensions(24, 80).unwrap();
         let first = service.start("main", size, None).unwrap();
         let second = service.start("main", size, None).unwrap();
@@ -832,6 +864,47 @@ mod tests {
                 .windows(b"TURING-APPROVED".len())
                 .any(|window| window == b"TURING-APPROVED")
         });
+    }
+
+    #[test]
+    fn close_all_ends_every_session_and_frees_the_limit_for_a_reloaded_page() {
+        let service = TerminalService::with_limit(4);
+        let started: Vec<_> = (0..4)
+            .map(|_| {
+                service
+                    .start("main", dimensions(24, 80).unwrap(), None)
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            service
+                .start("main", dimensions(24, 80).unwrap(), None)
+                .unwrap_err(),
+            TerminalError::SessionLimit
+        );
+        #[cfg(unix)]
+        let pid = service
+            .with_session("main", &started[0].id, |slot| {
+                Ok(slot.as_ref().unwrap().child.process_id().unwrap() as libc::pid_t)
+            })
+            .unwrap();
+        service.close_all();
+        #[cfg(unix)]
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        for session in &started {
+            assert_eq!(
+                service
+                    .with_session("main", &session.id, |_| Ok(()))
+                    .unwrap_err(),
+                TerminalError::SessionClosed
+            );
+        }
+        for _ in 0..4 {
+            service
+                .start("main", dimensions(24, 80).unwrap(), None)
+                .unwrap();
+        }
+        service.shutdown();
     }
 
     #[test]

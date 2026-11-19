@@ -11,7 +11,8 @@ export function invokeTerminal<Command extends keyof TerminalCommands>(
 const messages = {
   PERMISSION_DENIED:
     "The terminal could not access the requested workspace or session.",
-  SESSION_LIMIT: "Close a terminal session before opening another.",
+  SESSION_LIMIT:
+    "This window has 64 terminals open. Close one to open another.",
   SESSION_CLOSED: "The terminal session has closed.",
   INVALID_LINK: "Only HTTP and HTTPS links without credentials are supported.",
   INVALID_SIZE: "The terminal could not use the requested dimensions.",

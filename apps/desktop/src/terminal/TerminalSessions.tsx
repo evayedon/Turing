@@ -20,6 +20,21 @@ import type { Ref } from "react";
 import { TerminalPanel } from "./TerminalPanel";
 import type { TerminalActions } from "./TerminalPanel";
 import { ToolbarMenu } from "./ToolbarMenu";
+import {
+  dividerShare,
+  groupOf,
+  removeTerminal,
+  resizePair,
+  splitGroup,
+  terminalOrder,
+} from "./terminal-groups";
+import type { TerminalGroup } from "./terminal-groups";
+
+const alone = (id: number): TerminalGroup => ({
+  members: [id],
+  axis: "columns",
+  sizes: [100],
+});
 
 export type TerminalSessionControls = Pick<
   TerminalActions,
@@ -27,15 +42,12 @@ export type TerminalSessionControls = Pick<
 > & {
   create: (split: boolean) => void;
 };
-export type TerminalSessionLayout = { count: number; split: boolean };
-
 export function TerminalSessions({
   native,
   workspaceId,
   activation,
   actionsRef,
   onRunningChange,
-  onLayout,
   toolbar = "inline",
   shown = false,
 }: {
@@ -49,26 +61,16 @@ export function TerminalSessions({
   activation: number;
   actionsRef?: Ref<TerminalSessionControls>;
   onRunningChange?: (running: boolean) => void;
-  onLayout?: (layout: TerminalSessionLayout) => void;
 }) {
-  const [slots, setSlots] = useState([1]);
-  const [visible, setVisible] = useState([1]);
+  const [groups, setGroups] = useState([alone(1)]);
   const [active, setActive] = useState(1);
   const [running, setRunning] = useState<Record<number, boolean>>({});
   const [activations, setActivations] = useState<Record<number, number>>({});
-  const groups = useRef(
-    new Map<
-      number,
-      { pair: [number, number]; axis: "columns" | "rows"; ratio: number }
-    >(),
-  );
-  const [direction, setDirection] = useState<"columns" | "rows">("columns");
   const [profiles, setProfiles] = useState<Record<number, TerminalProfile>>({});
   const [labels, setLabels] = useState<Record<number, number>>({ 1: 1 });
   const [names, setNames] = useState<Record<number, string>>({});
   const [shells, setShells] = useState<Record<number, string>>({});
   const [rename, setRename] = useState<{ id: number; name: string }>();
-  const [ratio, setRatio] = useState(50);
   const idSequence = useRef(1);
   const started = useRef(new Set<number>());
   const handled = useRef(0);
@@ -76,6 +78,11 @@ export function TerminalSessions({
   const grid = useRef<HTMLDivElement>(null);
   const activeTab = useRef<HTMLButtonElement>(null);
   const restoreTabFocus = useRef(false);
+  const slots = terminalOrder(groups);
+  // The active terminal's group is on screen; other groups stay mounted.
+  const group = groupOf(groups, active) ?? groups[0];
+  const visible = group.members;
+  const direction = group.axis;
 
   // Terminals started because the panel became visible; they leave focus
   // where it is until the user explicitly opens them.
@@ -115,10 +122,6 @@ export function TerminalSessions({
     () => onRunningChange?.(!!running[active]),
     [onRunningChange, running, active],
   );
-  useEffect(
-    () => onLayout?.({ count: slots.length, split: visible.length > 1 }),
-    [onLayout, slots.length, visible.length],
-  );
 
   useLayoutEffect(() => {
     if (restoreTabFocus.current) {
@@ -135,16 +138,7 @@ export function TerminalSessions({
   }
 
   function select(id: number) {
-    if (id === active) return;
-    if (!visible.includes(id)) {
-      const group = groups.current.get(id);
-      setVisible(group?.pair ?? [id]);
-      if (group) {
-        setDirection(group.axis);
-        setRatio(group.ratio);
-      }
-    }
-    setActive(id);
+    if (id !== active) setActive(id);
   }
 
   function label(id: number) {
@@ -166,7 +160,7 @@ export function TerminalSessions({
     axis: "columns" | "rows" = "columns",
     chosen?: TerminalProfile,
   ) {
-    if (!native || slots.length >= 4 || (split && visible.length > 1)) return;
+    if (!native) return;
     // A split uses the same shell as the terminal it splits, as in VS Code.
     const profile =
       chosen ?? (split ? profiles[active] : undefined) ?? "system";
@@ -182,36 +176,28 @@ export function TerminalSessions({
       return;
     }
     if (split && !running[active]) requestActivation(active);
-    if (split) {
-      setDirection(axis);
-      setRatio(50);
-    }
     const id = ++idSequence.current;
     const used = new Set(slots.map((slot) => labels[slot]));
     let number = 1;
     while (used.has(number)) number++;
     setLabels((old) => ({ ...old, [id]: number }));
     setProfiles((old) => ({ ...old, [id]: profile }));
-    setSlots((previous) => [...previous, id]);
-    if (split) {
-      const group = { pair: [active, id] as [number, number], axis, ratio: 50 };
-      groups.current.set(active, group);
-      groups.current.set(id, group);
-      setVisible(group.pair);
-    } else {
-      setVisible([id]);
-    }
+    setGroups((old) =>
+      split ? splitGroup(old, active, id, axis) : [...old, alone(id)],
+    );
     setActive(id);
     requestActivation(id);
   }
 
   function remove(id: number) {
-    const group = groups.current.get(id);
-    if (group) for (const member of group.pair) groups.current.delete(member);
-    const remaining = slots.filter((slot) => slot !== id);
-    const next = remaining.length ? remaining : [++idSequence.current];
-    const shown = visible.filter((slot) => slot !== id);
-    setSlots(next);
+    const left = removeTerminal(groups, id);
+    const remaining = terminalOrder(left);
+    const next = remaining.length ? left : [alone(++idSequence.current)];
+    const members = groupOf(groups, id)?.members ?? [];
+    const at = members.indexOf(id);
+    // Focus moves to a neighbour in the same group, as in VS Code.
+    const neighbour = members[at - 1] ?? members[at + 1];
+    setGroups(next);
     started.current.delete(id);
     setNames((old) =>
       Object.fromEntries(
@@ -243,11 +229,10 @@ export function TerminalSessions({
         ? Object.fromEntries(
             Object.entries(old).filter(([key]) => Number(key) !== id),
           )
-        : { [next[0]]: 1 },
+        : { [next[0].members[0]]: 1 },
     );
     if (rename?.id === id) setRename(undefined);
-    setVisible(shown.length ? shown : [next[0]]);
-    if (active === id) setActive(shown[0] ?? next[0]);
+    if (active === id) setActive(neighbour ?? terminalOrder(next)[0]);
     restoreTabFocus.current = true;
   }
 
@@ -262,11 +247,12 @@ export function TerminalSessions({
     else handles.current.get(active)?.close();
   }
 
-  function changeRatio(value: number) {
-    const ratio = Math.min(80, Math.max(20, value));
-    setRatio(ratio);
-    const group = groups.current.get(active);
-    if (group) group.ratio = ratio;
+  function resize(index: number, share: number) {
+    setGroups((old) =>
+      old.map((item) =>
+        item.members.includes(active) ? resizePair(item, index, share) : item,
+      ),
+    );
   }
 
   const windows = /Windows/i.test(navigator.userAgent);
@@ -281,11 +267,20 @@ export function TerminalSessions({
         { id: "sh", label: "POSIX sh" },
       ];
   const split = visible.length > 1;
-  const tracks = `minmax(0, ${ratio}fr) 6px minmax(0, ${100 - ratio}fr)`;
+  const tracks = group.sizes
+    .map((size) => `minmax(0, ${size}fr)`)
+    .join(" 6px ");
 
   if (!native) return <TerminalPanel native={false} />;
 
-  const full = slots.length >= 4;
+  /** VS Code-style tree lines that tie split terminals into their group. */
+  function connector(id: number) {
+    const members = groupOf(groups, id)?.members ?? [];
+    if (members.length < 2) return "";
+    const at = members.indexOf(id);
+    return at === 0 ? "┌" : at === members.length - 1 ? "└" : "├";
+  }
+
   const tabs = (
     <div
       className="terminal-session-tabs"
@@ -362,6 +357,9 @@ export function TerminalSessions({
                   ?.focus();
               }}
             >
+              <span className="terminal-group-line" aria-hidden="true">
+                {connector(id)}
+              </span>
               <SquareTerminal size={14} aria-hidden="true" />
               <span>{label(id)}</span>
             </button>
@@ -392,7 +390,6 @@ export function TerminalSessions({
       <button
         type="button"
         className="dock-action"
-        disabled={full}
         aria-label="New terminal session"
         title="New Terminal"
         onClick={() => create(false)}
@@ -402,7 +399,6 @@ export function TerminalSessions({
       <ToolbarMenu
         label="Launch profile"
         icon={<ChevronDown size={14} aria-hidden="true" />}
-        disabled={full}
         items={[
           ...[
             { id: "system" as const, label: "Default shell" },
@@ -414,7 +410,6 @@ export function TerminalSessions({
           "-",
           {
             label: "Split Terminal",
-            disabled: split,
             run: () => create(true),
           },
         ]}
@@ -422,7 +417,6 @@ export function TerminalSessions({
       <button
         type="button"
         className="dock-action"
-        disabled={full || split}
         aria-label="Split terminal pane"
         title="Split Terminal"
         onClick={() => create(true)}
@@ -445,7 +439,6 @@ export function TerminalSessions({
           { label: "Rename…", run: () => startRename(active) },
           {
             label: "Split Down",
-            disabled: full || split,
             run: () => create(true, "rows"),
           },
           "-",
@@ -503,11 +496,12 @@ export function TerminalSessions({
             aria-labelledby={`terminal-tab-${id}`}
             hidden={!visible.includes(id)}
             className="terminal-session-pane"
-            style={
-              direction === "columns"
-                ? { gridColumn: visible.indexOf(id) === 1 ? 3 : 1, gridRow: 1 }
-                : { gridColumn: 1, gridRow: visible.indexOf(id) === 1 ? 3 : 1 }
-            }
+            style={(() => {
+              const track = Math.max(0, visible.indexOf(id)) * 2 + 1;
+              return direction === "columns"
+                ? { gridColumn: track, gridRow: 1 }
+                : { gridColumn: 1, gridRow: track };
+            })()}
             data-active={active === id}
             onFocusCapture={() => setActive(id)}
           >
@@ -534,47 +528,70 @@ export function TerminalSessions({
             />
           </div>
         ))}
-        {visible.length > 1 && (
-          <div
-            className="terminal-session-divider"
-            role="separator"
-            tabIndex={0}
-            aria-label="Resize terminal panes"
-            aria-orientation={
-              direction === "columns" ? "vertical" : "horizontal"
-            }
-            data-direction={direction}
-            aria-valuemin={20}
-            aria-valuemax={80}
-            aria-valuenow={ratio}
-            onPointerDown={(event) => {
-              if (event.button === 0)
-                event.currentTarget.setPointerCapture(event.pointerId);
-            }}
-            onPointerMove={(event) => {
-              if (!event.currentTarget.hasPointerCapture(event.pointerId))
-                return;
-              const bounds = grid.current?.getBoundingClientRect();
-              if (!bounds) return;
-              const length =
-                direction === "columns" ? bounds.width : bounds.height;
-              const offset =
+        {visible.slice(1).map((_, index) => {
+          const track = index * 2 + 2;
+          return (
+            <div
+              key={`divider-${visible[index]}-${visible[index + 1]}`}
+              className="terminal-session-divider"
+              role="separator"
+              tabIndex={0}
+              aria-label={
+                visible.length === 2
+                  ? "Resize terminal panes"
+                  : `Resize terminal panes ${index + 1} and ${index + 2}`
+              }
+              aria-orientation={
+                direction === "columns" ? "vertical" : "horizontal"
+              }
+              data-direction={direction}
+              style={
                 direction === "columns"
-                  ? event.clientX - bounds.left
-                  : event.clientY - bounds.top;
-              if (length) changeRatio(Math.round((offset / length) * 100));
-            }}
-            onKeyDown={(event) => {
-              const [before, after] =
-                direction === "columns"
-                  ? ["ArrowLeft", "ArrowRight"]
-                  : ["ArrowUp", "ArrowDown"];
-              if (event.key !== before && event.key !== after) return;
-              event.preventDefault();
-              changeRatio(ratio + (event.key === before ? -5 : 5));
-            }}
-          />
-        )}
+                  ? { gridColumn: track, gridRow: 1 }
+                  : { gridColumn: 1, gridRow: track }
+              }
+              aria-valuemin={20}
+              aria-valuemax={80}
+              aria-valuenow={dividerShare(group, index)}
+              onPointerDown={(event) => {
+                if (event.button === 0)
+                  event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                if (!event.currentTarget.hasPointerCapture(event.pointerId))
+                  return;
+                const bounds = grid.current?.getBoundingClientRect();
+                if (!bounds) return;
+                const length =
+                  direction === "columns" ? bounds.width : bounds.height;
+                if (!length) return;
+                const offset =
+                  ((direction === "columns"
+                    ? event.clientX - bounds.left
+                    : event.clientY - bounds.top) /
+                    length) *
+                  100;
+                const before = group.sizes
+                  .slice(0, index)
+                  .reduce((sum, size) => sum + size, 0);
+                const span = group.sizes[index] + group.sizes[index + 1];
+                resize(index, Math.round(((offset - before) / span) * 100));
+              }}
+              onKeyDown={(event) => {
+                const [back, forward] =
+                  direction === "columns"
+                    ? ["ArrowLeft", "ArrowRight"]
+                    : ["ArrowUp", "ArrowDown"];
+                if (event.key !== back && event.key !== forward) return;
+                event.preventDefault();
+                resize(
+                  index,
+                  dividerShare(group, index) + (event.key === back ? -5 : 5),
+                );
+              }}
+            />
+          );
+        })}
       </div>
       {slots.length > 1 && tabs}
     </div>

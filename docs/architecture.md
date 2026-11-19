@@ -167,8 +167,16 @@ terminal's actions on the right: its name (or a session list beside the
 terminals once there are several), **New Terminal**, a **Launch profile** menu
 that opens a terminal with a chosen shell, **Split**, **Kill Terminal** and
 **More** (Rename, Split Down, Find, Copy, Paste, Clear). A split uses the same
-shell as the terminal it splits. Kill removes the active terminal when others
-remain and otherwise ends its shell. The terminal-only window shows the same
+shell as the terminal it splits. Splits form VS Code-style groups: each split
+adds a pane beside the active terminal, with no small cap on terminals, the
+group's panes share one row or column with a resizable divider between each
+pair, and the session list ties grouped terminals together with tree lines.
+Kill removes the active terminal when others remain, handing its space and
+focus to a neighbouring pane, and otherwise ends its shell.
+
+A page load or reload in a window ends that window's terminal sessions and
+language session in Rust. The reloaded page has lost their IDs, so the shells
+would otherwise keep running unseen and count against the session ceiling. The terminal-only window shows the same
 actions above its terminals. Shell exit leaves
 output visible until the next start, and failed startup offers a retry. New zsh
 sessions report prompt and command status through OSC 133. A hollow circle marks
@@ -318,7 +326,9 @@ resource moved or was deleted, select its new location or clear the history.
 **New Terminal** adds an independent PTY tab. **Split Terminal** shows two
 independent panes and permits keyboard or pointer resizing. The renderer keeps
 each PTY's measured dimensions in sync and can remove a tab without closing
-its neighbors. There are at most four sessions per window. **New Terminal
+its neighbors. A window may hold up to 64 sessions; this is only a safety
+ceiling against runaway loops exhausting file descriptors, not a product
+limit. **New Terminal
 Window** opens a terminal-only application window with no workspace,
 editor, or Run & Build capability, and starts and focuses a shell in it.
 Closing it cleans up its sessions.
@@ -435,8 +445,8 @@ releases the registry lock during the platform launch. Existing sessions
 can keep reading, resizing, or closing while another session starts. The
 renderer gives startup 12 seconds and then offers Retry. Cancel and timeout
 mark the reservation for disposal, and any successful late IPC reply is
-closed. A pending reservation continues to count against the existing four
-sessions per window until its platform call returns. Removing a tab frees its
+closed. A pending reservation counts against the per-window session ceiling until
+its platform call returns. Removing a tab frees its
 display number independently of its internal session key and native UUID.
 
 The session toolbar selects an installed system profile, renames tabs, and
