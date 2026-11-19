@@ -138,6 +138,24 @@ Known disk conflicts require the normal reload or Save As workflow. Untitled
 documents still use the native picker on explicit Save, and browser preview
 keeps its drafts in memory.
 
+### Document identity and revisions
+
+Every tab carries a canonical `uri` for its current source
+(`turing-workspace://<workspace>/<path>`, `turing-file://<grant>`, or
+`untitled:<name>`) and a `revision` that advances whenever that source or its
+saved state changes: open, save, reload, rename and Save As. Typing changes
+only `editRevision`. Asynchronous replies (saves, reloads and disk checks)
+apply only while the tab still has the revision they were issued for, so a
+late reply cannot overwrite a renamed, reloaded or re-saved document.
+
+User actions that arrive while Auto Save is writing (close, rename, reload,
+Save, Save As and workspace changes) wait for that write and then act on the
+latest tabs, instead of being dropped. All tab changes go through one commit
+path that keeps a synchronous copy of the latest state, so resumed work never
+writes back a stale snapshot. A file read or creation that finishes after its
+workspace was closed or replaced is discarded instead of opening a tab, and a
+revoked grant surfaces as a save error that keeps the draft.
+
 ## Workbench layout
 
 Nebula styling uses the shared design tokens. The File menu and command palette

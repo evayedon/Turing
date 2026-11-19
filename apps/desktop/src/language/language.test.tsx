@@ -26,6 +26,8 @@ const source = {
 };
 const tab: EditorTab = {
   key: "main",
+  uri: "turing-workspace://one/main.cpp",
+  revision: 1,
   name: "main.cpp",
   title: "main.cpp",
   source,

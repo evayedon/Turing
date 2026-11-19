@@ -68,6 +68,8 @@ it("changes language on the same model after a rename and a manual selection", (
   const ready = vi.fn();
   const tab: EditorTab = {
     key: "doc",
+    uri: "turing-workspace://workspace/main.txt",
+    revision: 1,
     name: "main.txt",
     title: "main.txt",
     source: {
@@ -130,6 +132,8 @@ it("updates and clears clangd and compiler markers independently", () => {
   mocks.createModel.mockReturnValue(model);
   const tab: EditorTab = {
     key: "cpp",
+    uri: "untitled:main.cpp",
+    revision: 1,
     name: "main.cpp",
     title: "main.cpp",
     source: { kind: "untitled" },

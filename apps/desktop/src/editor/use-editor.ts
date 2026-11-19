@@ -1,7 +1,13 @@
 import type { NavigationTarget } from "./navigation";
 import { rememberRecent } from "../shell/recent";
 import { suggestedFilename } from "./languages";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type {
   SelectedFileSnapshot,
   TextFile,
@@ -24,6 +30,14 @@ type SavedSource = (
 
 export interface EditorTab {
   key: string;
+  /** Canonical identity of the document's current source. */
+  uri: string;
+  /**
+   * Advances whenever the source identity or saved state changes (open, save,
+   * reload, rename, Save As). Late replies apply only to the revision they
+   * were issued for. Typing changes `editRevision`, not this.
+   */
+  revision: number;
   name: string;
   title: string;
   source: SavedSource | { kind: "untitled" };
@@ -36,7 +50,17 @@ export interface EditorTab {
   saveError?: string;
 }
 
-function workspaceTab(file: TextFile): Omit<EditorTab, "key"> {
+type NewTab = Omit<EditorTab, "key" | "revision" | "uri">;
+
+export function documentUri(source: EditorTab["source"], name: string) {
+  return source.kind === "workspace"
+    ? `turing-workspace://${source.workspaceId}/${source.relativePath}`
+    : source.kind === "selected"
+      ? `turing-file://${source.fileId}`
+      : `untitled:${name}`;
+}
+
+function workspaceTab(file: TextFile): NewTab {
   return {
     name: file.relativePath.split("/").at(-1) ?? file.relativePath,
     title: file.relativePath,
@@ -52,7 +76,7 @@ function workspaceTab(file: TextFile): Omit<EditorTab, "key"> {
   };
 }
 
-function selectedTab(file: SelectedFileSnapshot): Omit<EditorTab, "key"> {
+function selectedTab(file: SelectedFileSnapshot): NewTab {
   return {
     name: file.name,
     title: file.displayPath,
@@ -106,6 +130,12 @@ type DiscardAction =
 
 export function useEditor(workspaceId: string | undefined, native: boolean) {
   const [tabs, setTabs] = useState<EditorTab[]>([]);
+  // Always the latest tabs, so work resumed after an await never acts on, or
+  // writes back, a stale snapshot. Every change goes through `commitTabs`.
+  const latest = useRef<EditorTab[]>([]);
+  const currentWorkspace = useRef(workspaceId);
+  const revisions = useRef(0);
+  const inflight = useRef<Promise<unknown> | null>(null);
   const [activeKey, setActiveKey] = useState<string>();
   const [reveal, setReveal] = useState<EditorLocation & { key: string }>();
   const [operation, setOperation] = useState<Operation | null>(null);
@@ -124,6 +154,17 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     !!active &&
     (active.source.kind === "untitled" || active.draft !== active.content);
 
+  useLayoutEffect(() => {
+    currentWorkspace.current = workspaceId;
+  }, [workspaceId]);
+
+  function commitTabs(next: (previous: EditorTab[]) => EditorTab[]) {
+    latest.current = next(latest.current);
+    setTabs(latest.current);
+  }
+
+  const find = (key: string) => latest.current.find((tab) => tab.key === key);
+
   const autoSaveCandidate =
     autoSave && native
       ? tabs.find(
@@ -135,13 +176,20 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         )
       : undefined;
 
+  /** Applies `patch` only if `tab` still has the revision it was read at. */
   function update(tab: EditorTab, patch: Partial<EditorTab>) {
-    setTabs((previous) =>
-      previous.map((item) =>
-        item.key === tab.key && item.source === tab.source
-          ? { ...item, ...patch }
-          : item,
-      ),
+    commitTabs((previous) =>
+      previous.map((item) => {
+        if (item.key !== tab.key || item.revision !== tab.revision) return item;
+        const next = { ...item, ...patch };
+        return patch.source
+          ? {
+              ...next,
+              uri: documentUri(next.source, next.name),
+              revision: ++revisions.current,
+            }
+          : next;
+      }),
     );
   }
 
@@ -149,18 +197,26 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     action: () => Promise<T>,
     mode: Operation = "foreground",
   ) {
+    // A user action requested while Auto Save writes runs after it instead
+    // of being dropped; it then reads the latest tabs.
+    while (mode === "foreground" && pending.current === "automatic")
+      await inflight.current?.catch(() => {});
     if (pending.current) return;
     pending.current = mode;
     setOperation(mode);
     if (mode === "foreground") setError(undefined);
-    try {
-      return await action();
-    } catch (cause) {
-      setError(workspaceErrorMessage(cause));
-    } finally {
-      pending.current = null;
-      setOperation(null);
-    }
+    const run = (async () => {
+      try {
+        return await action();
+      } catch (cause) {
+        setError(workspaceErrorMessage(cause));
+      } finally {
+        pending.current = null;
+        setOperation(null);
+      }
+    })();
+    inflight.current = run;
+    return run;
   }
 
   function confirmDiscard(action: DiscardAction) {
@@ -184,9 +240,17 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     }
   }
 
-  function addTab(tab: Omit<EditorTab, "key">) {
+  function addTab(tab: NewTab) {
     const key = String(++tabSequence.current);
-    setTabs((previous) => [...previous, { ...tab, key }]);
+    commitTabs((previous) => [
+      ...previous,
+      {
+        ...tab,
+        key,
+        uri: documentUri(tab.source, tab.name),
+        revision: ++revisions.current,
+      },
+    ]);
     setActiveKey(key);
     return key;
   }
@@ -209,6 +273,8 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         workspaceId,
         relativePath,
       });
+      // The workspace was closed or replaced while reading: drop the reply.
+      if (currentWorkspace.current !== workspaceId) return;
       const key = addTab(workspaceTab(file));
       if (location) setReveal({ key, ...location });
     });
@@ -223,7 +289,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       );
       if (!file) return;
       rememberRecent({ kind: "file", name: file.name, path: file.displayPath });
-      const existing = tabs.find(
+      const existing = latest.current.find(
         (tab) =>
           tab.source.kind === "selected" && tab.source.fileId === file.fileId,
       );
@@ -254,7 +320,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     return perform(async () => {
       const target = parent ? `${parent}/${name}` : name;
       if (
-        tabs.some(
+        latest.current.some(
           ({ source }) =>
             source.kind === "workspace" &&
             source.workspaceId === workspaceId &&
@@ -267,6 +333,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         parent,
         name,
       });
+      if (currentWorkspace.current !== workspaceId) return file.relativePath;
       addTab(workspaceTab(file));
       return file.relativePath;
     });
@@ -284,7 +351,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       path === base || path.startsWith(`${base}/`);
     return perform(async () => {
       if (
-        tabs.some(
+        latest.current.some(
           ({ source }) =>
             source.kind === "workspace" &&
             source.workspaceId === workspaceId &&
@@ -299,7 +366,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         name,
         expectedIdentity,
       });
-      setTabs((previous) =>
+      commitTabs((previous) =>
         previous.map((item) => {
           const { source } = item;
           if (
@@ -309,11 +376,14 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
           )
             return item;
           const newPath = next + source.relativePath.slice(relativePath.length);
+          const renamed = { ...source, relativePath: newPath };
           return {
             ...item,
             title: newPath,
             name: newPath.split("/").at(-1) ?? item.name,
-            source: { ...source, relativePath: newPath },
+            source: renamed,
+            uri: documentUri(renamed, item.name),
+            revision: ++revisions.current,
           };
         }),
       );
@@ -336,32 +406,43 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     await invokeWorkspace("file_close", { fileId });
   }
 
-  function close(tab: EditorTab) {
+  function close({ key }: EditorTab) {
     return perform(async () => {
+      const tab = find(key);
+      if (!tab) return;
       if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
-      await releaseFile(tab, tabs);
-      const index = tabs.findIndex((item) => item.key === tab.key);
-      const remaining = tabs.filter((item) => item.key !== tab.key);
-      setTabs(remaining);
-      if (activeKey === tab.key) {
-        setActiveKey(remaining[Math.min(index, remaining.length - 1)]?.key);
-      }
+      await releaseFile(tab, latest.current);
+      const index = latest.current.findIndex((item) => item.key === key);
+      commitTabs((previous) => previous.filter((item) => item.key !== key));
+      const remaining = latest.current;
+      setActiveKey((current) =>
+        current === key
+          ? remaining[Math.min(index, remaining.length - 1)]?.key
+          : current,
+      );
     });
   }
 
   function closeAll() {
     return perform(async () => {
-      if (dirty && !(await confirmDiscard("closeAll"))) return;
-      const remaining = [...tabs];
+      if (
+        latest.current.some((tab) => tab.draft !== tab.content) &&
+        !(await confirmDiscard("closeAll"))
+      )
+        return;
+      const remaining = [...latest.current];
       try {
         while (remaining.length) {
           await releaseFile(remaining[0], remaining);
           remaining.shift();
         }
       } finally {
-        setTabs(remaining);
-        if (!remaining.some(({ key }) => key === activeKey))
-          setActiveKey(remaining[0]?.key);
+        const kept = new Set(remaining.map(({ key }) => key));
+        commitTabs((previous) => previous.filter(({ key }) => kept.has(key)));
+        const left = latest.current;
+        setActiveKey((current) =>
+          left.some(({ key }) => key === current) ? current : left[0]?.key,
+        );
       }
     });
   }
@@ -370,7 +451,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     if (pending.current === "foreground") return;
     // An older draft can finish saving before Monaco delivers its next edit.
     // Apply the edit to the current tab without replacing its saved version.
-    setTabs((previous) =>
+    commitTabs((previous) =>
       previous.map((item) =>
         item.key === tab.key
           ? {
@@ -391,7 +472,10 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   function saveAs() {
     if (!active || !native) return;
+    const { key } = active;
     return perform(async () => {
+      const active = find(key);
+      if (!active) return;
       const file = await invokeWorkspace("file_save_as", {
         content: active.draft,
         suggestedName: suggestedFilename(active),
@@ -406,15 +490,17 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         active.source.kind === "selected" &&
         active.source.fileId !== file.fileId
       ) {
-        await releaseFile(active, tabs);
+        await releaseFile(active, latest.current);
       }
     });
   }
 
-  function saveTab(tab: EditorTab, mode: Operation = "foreground") {
-    const { source, draft } = tab;
-    if (source.kind === "untitled") return;
+  function saveTab({ key }: EditorTab, mode: Operation = "foreground") {
     return perform(async () => {
+      // Save what the tab holds now, which may postdate the request.
+      const tab = find(key);
+      if (!tab || tab.source.kind === "untitled") return;
+      const { source, draft } = tab;
       try {
         const version = await writeFile(source, draft);
         update(tab, {
@@ -444,7 +530,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   function toggleAutoSave() {
     if (!native) return;
     if (!autoSave) {
-      setTabs((previous) =>
+      commitTabs((previous) =>
         previous.map((tab) =>
           tab.saveError ? { ...tab, saveError: undefined } : tab,
         ),
@@ -473,8 +559,11 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   function reload() {
     if (!active || active.source.kind === "untitled") return;
-    const source = active.source;
+    const { key } = active;
     return perform(async () => {
+      const active = find(key);
+      if (!active || active.source.kind === "untitled") return;
+      const source = active.source;
       if (active.draft !== active.content && !(await confirmDiscard("reload")))
         return;
       const file = await readFile(source);
@@ -490,7 +579,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   function changeWorkspace(action: () => Promise<boolean | undefined>) {
     return perform(async () => {
-      const workspaceTabs = tabs.filter(
+      const workspaceTabs = latest.current.filter(
         (tab) => tab.source.kind === "workspace",
       );
       if (
@@ -499,10 +588,14 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       )
         return;
       if (await action()) {
-        const remaining = tabs.filter((tab) => tab.source.kind !== "workspace");
-        setTabs(remaining);
-        if (active?.source.kind === "workspace")
-          setActiveKey(remaining.at(-1)?.key);
+        const closing = new Set(workspaceTabs.map(({ key }) => key));
+        commitTabs((previous) =>
+          previous.filter((tab) => tab.source.kind !== "workspace"),
+        );
+        const remaining = latest.current;
+        setActiveKey((current) =>
+          current && closing.has(current) ? remaining.at(-1)?.key : current,
+        );
       }
     });
   }
