@@ -1,3 +1,4 @@
+import { isDirty } from "./use-draft-recovery";
 import { ChevronRight, FileCode2, X } from "lucide-react";
 import { lazy, Suspense } from "react";
 import type { ReactNode } from "react";
@@ -18,6 +19,10 @@ export function EditorWorkspace({
   tabs,
   active,
   reveal,
+  recoveryDrafts,
+  recoveryError,
+  restoreDraft,
+  discardDraft,
   busy,
   readOnly,
   error,
@@ -49,7 +54,7 @@ export function EditorWorkspace({
           <div className="editor-tabs" role="tablist" aria-label="Open files">
             {tabs.map((tab) => {
               const { name } = tab;
-              const dirty = tab.draft !== tab.content;
+              const dirty = isDirty(tab);
               return (
                 <div className="editor-tab" key={tab.key}>
                   <button
@@ -142,6 +147,60 @@ export function EditorWorkspace({
       {error && (
         <p className="editor-notice" role="alert">
           {error}
+        </p>
+      )}
+      {recoveryError && (
+        <p className="editor-notice" role="alert">
+          {recoveryError}
+        </p>
+      )}
+      {recoveryDrafts.length > 0 && (
+        <details className="editor-recovery">
+          <summary>Recover unsaved drafts ({recoveryDrafts.length})</summary>
+          {recoveryDrafts.some(({ source }) => source.kind === "workspace") && (
+            <p>Open the original workspace to restore a draft to its file.</p>
+          )}
+          <ul>
+            {recoveryDrafts.map((entry) => (
+              <li key={entry.id}>
+                <span
+                  title={
+                    entry.source.kind === "workspace"
+                      ? `${entry.source.root}/${entry.title}`
+                      : entry.title
+                  }
+                >
+                  {entry.name}
+                  {entry.source.kind === "workspace" && (
+                    <small>{entry.source.root}</small>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void restoreDraft(entry)}
+                >
+                  Restore <span className="visually-hidden">{entry.name}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void discardDraft(entry)}
+                >
+                  Discard <span className="visually-hidden">{entry.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {active?.recovered && (
+        <p className="editor-notice" role="status">
+          {active.changedOnDisk
+            ? "The file on disk changed since this draft was saved. Use Save As to keep a separate copy."
+            : active.source.kind === "untitled"
+              ? "Recovered copy. Use Save As to choose where to save it."
+              : "Recovered draft. Save when you are ready to write it to disk."}
         </p>
       )}
       {active?.changedOnDisk && (

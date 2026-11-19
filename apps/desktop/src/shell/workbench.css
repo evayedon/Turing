@@ -403,7 +403,8 @@ svg {
   border-right: 1px solid var(--nebula-border);
 }
 .editor-toolbar button,
-.editor-notice button {
+.editor-notice button,
+.editor-recovery button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -414,7 +415,8 @@ svg {
   font-size: var(--nebula-sm);
 }
 .editor-toolbar button:hover:not(:disabled),
-.editor-notice button:hover:not(:disabled) {
+.editor-notice button:hover:not(:disabled),
+.editor-recovery button:hover:not(:disabled) {
   color: var(--nebula-text);
   background: var(--nebula-hover);
 }
@@ -535,6 +537,44 @@ svg {
 }
 .editor-notice[role="alert"] {
   color: var(--nebula-danger);
+}
+.editor-recovery {
+  flex: 0 0 auto;
+  padding: var(--nebula-s1) var(--nebula-s3);
+  border-bottom: 1px solid var(--nebula-border);
+  color: var(--nebula-text);
+  font-size: var(--nebula-sm);
+}
+.editor-recovery summary {
+  width: fit-content;
+  cursor: pointer;
+}
+.editor-recovery p {
+  margin: var(--nebula-s1) 0;
+  color: var(--nebula-muted);
+}
+.editor-recovery li small {
+  margin-inline-start: var(--nebula-s2);
+  color: var(--nebula-muted);
+}
+.editor-recovery ul {
+  max-height: 8rem;
+  overflow: auto;
+  margin: var(--nebula-s1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.editor-recovery li {
+  display: flex;
+  align-items: center;
+  gap: var(--nebula-s1);
+}
+.editor-recovery li > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-inline-end: auto;
 }
 .statusbar {
   display: flex;

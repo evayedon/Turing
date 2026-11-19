@@ -1,3 +1,4 @@
+import { isDirty } from "../editor/use-draft-recovery";
 import {
   CircleDot,
   FilePlus,
@@ -104,7 +105,11 @@ function Panel({
 
 export function Workbench() {
   const explorer = useExplorer();
-  const editor = useEditor(explorer.workspace?.id, explorer.native);
+  const editor = useEditor(
+    explorer.workspace?.id,
+    explorer.native,
+    explorer.workspace?.displayPath,
+  );
   const git = useGit(explorer.workspace?.id, explorer.native);
   useWorkspaceWatcher(
     explorer.workspace?.id,
@@ -437,7 +442,7 @@ export function Workbench() {
   }, []);
 
   const live = active && info?.key === active.key ? info : undefined;
-  const changed = active && active.draft !== active.content;
+  const changed = active && isDirty(active);
   const source = active?.source;
   const saveState = editor.busy
     ? "Working…"

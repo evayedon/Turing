@@ -1,3 +1,8 @@
+import {
+  isDirty,
+  useDraftRecovery,
+  type RecoveryDraft,
+} from "./use-draft-recovery";
 import type { NavigationTarget } from "./navigation";
 import { rememberRecent } from "../shell/recent";
 import { suggestedFilename } from "./languages";
@@ -50,6 +55,7 @@ export interface EditorTab {
   changedOnDisk: boolean;
   languageOverride?: string;
   saveError?: string;
+  recovered?: boolean;
 }
 
 type NewTab = Omit<EditorTab, "key" | "revision" | "uri">;
@@ -150,7 +156,12 @@ type Operation = "foreground" | "automatic";
 type DiscardAction =
   WorkspaceCommands["editor_confirm_discard"]["args"]["action"];
 
-export function useEditor(workspaceId: string | undefined, native: boolean) {
+export function useEditor(
+  workspaceId: string | undefined,
+  native: boolean,
+  workspacePath?: string,
+) {
+  const recovery = useDraftRecovery(native);
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   // Always the latest tabs, so work resumed after an await never acts on, or
   // writes back, a stale snapshot. Every change goes through `commitTabs`.
@@ -170,7 +181,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const untitledCount = useRef(0);
   const tabSequence = useRef(0);
   const active = tabs.find((tab) => tab.key === activeKey);
-  const dirty = tabs.some((tab) => tab.draft !== tab.content);
+  const dirty = tabs.some(isDirty);
   const canSave =
     native &&
     !!active &&
@@ -181,7 +192,9 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   }, [workspaceId]);
 
   function commitTabs(next: (previous: EditorTab[]) => EditorTab[]) {
-    latest.current = next(latest.current);
+    const previous = latest.current;
+    latest.current = next(previous);
+    recovery.track(previous, latest.current, workspacePath);
     setTabs(latest.current);
   }
 
@@ -194,6 +207,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
             tab.source.kind !== "untitled" &&
             tab.draft !== tab.content &&
             !tab.changedOnDisk &&
+            !tab.recovered &&
             !tab.saveError,
         )
       : undefined;
@@ -323,6 +337,68 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     });
   }
 
+  function restoreDraft(entry: RecoveryDraft) {
+    return perform(async () => {
+      const source = entry.source;
+      let tab: NewTab | undefined;
+      if (
+        source.kind === "workspace" &&
+        workspaceId &&
+        workspacePath === source.root &&
+        !latest.current.some(
+          ({ source: open }) =>
+            open.kind === "workspace" &&
+            open.workspaceId === workspaceId &&
+            open.relativePath === source.relativePath,
+        )
+      ) {
+        try {
+          const file = await invokeWorkspace("fs_read_file", {
+            workspaceId,
+            relativePath: source.relativePath,
+          });
+          if (currentWorkspace.current !== workspaceId) return;
+          if (file.content === entry.draft) {
+            recovery.remove(entry.id, entry);
+            addTab(workspaceTab(file));
+            return;
+          }
+          tab = {
+            ...workspaceTab(file),
+            source: {
+              kind: "workspace",
+              workspaceId,
+              relativePath: source.relativePath,
+              version: source.version,
+            },
+            changedOnDisk: file.version !== source.version,
+          };
+        } catch (cause) {
+          if (!missingOnDisk.includes(String(cause))) throw cause;
+        }
+      }
+      const key = addTab({
+        ...(tab ?? {
+          name: `Recovered-${++untitledCount.current}-${entry.name}`,
+          title: entry.title,
+          source: { kind: "untitled" },
+          content: "",
+          changedOnDisk: false,
+        }),
+        draft: entry.draft,
+        recovered: true,
+        languageOverride: entry.languageOverride,
+      });
+      recovery.recovered(entry, key);
+    });
+  }
+
+  function discardDraft(entry: RecoveryDraft) {
+    return perform(async () => {
+      if (await confirmDiscard("tab")) recovery.remove(entry.id, entry);
+    });
+  }
+
   function newFile() {
     if (pending.current) return;
     const name = `Untitled-${++untitledCount.current}`;
@@ -432,7 +508,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     return perform(async () => {
       const tab = find(key);
       if (!tab) return;
-      if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
+      if (isDirty(tab) && !(await confirmDiscard("tab"))) return;
       await releaseFile(tab, latest.current);
       const index = latest.current.findIndex((item) => item.key === key);
       commitTabs((previous) => previous.filter((item) => item.key !== key));
@@ -447,10 +523,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   function closeAll() {
     return perform(async () => {
-      if (
-        latest.current.some((tab) => tab.draft !== tab.content) &&
-        !(await confirmDiscard("closeAll"))
-      )
+      if (latest.current.some(isDirty) && !(await confirmDiscard("closeAll")))
         return;
       const remaining = [...latest.current];
       try {
@@ -507,6 +580,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       update(active, {
         ...selectedTab({ ...file, content: active.draft }),
         saveError: undefined,
+        recovered: false,
       });
       if (
         active.source.kind === "selected" &&
@@ -528,6 +602,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         update(tab, {
           content: draft,
           savedVersion: version,
+          recovered: false,
           source: { ...source, version },
           changedOnDisk: false,
           saveError: undefined,
@@ -592,6 +667,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       update(active, {
         content: file.content,
         draft: file.content,
+        recovered: false,
         source: { ...source, version: file.version },
         changedOnDisk: false,
         saveError: undefined,
@@ -604,10 +680,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       const workspaceTabs = latest.current.filter(
         (tab) => tab.source.kind === "workspace",
       );
-      if (
-        workspaceTabs.some((tab) => tab.draft !== tab.content) &&
-        !(await confirmDiscard("workspace"))
-      )
+      if (workspaceTabs.some(isDirty) && !(await confirmDiscard("workspace")))
         return;
       if (await action()) {
         const closing = new Set(workspaceTabs.map(({ key }) => key));
@@ -630,7 +703,13 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     setExitPending(false);
     void perform(async () => {
       if (!dirty || (await confirmDiscard("exit"))) {
-        await invokeWorkspace("editor_exit", undefined);
+        recovery.track(latest.current, [], workspacePath);
+        try {
+          await invokeWorkspace("editor_exit", undefined);
+        } catch (cause) {
+          recovery.track([], latest.current, workspacePath);
+          throw cause;
+        }
       }
     });
   });
@@ -717,6 +796,10 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     tabs,
     active,
     reveal,
+    recoveryDrafts: recovery.available,
+    recoveryError: recovery.error,
+    restoreDraft,
+    discardDraft,
     busy,
     error: error ?? active?.saveError,
     readOnly: operation === "foreground",

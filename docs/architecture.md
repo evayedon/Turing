@@ -158,6 +158,25 @@ writes back a stale snapshot. A file read or creation that finishes after its
 workspace was closed or replaced is discarded instead of opening a tab, and a
 revoked grant surfaces as a save error that keeps the draft.
 
+### Draft recovery
+
+The desktop workbench journals unsaved text in its local WebView storage,
+with separate records for each dirty buffer. Snapshots are written at most
+once per 400 ms during editing and flushed when the page is hidden or unloaded.
+A hard crash can lose edits made since the last snapshot. Storage failures are
+shown in the editor. Browser previews still keep drafts in memory.
+
+On the next launch, **Recover unsaved drafts** offers Restore and Discard.
+To restore into a workspace file, reopen the original workspace through the
+native picker. The editor reads the file through the new grant and compares
+the saved base version. A mismatch keeps the newer disk text intact and
+offers Save As. Missing files, standalone files, and workspaces without a
+current matching grant recover as untitled copies. The journal grants no
+filesystem access, and recovered tabs wait for an explicit save even when
+Auto Save is enabled. Save, successful reload, or confirmed discard removes
+the corresponding snapshot. A restored snapshot is replaced only after its
+new journal record has been written.
+
 ## Workspace watcher
 
 Rust starts one recursive OS watcher (the `notify` crate: FSEvents, inotify or

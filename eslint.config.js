@@ -4,7 +4,14 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default [
-  { ignores: ["**/dist/**", "**/target/**", "**/gen/**"] },
+  {
+    ignores: [
+      "**/dist/**",
+      "**/target/**",
+      "**/gen/**",
+      ".claude/worktrees/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

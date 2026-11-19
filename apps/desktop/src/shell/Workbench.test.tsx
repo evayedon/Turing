@@ -21,6 +21,11 @@ vi.mock("../explorer/watch-ipc", () => ({
 beforeEach(() => {
   const storage = new Map<string, string>();
   vi.stubGlobal("localStorage", {
+    get length() {
+      return storage.size;
+    },
+    key: (index: number) => [...storage.keys()][index] ?? null,
+    removeItem: (key: string) => storage.delete(key),
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
   });
@@ -44,6 +49,31 @@ describe("workbench panels", () => {
     ).toContain("No recent files or folders.");
     await user.click(screen.getByRole("button", { name: "New File…" }));
     expect(await screen.findByRole("tab", { name: /Untitled/ })).toBeTruthy();
+  });
+
+  it("offers a saved recovery snapshot from the editor pane", async () => {
+    vi.mocked(isTauri).mockReturnValue(true);
+    window.localStorage.setItem(
+      "turing:draft:v1:previous",
+      JSON.stringify({
+        id: "previous",
+        name: "Untitled-1",
+        title: "Untitled-1",
+        draft: "recover me",
+        source: { kind: "copy" },
+        timestamp: 1,
+      }),
+    );
+    const user = userEvent.setup();
+    render(<Workbench />);
+    await user.click(screen.getByText("Recover unsaved drafts (1)"));
+    await user.click(
+      screen.getByRole("button", { name: "Restore Untitled-1" }),
+    );
+    expect(
+      screen.getByRole("tab", { name: "Recovered-1-Untitled-1 (unsaved)" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Recover unsaved drafts (1)")).toBeNull();
   });
 
   it("opens Explorer and Editor on a fresh profile", () => {
