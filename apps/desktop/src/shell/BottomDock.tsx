@@ -138,6 +138,7 @@ export function BottomDock({
           {name === "Terminal" ? (
             <TerminalSessions
               toolbar={active === "Terminal" ? actions : null}
+              shown={visible && active === "Terminal"}
               native={native}
               workspaceId={workspaceId}
               activation={terminalActivation}

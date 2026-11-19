@@ -94,7 +94,7 @@ describe("TerminalPanel", () => {
     expect(mocks.create).not.toHaveBeenCalled();
   });
 
-  it("shows an idle terminal without starting it, then opens, clears and closes explicitly from the menu", async () => {
+  it("starts a terminal when Show Terminal reveals it, then clears and closes it from the menu", async () => {
     const pending = deferred<never>();
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "terminal_start")
@@ -107,14 +107,15 @@ describe("TerminalPanel", () => {
     const menu = screen.getByRole("menuitem", { name: "Terminal" });
     await user.click(menu);
     await user.click(screen.getByRole("menuitem", { name: "Show Terminal" }));
-    expect(screen.getByRole("button", { name: "Start terminal" })).toBeTruthy();
-    expect(mocks.invoke).not.toHaveBeenCalledWith(
-      "terminal_start",
-      expect.anything(),
-    );
+    await running();
+    expect(screen.queryByRole("button", { name: "Start terminal" })).toBeNull();
     await user.click(menu);
     await user.click(screen.getByRole("menuitem", { name: "Open Terminal" }));
-    await running();
+    expect(
+      mocks.invoke.mock.calls.filter(
+        ([command]) => command === "terminal_start",
+      ),
+    ).toHaveLength(1);
     await user.click(menu);
     await user.click(screen.getByRole("menuitem", { name: "Clear Terminal" }));
     expect(view.clear).toHaveBeenCalledOnce();
@@ -182,7 +183,7 @@ describe("TerminalPanel", () => {
     ).toBeNull();
   });
 
-  it("keeps restored layout idle and opens, focuses and reopens only on explicit requests", async () => {
+  it("starts a restored terminal without taking focus, and focuses or reopens it on request", async () => {
     useLayout.setState({ terminal: true, dockView: "Terminal" });
     const start = deferred<{ id: string; workspaceDirectory: boolean }>();
     let starts = 0;
@@ -203,17 +204,17 @@ describe("TerminalPanel", () => {
         <Workbench />
       </StrictMode>,
     );
-    expect(screen.getByRole("button", { name: "Start terminal" })).toBeTruthy();
-    expect(screen.getByText("No terminal session running.")).toBeTruthy();
-    expect(starts).toBe(0);
-    const terminal = screen.getByRole("tab", { name: "Terminal" });
-    await user.dblClick(terminal);
+    // A restored, visible terminal starts on its own and leaves focus alone.
     await waitFor(() => expect(starts).toBe(1));
-    expect(view.focus).not.toHaveBeenCalled();
     await act(async () =>
       start.resolve({ id: "first", workspaceDirectory: false }),
     );
+    await running();
+    expect(view.focus).not.toHaveBeenCalled();
+    const terminal = screen.getByRole("tab", { name: "Terminal" });
+    await user.click(terminal);
     expect(view.focus).toHaveBeenCalledOnce();
+    expect(starts).toBe(1);
 
     await user.click(screen.getByRole("tab", { name: "Problems" }));
     await user.click(screen.getByRole("button", { name: "Hide bottom panel" }));

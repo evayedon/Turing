@@ -153,10 +153,13 @@ Problems displays live clangd diagnostics and recognized C++ compiler diagnostic
 ## Integrated terminal
 
 The bottom dock starts collapsed for new profiles and honors saved visibility
-and tab preferences. A restored Terminal tab shows an inactive state with
-**Start terminal**. Selecting Terminal, revealing it with the activity control,
-or invoking **Open Terminal** (Ctrl+backtick) starts or focuses the selected
-session. Layout restoration and workspace changes leave idle shells stopped.
+and tab preferences. Whenever the Terminal tab is visible, including a
+restored layout, a terminal that has never run starts on its own without
+taking focus, so no **Start terminal** click is needed. Selecting Terminal,
+revealing it with the activity control, or invoking **Open Terminal**
+(Ctrl+backtick) also starts the selected session if needed and focuses it. A
+killed or exited terminal stays stopped until it is explicitly reopened or
+restarted.
 Switching dock tabs or hiding the dock keeps the sessions and scrollback.
 
 The panel header follows VS Code: text tabs on the left and the active
@@ -292,8 +295,9 @@ clipboard capabilities.
 Go to File lists open editors and scans the approved workspace using bounded
 directory listings. It skips generated dependency folders and also offers the
 native file picker. Close All asks once before discarding dirty editors and
-releases standalone native file grants. Show Terminal reveals the dock
-without starting a session. Open Terminal explicitly starts or focuses the
+releases standalone native file grants. Show Terminal reveals the dock,
+which starts a never-run terminal without focusing it. Open Terminal starts or
+focuses the
 selected session, and Clear Terminal clears its visible buffer through xterm.
 
 ## Workbench windows and terminal sessions
@@ -315,9 +319,9 @@ resource moved or was deleted, select its new location or clear the history.
 independent panes and permits keyboard or pointer resizing. The renderer keeps
 each PTY's measured dimensions in sync and can remove a tab without closing
 its neighbors. There are at most four sessions per window. **New Terminal
-Window** opens an idle terminal-only application window with no workspace,
-editor, or Run & Build capability. Use **Start terminal** or **New terminal
-session** in that window to start a shell. Closing it cleans up its sessions.
+Window** opens a terminal-only application window with no workspace,
+editor, or Run & Build capability, and starts and focuses a shell in it.
+Closing it cleans up its sessions.
 PTYs execute with the user's operating-system privileges.
 
 ## Code navigation and debugging status

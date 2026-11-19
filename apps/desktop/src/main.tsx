@@ -25,7 +25,7 @@ createRoot(root).render(
   <StrictMode>
     {terminalWindow ? (
       <main className="terminal-window">
-        <TerminalSessions native activation={0} />
+        <TerminalSessions native activation={1} />
       </main>
     ) : (
       <Workbench />

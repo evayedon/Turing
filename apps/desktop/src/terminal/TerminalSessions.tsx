@@ -37,7 +37,10 @@ export function TerminalSessions({
   onRunningChange,
   onLayout,
   toolbar = "inline",
+  shown = false,
 }: {
+  /** While true, a terminal that has never run starts without taking focus. */
+  shown?: boolean;
   /** Where the session actions render: inline above the terminals, into a
    * host element (the bottom panel header), or nowhere (`null`). */
   toolbar?: "inline" | HTMLElement | null;
@@ -74,13 +77,39 @@ export function TerminalSessions({
   const activeTab = useRef<HTMLButtonElement>(null);
   const restoreTabFocus = useRef(false);
 
-  const activateSelected = useEffectEvent(() => requestActivation(active));
+  // Terminals started because the panel became visible; they leave focus
+  // where it is until the user explicitly opens them.
+  const quiet = useRef(new Set<number>());
+  const explicit = useRef<number>(undefined);
+
+  const activateSelected = useEffectEvent(() => {
+    quiet.current.delete(active);
+    explicit.current = active;
+    requestActivation(active);
+  });
 
   useEffect(() => {
     if (!activation || handled.current === activation) return;
     handled.current = activation;
     activateSelected();
   }, [activation]);
+
+  const startShown = useEffectEvent(() => {
+    const requested = explicit.current === active;
+    explicit.current = undefined;
+    if (
+      !native ||
+      requested ||
+      started.current.has(active) ||
+      activations[active]
+    )
+      return;
+    quiet.current.add(active);
+    requestActivation(active);
+  });
+  useEffect(() => {
+    if (shown) startShown();
+  }, [shown, active]);
 
   useEffect(
     () => onRunningChange?.(!!running[active]),
@@ -489,7 +518,7 @@ export function TerminalSessions({
               activation={activations[id]}
               profile={profiles[id]}
               onShell={(shell) => setShells((old) => ({ ...old, [id]: shell }))}
-              focusOnStart={active === id}
+              focusOnStart={active === id && !quiet.current.has(id)}
               actionsRef={(handle) => {
                 if (handle) handles.current.set(id, handle);
                 else handles.current.delete(id);
