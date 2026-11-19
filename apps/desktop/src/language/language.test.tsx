@@ -185,8 +185,6 @@ it("cancels a submitted request, reports crashes, and requires explicit retry", 
 });
 
 it("groups severities, keeps compiler identity separate, and opens a keyboard-selected location", () => {
-  const language = renderHook(() => useLanguage("one", true, [tab])).result
-    .current;
   const live = clangdProblems([diagnostic], tab);
   const build = compilerProblems(
     {
@@ -208,14 +206,9 @@ it("groups severities, keeps compiler identity separate, and opens a keyboard-se
     [tab],
   );
   const open = vi.fn();
-  render(
-    <ProblemsPanel
-      language={language}
-      problems={[...live, ...build]}
-      native
-      workspaceId="one"
-      open={open}
-    />,
+  const problems = [...live, ...build];
+  const { rerender } = render(
+    <ProblemsPanel problems={problems} filter="all" open={open} />,
   );
   expect(screen.getByRole("region", { name: "Errors" })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Warnings" })).toBeTruthy();
@@ -231,9 +224,7 @@ it("groups severities, keeps compiler identity separate, and opens a keyboard-se
       start: { line: 2, character: 1 },
     }),
   );
-  fireEvent.change(screen.getByLabelText("Severity"), {
-    target: { value: "warning" },
-  });
+  rerender(<ProblemsPanel problems={problems} filter="warning" open={open} />);
   expect(screen.queryByRole("button", { name: /Undeclared/ })).toBeNull();
 });
 

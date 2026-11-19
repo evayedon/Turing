@@ -63,11 +63,32 @@ describe("Nebula workbench", () => {
     expect(document.activeElement).toBe(problems);
     expect(
       screen.getByRole("tabpanel", { name: "Problems" }).textContent,
-    ).toContain("Live diagnostics require the desktop app.");
+    ).toContain("No problems to show.");
     await user.keyboard("{End}");
     expect(
       screen.getByRole("tabpanel", { name: "Output" }).textContent,
     ).toContain("unavailable");
+  });
+
+  it("maximizes the existing dock and restores the editor and splitter", async () => {
+    const user = userEvent.setup();
+    useLayout.setState({ terminal: true });
+    render(<Workbench />);
+    const editor = screen.getByRole("region", { name: "Editor" });
+    const dock = screen.getByRole("region", { name: "Terminal" });
+    await user.click(screen.getByRole("button", { name: "Maximize panel" }));
+    expect(screen.queryByRole("region", { name: "Editor" })).toBeNull();
+    expect(
+      screen.queryByRole("separator", { name: "Resize bottom panel" }),
+    ).toBeNull();
+    expect(screen.getByRole("region", { name: "Terminal" })).toBe(dock);
+    await user.click(
+      screen.getByRole("button", { name: "Restore panel size" }),
+    );
+    expect(screen.getByRole("region", { name: "Editor" })).toBe(editor);
+    expect(
+      screen.getByRole("separator", { name: "Resize bottom panel" }),
+    ).toBeTruthy();
   });
 
   it("changes shared pane sizes from the keyboard and restores them after remount", async () => {

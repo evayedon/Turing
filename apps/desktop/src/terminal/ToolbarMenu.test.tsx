@@ -80,3 +80,20 @@ it("closes on Escape, Tab and outside pointer presses", async () => {
   expect(screen.queryByRole("menu")).toBeNull();
   expect(first).not.toHaveBeenCalled();
 });
+
+it("renders outside clipping containers and opens above a trigger near the bottom", async () => {
+  const { user, trigger } = setup();
+  const geometry = vi
+    .spyOn(trigger, "getBoundingClientRect")
+    .mockReturnValue(new DOMRect(300, window.innerHeight - 30, 24, 24));
+  try {
+    await user.click(trigger);
+    const menu = screen.getByRole("menu");
+    expect(menu.parentElement).toBe(document.body);
+    expect(parseFloat(menu.style.top)).toBeLessThan(
+      trigger.getBoundingClientRect().top,
+    );
+  } finally {
+    geometry.mockRestore();
+  }
+});

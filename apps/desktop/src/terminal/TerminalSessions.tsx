@@ -457,6 +457,7 @@ export function TerminalSessions({
       <div
         ref={grid}
         className="terminal-session-grid"
+        data-split={split}
         style={
           split
             ? direction === "columns"

@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { IBufferLine } from "@xterm/xterm";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { trackCommandIndicators } from "./command-indicators";
 
 function lineText(line: IBufferLine, cols: number, lower = false) {
   let text = "";
@@ -25,6 +26,7 @@ export function createTerminalView(
   const style = getComputedStyle(host);
   const color = (name: string) => style.getPropertyValue(name).trim();
   const terminal = new Terminal({
+    allowProposedApi: true,
     fontFamily: color("--nebula-mono"),
     fontSize: 13,
     cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -47,7 +49,24 @@ export function createTerminalView(
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.open(host);
+  trackCommandIndicators(terminal);
   terminal.textarea?.setAttribute("aria-label", "Terminal input");
+  const element = terminal.element;
+  function updateInputIndicator() {
+    const { baseY, cursorY, viewportY } = terminal.buffer.active;
+    const row = baseY + cursorY - viewportY;
+    if (terminal.options.disableStdin || row < 0 || row >= terminal.rows) {
+      element?.style.removeProperty("--terminal-indicator-row");
+      return;
+    }
+    element?.style.setProperty(
+      "--terminal-indicator-row",
+      `${((row + 0.5) / terminal.rows) * 100}%`,
+    );
+  }
+  terminal.onCursorMove(updateInputIndicator);
+  terminal.onRender(updateInputIndicator);
+  terminal.onScroll(updateInputIndicator);
   terminal.registerLinkProvider({
     provideLinks(row, callback) {
       const line = terminal.buffer.active.getLine(row - 1);
@@ -146,12 +165,16 @@ export function createTerminalView(
     },
     write: (bytes: number[]) =>
       new Promise<void>((resolve) =>
-        terminal.write(Uint8Array.from(bytes), resolve),
+        terminal.write(Uint8Array.from(bytes), () => {
+          updateInputIndicator();
+          resolve();
+        }),
       ),
     focus: () => terminal.focus(),
     clear: () => terminal.clear(),
     disableInput: () => {
       terminal.options.disableStdin = true;
+      updateInputIndicator();
     },
     dispose: () => terminal.dispose(),
   };

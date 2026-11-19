@@ -1,4 +1,11 @@
-import { CircleAlert, List, Terminal, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  CircleAlert,
+  List,
+  Terminal,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 
 import type { ReactNode } from "react";
@@ -21,6 +28,8 @@ export function BottomDock({
   active,
   select,
   close,
+  maximized,
+  toggleMaximized,
   visible,
   native,
   workspaceId,
@@ -34,6 +43,8 @@ export function BottomDock({
   active: DockView;
   select: (view: DockView) => void;
   close: () => void;
+  maximized: boolean;
+  toggleMaximized: () => void;
   visible: boolean;
   native: boolean;
   workspaceId?: string;
@@ -92,6 +103,19 @@ export function BottomDock({
           })}
         </div>
         <div ref={setActions} className="dock-actions" />
+        <button
+          type="button"
+          className="dock-action"
+          aria-label={maximized ? "Restore panel size" : "Maximize panel"}
+          title={maximized ? "Restore panel size" : "Maximize panel"}
+          onClick={toggleMaximized}
+        >
+          {maximized ? (
+            <ChevronDown size={15} aria-hidden="true" />
+          ) : (
+            <ChevronUp size={15} aria-hidden="true" />
+          )}
+        </button>
         <button
           type="button"
           className="dock-action"

@@ -167,8 +167,12 @@ that opens a terminal with a chosen shell, **Split**, **Kill Terminal** and
 shell as the terminal it splits. Kill removes the active terminal when others
 remain and otherwise ends its shell. The terminal-only window shows the same
 actions above its terminals. Shell exit leaves
-output visible until the next start, and failed startup offers a retry. Browser
-preview has no terminal access.
+output visible until the next start, and failed startup offers a retry. New zsh
+sessions report prompt and command status through OSC 133. A hollow circle marks
+the current command, a lavender circle marks exit code zero, and a filled red
+circle with a white × marks a nonzero exit code. Completed indicators stay
+with their command rows in scrollback. Shells without status reporting show
+a hollow input-row indicator. Browser preview has no terminal access.
 
 Rust chooses the executable, arguments and working directory. On macOS and Linux,
 it tries an absolute configured shell, then the platform's system shell and
@@ -333,7 +337,7 @@ launch command or debugger shortcut is registered.
 
 ## Managed C/C++ language intelligence and Problems
 
-Open a workspace and select **Problems → Enable clangd**. The native dialog
+Open a workspace and select **Settings → Diagnostics → Enable clangd**. The native dialog
 identifies the exact executable and asks for permission for this session.
 Rust discovers an installed `clangd` from platform LLVM locations or absolute
 PATH entries. It fingerprints the executable before and after confirmation.
@@ -376,7 +380,8 @@ force process cleanup. Unix uses a process group, signalled before the
 child is reaped so the group ID cannot be reused; Windows uses a
 kill-on-close Job Object. A desktop crash can leave temporary files behind.
 
-Problems groups errors, warnings and informational messages. Rows open the
+Problems groups errors, warnings and informational messages. The Severity
+filter is under **Settings → Diagnostics**. Rows open the
 corresponding editor and location. The `clangd` marker owner is separate from
 `compiler`. Compiler entries come from recognized C++ build stderr for the
 current, unchanged single-file Run snapshot. Output retains raw logs.

@@ -1,5 +1,8 @@
 import {
   CircleDot,
+  FilePlus,
+  FolderOpen,
+  ChevronsLeftRight,
   Folder,
   GitBranch,
   Orbit,
@@ -79,14 +82,21 @@ function Panel({
   id,
   children,
   className = "",
+  hidden,
 }: {
   title: string;
   id?: string;
   children: ReactNode;
   className?: string;
+  hidden?: boolean;
 }) {
   return (
-    <section id={id} className={`panel ${className}`} aria-label={title}>
+    <section
+      id={id}
+      className={`panel ${className}`}
+      aria-label={title}
+      hidden={hidden}
+    >
       <header className="panel-heading">
         <h2>{title}</h2>
       </header>
@@ -164,6 +174,8 @@ export function Workbench() {
   const setDockView = useLayout((state) => state.selectDockView);
   const [terminalActivation, setTerminalActivation] = useState(0);
   const [settings, setSettings] = useState(false);
+  const [dockMaximized, setDockMaximized] = useState(false);
+  const [problemSeverity, setProblemSeverity] = useState("all");
   const [popup, setPopup] = useState<
     "commands" | "files" | "line" | "shortcuts" | "about" | "recent"
   >();
@@ -739,7 +751,7 @@ export function Workbench() {
         <main
           className="editing-area"
           style={
-            terminal
+            terminal && !dockMaximized
               ? {
                   gridTemplateRows: `minmax(0, 1fr) 6px ${layout.visible.terminal}px`,
                 }
@@ -748,6 +760,7 @@ export function Workbench() {
         >
           <Panel
             title="Editor"
+            hidden={terminal && dockMaximized}
             className={active ? "editor has-document" : "editor"}
           >
             {windowError && (
@@ -792,8 +805,68 @@ export function Workbench() {
                   </div>
                 )
               }
-              shortcut={shortcut}
-              onCommands={() => runCommand("palette")}
+              emptyContent={
+                <div className="editor-empty">
+                  <section aria-label="Start">
+                    <h3>Start</h3>
+                    <button
+                      type="button"
+                      disabled={commands.newText.disabled}
+                      onClick={() => runCommand("newText")}
+                    >
+                      <FilePlus size={16} aria-hidden="true" /> New File…
+                    </button>
+                    <button
+                      type="button"
+                      disabled={commands.openFolder.disabled}
+                      onClick={() => runCommand("openFolder")}
+                    >
+                      <FolderOpen size={16} aria-hidden="true" /> Open…
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      title="Cloning repositories is unavailable"
+                    >
+                      <GitBranch size={16} aria-hidden="true" /> Clone Git
+                      Repository…
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      title="Remote connections are unavailable"
+                    >
+                      <ChevronsLeftRight size={16} aria-hidden="true" /> Connect
+                      to…
+                    </button>
+                  </section>
+                  <section aria-label="Recent">
+                    <h3>Recent</h3>
+                    {recents.slice(0, 5).map((entry) => (
+                      <button
+                        type="button"
+                        key={`${entry.kind}:${entry.path}`}
+                        disabled={commands.openRecent.disabled}
+                        onClick={() => reopen(entry)}
+                        title={entry.path}
+                      >
+                        <span>{entry.name}</span>
+                        <small>{entry.path}</small>
+                      </button>
+                    ))}
+                    {!recents.length && <p>No recent files or folders.</p>}
+                    {recents.length > 0 && (
+                      <button
+                        type="button"
+                        disabled={commands.openRecent.disabled}
+                        onClick={() => runCommand("openRecent")}
+                      >
+                        More…
+                      </button>
+                    )}
+                  </section>
+                </div>
+              }
               onInfo={(next) => {
                 setInfo((old) =>
                   old?.key === next.key &&
@@ -807,15 +880,15 @@ export function Workbench() {
               }}
             />
           </Panel>
-          {terminal && <Splitter {...layout.splitter("terminal")} />}
+          {terminal && !dockMaximized && (
+            <Splitter {...layout.splitter("terminal")} />
+          )}
           <BottomDock
             execution={execution}
             problems={
               <ProblemsPanel
-                language={language}
                 problems={problems}
-                native={explorer.native}
-                workspaceId={explorer.workspace?.id}
+                filter={problemSeverity}
                 open={revealProblem}
               />
             }
@@ -828,7 +901,10 @@ export function Workbench() {
             onTerminalRunning={setTerminalRunning}
             onTerminalLayout={setTerminalLayout}
             select={selectDock}
+            maximized={dockMaximized}
+            toggleMaximized={() => setDockMaximized((value) => !value)}
             close={() => {
+              setDockMaximized(false);
               toggleTerminal();
               document.getElementById("toggle-bottom-panel")?.focus();
             }}
@@ -904,6 +980,10 @@ export function Workbench() {
           toggleBottom={toggleTerminal}
           toggleAssistant={toggleAssistant}
           resetSizes={layout.resetSizes}
+          language={language}
+          workspaceId={explorer.workspace?.id}
+          severity={problemSeverity}
+          setSeverity={setProblemSeverity}
         />
       )}
       {popup === "commands" && (

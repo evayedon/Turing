@@ -3,6 +3,13 @@ import type { EditorTab } from "../editor/use-editor";
 import type { useExecution } from "../execution/use-execution";
 
 export type Severity = "error" | "warning" | "info";
+
+export const problemGroups: { severity: Severity; title: string }[] = [
+  { severity: "error", title: "Errors" },
+  { severity: "warning", title: "Warnings" },
+  { severity: "info", title: "Information" },
+];
+
 export type Problem = {
   id: string;
   tabKey: string;

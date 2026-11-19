@@ -3,7 +3,12 @@ use cap_std::fs::Dir;
 use portable_pty::{Child, MasterPty, PtyPair};
 use std::io::Read;
 
-pub type Shell = Box<dyn Child + Send + Sync>;
+pub struct StartedShell {
+    pub child: Box<dyn Child + Send + Sync>,
+    pub in_workspace: bool,
+    pub name: String,
+    pub startup: Option<tempfile::TempDir>,
+}
 
 #[cfg(unix)]
 pub struct ProcessGuard;
@@ -60,11 +65,7 @@ impl Read for UnixReader {
 }
 
 #[cfg(unix)]
-pub fn spawn(
-    pair: &PtyPair,
-    directory: Option<Dir>,
-    profile: Profile,
-) -> Result<(Shell, bool, String)> {
+pub fn spawn(pair: &PtyPair, directory: Option<Dir>, profile: Profile) -> Result<StartedShell> {
     use std::{
         fs::OpenOptions,
         io,
@@ -148,6 +149,11 @@ pub fn spawn(
                     .map_err(|_| TerminalError::PtyUnavailable)?,
             );
 
+        let startup = if executable.file_name() == Some(std::ffi::OsStr::new("zsh")) {
+            prepare_zsh_integration(&mut command, std::env::var_os("ZDOTDIR").as_deref()).ok()
+        } else {
+            None
+        };
         let cwd = directory.as_ref().map(AsRawFd::as_raw_fd);
         // The directory descriptor stays alive through spawn and is close-on-exec.
         // The child uses only async-signal-safe operations before exec.
@@ -165,18 +171,72 @@ pub fn spawn(
             });
         }
         if let Ok(child) = command.spawn() {
-            return Ok((
-                Box::new(child),
-                workspace_directory,
-                executable
+            return Ok(StartedShell {
+                child: Box::new(child),
+                in_workspace: workspace_directory,
+                name: executable
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("Shell")
                     .to_owned(),
-            ));
+                startup,
+            });
         }
     }
     Err(TerminalError::ShellUnavailable)
+}
+
+#[cfg(unix)]
+fn prepare_zsh_integration(
+    command: &mut std::process::Command,
+    user_zdotdir: Option<&std::ffi::OsStr>,
+) -> std::io::Result<tempfile::TempDir> {
+    let startup = tempfile::Builder::new().prefix("turing-zsh-").tempdir()?;
+    std::fs::write(
+        startup.path().join(".zshenv"),
+        include_bytes!("zsh-startup.zsh"),
+    )?;
+    std::fs::write(
+        startup.path().join(".zshrc"),
+        include_bytes!("shell-integration.zsh"),
+    )?;
+    command
+        .env("ZDOTDIR", startup.path())
+        .env_remove("TURING_ZSH_USER_ZDOTDIR");
+    if let Some(original) = user_zdotdir {
+        command.env("TURING_ZSH_USER_ZDOTDIR", original);
+    }
+    Ok(startup)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn zsh_integration_survives_a_profile_that_replaces_hook_arrays() {
+    let user_config = tempfile::tempdir().unwrap();
+    std::fs::write(user_config.path().join(".zshenv"), "from_zshenv=loaded\n").unwrap();
+    std::fs::write(
+        user_config.path().join(".zshrc"),
+        "precmd_functions=()\npreexec_functions=()\nfrom_zshrc=loaded\n",
+    )
+    .unwrap();
+    let mut command = std::process::Command::new("/bin/zsh");
+    let _startup =
+        prepare_zsh_integration(&mut command, Some(user_config.path().as_os_str())).unwrap();
+    let output = command
+        .args([
+            "-i",
+            "-c",
+            r#"[[ $from_zshenv == loaded && $from_zshrc == loaded &&
+        ${precmd_functions[1]} == _turing_precmd &&
+        ${preexec_functions[1]} == _turing_preexec &&
+        -r "$ZDOTDIR/.zshrc" ]]"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "zsh skipped its user configuration or integration hooks"
+    );
 }
 
 #[cfg(unix)]
@@ -247,7 +307,7 @@ pub fn reader(master: &dyn MasterPty) -> Result<Box<dyn Read + Send>> {
 }
 
 #[cfg(windows)]
-pub fn spawn(pair: &PtyPair, _: Option<Dir>, profile: Profile) -> Result<(Shell, bool, String)> {
+pub fn spawn(pair: &PtyPair, _: Option<Dir>, profile: Profile) -> Result<StartedShell> {
     use portable_pty::CommandBuilder;
     use std::path::PathBuf;
 
@@ -282,16 +342,17 @@ pub fn spawn(pair: &PtyPair, _: Option<Dir>, profile: Profile) -> Result<(Shell,
         command.cwd(&home);
         command.env("TERM", "xterm-256color");
         if let Ok(child) = pair.slave.spawn_command(command) {
-            return Ok((
+            return Ok(StartedShell {
                 child,
-                false,
-                if exe.ends_with("cmd.exe") {
+                in_workspace: false,
+                name: if exe.ends_with("cmd.exe") {
                     "Command Prompt"
                 } else {
                     "PowerShell"
                 }
                 .into(),
-            ));
+                startup: None,
+            });
         }
     }
     Err(TerminalError::ShellUnavailable)

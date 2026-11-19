@@ -380,6 +380,9 @@ svg {
   background: var(--nebula-canvas);
   overflow: hidden;
 }
+.editor[hidden] {
+  display: none;
+}
 .editor-toolbar {
   display: flex;
   min-width: 0;
@@ -472,30 +475,52 @@ svg {
   overflow: hidden;
 }
 .editor-empty {
-  display: grid;
-  align-content: center;
-  justify-items: start;
-  width: min(100% - 44px, 365px);
-  flex: 1;
-  margin: auto;
-  gap: var(--nebula-s2);
+  width: min(calc(100% - 44px), 430px);
+  min-height: 0;
+  margin-inline: auto;
+  padding-block: clamp(16px, 6vh, 48px);
+  overflow: auto;
   color: var(--nebula-muted);
 }
-.editor-empty > svg {
-  color: var(--nebula-accent);
-  margin-bottom: var(--nebula-s2);
-  width: 31px;
-  height: 31px;
+.editor-empty section + section {
+  margin-top: var(--nebula-s4);
+}
+.editor-empty h3 {
+  margin: 0 0 var(--nebula-s1);
+  color: var(--nebula-text);
+  font-size: var(--nebula-lg);
 }
 .editor-empty p {
   margin: 0;
-  color: var(--nebula-text);
-  font-size: var(--nebula-lg);
-  letter-spacing: -0.03em;
-  font-weight: 630;
 }
 .editor-empty button {
-  margin-top: var(--nebula-s1);
+  display: flex;
+  align-items: center;
+  gap: var(--nebula-s2);
+  max-width: 100%;
+  min-height: 26px;
+  padding: 2px var(--nebula-s1);
+  border: 0;
+  border-radius: var(--nebula-radius);
+  background: transparent;
+  color: var(--nebula-accent);
+  text-align: start;
+}
+.editor-empty button:disabled {
+  color: var(--nebula-muted);
+}
+.editor-empty button:hover:not(:disabled) {
+  background: var(--nebula-hover);
+}
+.editor-empty button span {
+  flex: 0 0 auto;
+}
+.editor-empty button small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--nebula-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .editor-notice {
   display: flex;
@@ -869,6 +894,7 @@ svg {
   min-height: 35px;
   padding-inline: var(--nebula-s2) var(--nebula-s1);
   background: var(--nebula-rail);
+  border-bottom: 1px solid var(--nebula-border);
 }
 .dock-tabs {
   display: flex;
@@ -946,9 +972,10 @@ svg {
 .dock-header .icon-button {
   flex-shrink: 0;
 }
-.bottom-dock [role="tabpanel"]:focus-visible {
-  outline: var(--nebula-focus);
+.bottom-dock > [role="tabpanel"]:focus-visible {
+  outline: 2px solid transparent;
   outline-offset: -2px;
+  box-shadow: inset 2px 0 var(--nebula-accent);
 }
 .settings-dialog {
   width: min(440px, calc(100% - 24px));
@@ -1007,14 +1034,24 @@ svg {
 .settings-row input:focus-visible {
   outline-offset: 3px;
 }
-.settings-reset {
+.settings-button,
+.settings-row select {
   padding: var(--nebula-s1) var(--nebula-s2);
   border: 1px solid var(--nebula-border);
   border-radius: var(--nebula-radius);
   background: var(--nebula-raised);
 }
-.settings-reset:hover {
+.settings-button:hover:not(:disabled),
+.settings-row select:hover {
   background: var(--nebula-hover);
+}
+.settings-row select {
+  color-scheme: dark;
+  color: inherit;
+  font: inherit;
+}
+.settings-row select:focus-visible {
+  outline: var(--nebula-focus);
 }
 .status-detail {
   font-family: var(--nebula-mono);
@@ -1197,8 +1234,49 @@ svg {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  margin-top: var(--nebula-s2);
+  /* FitAddon reads the host's computed dimensions as usable space. */
+  box-sizing: content-box;
+  padding: var(--nebula-s1);
+  padding-inline-start: var(--nebula-s4);
 }
 
+.terminal-screen .xterm:not([data-command-indicators]) .xterm-screen::before,
+.terminal-command-indicator::before {
+  position: absolute;
+  inset-inline-start: calc(2px - var(--nebula-s4));
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--nebula-muted);
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+}
+.terminal-screen .xterm:not([data-command-indicators]) .xterm-screen::before {
+  inset-block-start: var(--terminal-indicator-row, -10px);
+  transform: translateY(-50%);
+}
+.terminal-command-indicator {
+  pointer-events: none;
+}
+.terminal-command-indicator::before {
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+}
+.terminal-command-indicator[data-status="success"]::before {
+  border-color: var(--nebula-accent);
+  background: var(--nebula-accent);
+}
+.terminal-command-indicator[data-status="failure"]::before {
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: #e83c40;
+  color: #fff;
+  content: "×";
+  font: 700 10px/1 var(--nebula-font);
+}
 .terminal-screen .xterm {
   height: 100%;
 }
@@ -1207,11 +1285,6 @@ svg {
    must match the terminal background instead. */
 .terminal-screen .xterm-viewport {
   background-color: var(--nebula-rail) !important;
-}
-
-.terminal-screen:focus-within {
-  outline: var(--nebula-focus);
-  outline-offset: -2px;
 }
 
 /* ── Source control ─────────────────────────────────────────────────────── */
@@ -1677,16 +1750,14 @@ svg {
 
 /* Action menus in the panel header. */
 .toolbar-menu {
-  position: relative;
   display: flex;
 }
 .toolbar-menu-list {
-  position: absolute;
-  inset-inline-end: 0;
-  top: calc(100% + 4px);
-  z-index: 30;
+  position: fixed;
+  z-index: 80;
   display: grid;
-  min-width: 200px;
+  width: min(200px, calc(100vw - 16px));
+  overflow: auto;
   padding: var(--nebula-s1);
   border: 1px solid var(--nebula-border);
   border-radius: var(--nebula-overlay-radius);
@@ -1776,13 +1847,6 @@ svg {
   padding: 0.5rem 0.75rem;
 }
 
-.problems-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-}
-
 .problems-panel :is(p, h3, ul) {
   margin: 0.35rem 0;
 }
@@ -1806,8 +1870,9 @@ svg {
   opacity: 0.8;
 }
 
-.terminal-session-pane[data-active="true"] {
-  box-shadow: inset 0 2px var(--nebula-accent-border);
+.terminal-session-grid[data-split="true"]
+  .terminal-session-pane[data-active="true"] {
+  box-shadow: inset 2px 0 var(--nebula-accent-border);
 }
 
 .terminal-session-divider[data-direction="rows"] {

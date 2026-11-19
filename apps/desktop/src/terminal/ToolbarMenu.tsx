@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useLayoutEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export type ToolbarMenuItem =
   { label: string; disabled?: boolean; run: () => void } | "-";
@@ -28,16 +29,37 @@ export function ToolbarMenu({
       ) ?? [],
     );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
+    const anchor = trigger.current;
+    const popup = menu.current;
+    if (!anchor || !popup) return;
+    const win = anchor.ownerDocument.defaultView;
+    if (!win) return;
+    const position = () => {
+      const rect = anchor.getBoundingClientRect();
+      const gap = 4;
+      const edge = 8;
+      const below = win.innerHeight - rect.bottom - gap - edge;
+      const above = rect.top - gap - edge;
+      const opensUp = popup.scrollHeight > below && above > below;
+      popup.style.maxHeight = `${Math.max(0, opensUp ? above : below)}px`;
+      popup.style.left = `${Math.max(edge, Math.min(rect.right - popup.offsetWidth, win.innerWidth - popup.offsetWidth - edge))}px`;
+      popup.style.top = `${opensUp ? rect.top - gap - popup.offsetHeight : rect.bottom + gap}px`;
+    };
+    position();
     entries()[0]?.focus();
     const dismiss = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!menu.current?.contains(target) && !trigger.current?.contains(target))
         setOpen(false);
     };
-    document.addEventListener("pointerdown", dismiss, true);
-    return () => document.removeEventListener("pointerdown", dismiss, true);
+    anchor.ownerDocument.addEventListener("pointerdown", dismiss, true);
+    win.addEventListener("resize", position);
+    return () => {
+      anchor.ownerDocument.removeEventListener("pointerdown", dismiss, true);
+      win.removeEventListener("resize", position);
+    };
   }, [open]);
 
   function close(refocus: boolean) {
@@ -67,58 +89,60 @@ export function ToolbarMenu({
       >
         {icon}
       </button>
-      {open && (
-        <div
-          ref={menu}
-          id={id}
-          role="menu"
-          aria-label={label}
-          className="toolbar-menu-list"
-          onKeyDown={(event) => {
-            const items = entries();
-            const index = items.indexOf(event.target as HTMLButtonElement);
-            const next =
-              event.key === "ArrowDown"
-                ? (index + 1) % items.length
-                : event.key === "ArrowUp"
-                  ? (index + items.length - 1) % items.length
-                  : event.key === "Home"
-                    ? 0
-                    : event.key === "End"
-                      ? items.length - 1
-                      : undefined;
-            if (next !== undefined) {
-              event.preventDefault();
-              items[next]?.focus();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              close(true);
-            } else if (event.key === "Tab") {
-              close(false);
-            }
-          }}
-        >
-          {items.map((item, index) =>
-            item === "-" ? (
-              <div key={`separator-${index}`} role="separator" />
-            ) : (
-              <button
-                key={item.label}
-                type="button"
-                role="menuitem"
-                disabled={item.disabled}
-                onClick={() => {
-                  close(true);
-                  item.run();
-                }}
-              >
-                {item.label}
-              </button>
-            ),
-          )}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menu}
+            id={id}
+            role="menu"
+            aria-label={label}
+            className="toolbar-menu-list"
+            onKeyDown={(event) => {
+              const items = entries();
+              const index = items.indexOf(event.target as HTMLButtonElement);
+              const next =
+                event.key === "ArrowDown"
+                  ? (index + 1) % items.length
+                  : event.key === "ArrowUp"
+                    ? (index + items.length - 1) % items.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? items.length - 1
+                        : undefined;
+              if (next !== undefined) {
+                event.preventDefault();
+                items[next]?.focus();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                close(true);
+              } else if (event.key === "Tab") {
+                close(false);
+              }
+            }}
+          >
+            {items.map((item, index) =>
+              item === "-" ? (
+                <div key={`separator-${index}`} role="separator" />
+              ) : (
+                <button
+                  key={item.label}
+                  type="button"
+                  role="menuitem"
+                  disabled={item.disabled}
+                  onClick={() => {
+                    close(true);
+                    item.run();
+                  }}
+                >
+                  {item.label}
+                </button>
+              ),
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

@@ -71,6 +71,7 @@ struct Session {
     master: Option<Box<dyn MasterPty + Send>>,
     child: Box<dyn Child + Send + Sync>,
     platform_guard: Option<platform::ProcessGuard>,
+    _shell_startup: Option<tempfile::TempDir>,
     output: Option<Receiver<Vec<u8>>>,
     input: Option<SyncSender<Vec<u8>>>,
     stop: Arc<AtomicBool>,
@@ -112,7 +113,7 @@ impl Session {
             .master
             .take_writer()
             .map_err(|_| TerminalError::PtyUnavailable)?;
-        let (child, workspace_directory, shell) = platform::spawn(&pair, directory, profile)?;
+        let started = platform::spawn(&pair, directory, profile)?;
         drop(pair.slave);
 
         let (tx, output) = mpsc::sync_channel(32);
@@ -122,8 +123,9 @@ impl Session {
         let mut session = Self {
             owner: owner.into(),
             master: Some(pair.master),
-            child,
+            child: started.child,
             platform_guard: None,
+            _shell_startup: started.startup,
             output: Some(output),
             input: Some(input),
             stop: stop.clone(),
@@ -148,7 +150,7 @@ impl Session {
                 .spawn(move || write_input(writer, rx, &stop, &input_failed))
                 .map_err(|_| TerminalError::IoError)?,
         );
-        Ok((session, workspace_directory, shell))
+        Ok((session, started.in_workspace, started.name))
     }
 
     fn read(&mut self) -> Result<TerminalOutput> {
@@ -726,6 +728,35 @@ mod tests {
                 .unwrap_err(),
             TerminalError::SessionClosed
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zsh_emits_prompt_and_command_exit_status() {
+        let service = TerminalService::default();
+        let id = uuid::Uuid::new_v4().to_string();
+        service
+            .start_with(
+                "main",
+                id.clone(),
+                dimensions(24, 80).unwrap(),
+                None,
+                Profile::Zsh,
+            )
+            .unwrap();
+
+        let wait_for = |sequence: &[u8]| {
+            output_until(&service, &id, |bytes, _| {
+                bytes
+                    .windows(sequence.len())
+                    .any(|window| window == sequence)
+            });
+        };
+        wait_for(b"\x1b]133;A\x07");
+        send(&service, &id, b"true\r");
+        wait_for(b"\x1b]133;D;0\x07\x1b]133;A\x07");
+        send(&service, &id, b"false\r");
+        wait_for(b"\x1b]133;D;1\x07\x1b]133;A\x07");
     }
 
     #[test]

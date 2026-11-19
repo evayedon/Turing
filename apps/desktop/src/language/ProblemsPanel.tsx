@@ -1,80 +1,22 @@
-import { useState } from "react";
-import type { Problem, Severity } from "./problems";
-import type { LanguageController } from "./use-language";
-
-const groups: { severity: Severity; title: string }[] = [
-  { severity: "error", title: "Errors" },
-  { severity: "warning", title: "Warnings" },
-  { severity: "info", title: "Information" },
-];
+import { problemGroups, type Problem } from "./problems";
 
 export function ProblemsPanel({
-  language,
   problems,
-  native,
-  workspaceId,
+  filter,
   open,
 }: {
-  language: LanguageController;
   problems: Problem[];
-  native: boolean;
-  workspaceId?: string;
+  filter: string;
   open: (problem: Problem) => void;
 }) {
-  const [filter, setFilter] = useState<string>("all");
-  const filtered = groups
+  const filtered = problemGroups
     .filter(({ severity }) => filter === "all" || severity === filter)
     .map((group) => ({
       ...group,
       items: problems.filter(({ severity }) => severity === group.severity),
     }));
-  const status =
-    language.message ??
-    (language.status === "starting"
-      ? "Starting clangd…"
-      : language.status === "ready"
-        ? "clangd is ready for open C/C++ workspace files."
-        : !native
-          ? "Live diagnostics require the desktop app."
-          : !workspaceId
-            ? "Open a workspace folder to enable C/C++ language intelligence."
-            : "C/C++ language intelligence is off.");
   return (
     <div className="problems-panel">
-      <div className="problems-toolbar">
-        <p role="status">{status}</p>
-        {native && workspaceId && (
-          <button
-            type="button"
-            disabled={language.status === "starting"}
-            onClick={() =>
-              language.status === "ready"
-                ? language.stop()
-                : void language.start()
-            }
-          >
-            {language.status === "ready"
-              ? "Stop clangd"
-              : language.status === "failed"
-                ? "Retry clangd"
-                : "Enable clangd"}
-          </button>
-        )}
-        <label>
-          Severity{" "}
-          <select
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-          >
-            <option value="all">All</option>
-            {groups.map(({ severity, title }) => (
-              <option key={severity} value={severity}>
-                {title}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
       {filtered.every(({ items }) => items.length === 0) && (
         <p>No problems to show.</p>
       )}

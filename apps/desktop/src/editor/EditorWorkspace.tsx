@@ -1,4 +1,4 @@
-import { ChevronRight, CodeXml, FileCode2, X } from "lucide-react";
+import { ChevronRight, FileCode2, X } from "lucide-react";
 import { lazy, Suspense } from "react";
 import type { ReactNode } from "react";
 import type { EditorCommands } from "../shell/commands";
@@ -29,8 +29,7 @@ export function EditorWorkspace({
   saveAs,
   reload,
   onInfo,
-  onCommands,
-  shortcut,
+  emptyContent,
   language,
   problems,
 }: ReturnType<typeof useEditor> & {
@@ -41,8 +40,7 @@ export function EditorWorkspace({
   onCommandsReady?: (commands: EditorCommands | undefined) => void;
   onSaveCommand?: () => void;
   onInfo: (info: EditorInfo) => void;
-  onCommands: () => void;
-  shortcut: string;
+  emptyContent: ReactNode;
 }) {
   return (
     <>
@@ -176,15 +174,12 @@ export function EditorWorkspace({
             problems={problems}
           />
         </Suspense>
+      ) : busy ? (
+        <p className="panel-message" role="status">
+          Working…
+        </p>
       ) : (
-        <div className="editor-empty">
-          <CodeXml size={36} aria-hidden="true" />
-          <p>{busy ? "Working…" : "No file open"}</p>
-          <span>Open a file or create an untitled document.</span>
-          <button className="quiet-button" type="button" onClick={onCommands}>
-            Browse commands <kbd>{shortcut}</kbd>
-          </button>
-        </div>
+        emptyContent
       )}
     </>
   );

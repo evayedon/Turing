@@ -31,6 +31,16 @@ afterEach(() => {
 });
 
 describe("workbench panels", () => {
+  it("offers a new file from Start and shows the empty Recent list", async () => {
+    const user = userEvent.setup();
+    render(<Workbench />);
+    expect(
+      screen.getByRole("region", { name: "Recent" }).textContent,
+    ).toContain("No recent files or folders.");
+    await user.click(screen.getByRole("button", { name: "New File…" }));
+    expect(await screen.findByRole("tab", { name: /Untitled/ })).toBeTruthy();
+  });
+
   it("opens Explorer and Editor on a fresh profile", () => {
     render(<Workbench />);
 
@@ -161,11 +171,22 @@ describe("workbench panels", () => {
     await user.click(
       screen.getByRole("checkbox", { name: "Show bottom panel" }),
     );
+    expect(
+      screen.getByRole("group", { name: "Diagnostics" }).textContent,
+    ).toContain("Live diagnostics require the desktop app.");
+    await user.selectOptions(screen.getByLabelText("Severity"), "warning");
     expect(useLayout.getState().terminal).toBe(true);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(opener);
     expect(screen.getByRole("tablist", { name: "Bottom dock" })).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: "Problems" }));
+    expect(screen.queryByLabelText("Severity")).toBeNull();
+    await user.click(opener);
+    expect(
+      screen.getByRole<HTMLSelectElement>("combobox", { name: "Severity" })
+        .value,
+    ).toBe("warning");
   });
 
   it("shares native Auto Save with the File menu and restores it on remount", async () => {

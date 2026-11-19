@@ -1,5 +1,7 @@
 import { X } from "lucide-react";
 import { useId, useLayoutEffect, useRef } from "react";
+import { problemGroups } from "../language/problems";
+import type { LanguageController } from "../language/use-language";
 
 export function SettingsDialog({
   close,
@@ -11,6 +13,10 @@ export function SettingsDialog({
   toggleBottom,
   toggleAssistant,
   resetSizes,
+  language,
+  workspaceId,
+  severity,
+  setSeverity,
 }: {
   close: () => void;
   native: boolean;
@@ -21,6 +27,10 @@ export function SettingsDialog({
   toggleBottom: () => void;
   toggleAssistant: () => void;
   resetSizes: () => void;
+  language: LanguageController;
+  workspaceId?: string;
+  severity: string;
+  setSeverity: (value: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -40,6 +50,18 @@ export function SettingsDialog({
         previous.focus();
     };
   }, []);
+
+  const status =
+    language.message ??
+    (language.status === "starting"
+      ? "Starting clangd…"
+      : language.status === "ready"
+        ? "clangd is ready for open C/C++ workspace files."
+        : !native
+          ? "Live diagnostics require the desktop app."
+          : !workspaceId
+            ? "Open a workspace folder to enable C/C++ language intelligence."
+            : "C/C++ language intelligence is off.");
 
   return (
     <dialog
@@ -91,6 +113,44 @@ export function SettingsDialog({
         </label>
       </fieldset>
       <fieldset className="settings-group">
+        <legend>Diagnostics</legend>
+        <div className="settings-row">
+          <span role="status">{status}</span>
+          {native && workspaceId && (
+            <button
+              type="button"
+              className="settings-button"
+              disabled={language.status === "starting"}
+              onClick={() =>
+                language.status === "ready"
+                  ? language.stop()
+                  : void language.start()
+              }
+            >
+              {language.status === "ready"
+                ? "Stop clangd"
+                : language.status === "failed"
+                  ? "Retry clangd"
+                  : "Enable clangd"}
+            </button>
+          )}
+        </div>
+        <label className="settings-row">
+          Severity
+          <select
+            value={severity}
+            onChange={(event) => setSeverity(event.target.value)}
+          >
+            <option value="all">All</option>
+            {problemGroups.map(({ severity, title }) => (
+              <option key={severity} value={severity}>
+                {title}
+              </option>
+            ))}
+          </select>
+        </label>
+      </fieldset>
+      <fieldset className="settings-group">
         <legend>Layout</legend>
         <label className="settings-row">
           Show bottom panel
@@ -105,7 +165,11 @@ export function SettingsDialog({
           />
         </label>
         <div className="settings-row">
-          <button type="button" className="settings-reset" onClick={resetSizes}>
+          <button
+            type="button"
+            className="settings-button"
+            onClick={resetSizes}
+          >
             Reset panel sizes
           </button>
         </div>
