@@ -1,17 +1,16 @@
 import { ChevronRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { menus, shortcutLabel } from "./commands";
-import type { CommandMetadata, CommandId } from "./commands";
+import { menus } from "./commands";
+import type { CommandId } from "./commands";
+import type { CommandViews } from "./command-registry";
 
 export function MenuBar({
   commands,
-  modifier = "Ctrl",
   onRun,
 }: {
-  commands: CommandMetadata;
+  commands: CommandViews;
   onRun: (id: CommandId) => void;
-  modifier?: string;
 }) {
   const [open, setOpen] = useState<number>();
   const [submenu, setSubmenu] = useState<number>();
@@ -145,10 +144,8 @@ export function MenuBar({
 
   function item(id: CommandId) {
     const command = commands[id];
-    if (command.hidden) return null;
-    const hint = command.shortcut
-      ? shortcutLabel(command.shortcut, modifier)
-      : command.hint;
+    if (!command.visible) return null;
+    const hint = command.hint;
     return (
       <button
         key={id}
@@ -156,10 +153,10 @@ export function MenuBar({
         role={command.pressed === undefined ? "menuitem" : "menuitemcheckbox"}
         aria-checked={command.pressed}
         aria-description={hint}
-        aria-disabled={command.disabled || undefined}
+        aria-disabled={!command.enabled || undefined}
         tabIndex={-1}
         onClick={() => {
-          if (command.disabled) return;
+          if (!command.enabled) return;
           close(true);
           onRun(id);
         }}

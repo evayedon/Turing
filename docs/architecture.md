@@ -311,9 +311,26 @@ editor's language mode.
 
 ## Workbench commands
 
-The Nebula menu bar, command palette, and workbench shortcuts share typed
-command identifiers and availability checks. Save, Run, and Stop reuse the
-editor and execution handlers. Monaco owns its editor bindings, clipboard
+Workbench commands are declared once in `apps/desktop/src/shell/command-registry.ts`.
+Each declaration names its label, optional shortcut and hint, its `enabled`
+and `visible` rules, an optional keyboard policy, and its run function. The
+rules read a single `CommandState` object. Run functions call a small
+`CommandActions` interface. `Workbench.tsx` supplies both objects on every
+render. `commands.ts` keeps the command identifiers, menu structure, shortcut
+matching, and Monaco action metadata.
+
+`describeCommands` resolves labels, hints, and availability once per render.
+The menu bar, command palette, Keyboard Shortcuts dialog, and editor controls
+all render from that result. The menu bar, palette, workbench buttons, and
+window shortcut handler all invoke commands through the same `dispatch`
+function, and `resolveInvocation` holds the availability rules for every
+entry point. Unavailable or hidden commands do nothing. Shortcuts follow
+extra rules from the same declaration. They are ignored while a workbench
+popup or dialog is open. While focus is in a terminal, only Open Terminal,
+New Terminal, and Command Palette keep their shortcuts. The browser preview
+leaves F5 to the browser. The native app reserves F5 even when Run is
+unavailable. A key event is consumed only when dispatch runs or reserves its
+command. Save, Run, and Stop reuse the editor and execution handlers. Monaco owns its editor bindings, clipboard
 commands, and undo stack. Symbol navigation appears when Monaco reports an
 available provider. System clipboard commands depend on the WebView's
 clipboard capabilities.

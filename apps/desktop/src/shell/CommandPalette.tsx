@@ -1,8 +1,11 @@
 import { Search } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
-import type { Command } from "./commands";
-
-type PaletteEntry = Pick<Command, "label" | "disabled" | "hidden" | "hint">;
+type PaletteEntry = {
+  label: string;
+  disabled?: boolean;
+  hidden?: boolean;
+  hint?: string;
+};
 
 export function CommandPalette<Action extends PaletteEntry>({
   actions,

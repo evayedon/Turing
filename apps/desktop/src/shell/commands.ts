@@ -39,16 +39,6 @@ export type EditorCommands = {
   position: () => { line: number; column: number } | undefined;
 };
 
-export type Command = {
-  label: string;
-  disabled?: boolean;
-  pressed?: boolean;
-  hidden?: boolean;
-  shortcut?: Shortcut;
-  hint?: string;
-  run: () => void;
-};
-
 export type CommandId =
   | MonacoCommand
   | "newWindow"
@@ -91,10 +81,6 @@ export type CommandId =
   | "shortcuts"
   | "about";
 
-export type Commands = Record<CommandId, Command>;
-export type CommandMetadata = Record<CommandId, Omit<Command, "run">>;
-export type CommandHandlers = Record<CommandId, () => void>;
-
 export const editorCommands: Record<
   MonacoCommand,
   { label: string; edit?: boolean; hint?: (modifier: string) => string }
@@ -136,15 +122,6 @@ export const editorCommands: Record<
   implementation: { label: "Go to Implementation" },
   references: { label: "Go to References" },
 };
-
-export function dispatch(
-  commands: CommandMetadata,
-  handlers: CommandHandlers,
-  id: CommandId,
-) {
-  const command = commands[id];
-  if (!command.disabled && !command.hidden) handlers[id]();
-}
 
 export function shortcutLabel(shortcut: Shortcut, modifier: string) {
   return [

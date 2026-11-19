@@ -45,21 +45,19 @@ import { SearchPanel } from "../search/SearchPanel";
 import { useLayout } from "../state/layout";
 import type { DockView } from "../state/dock-views";
 import { ActivityBar } from "./ActivityBar";
+import type { CommandId, EditorCommands } from "./commands";
 import {
-  commandIds,
+  describeCommands,
   dispatch,
-  editorCommands,
-  matchesShortcut,
-  shortcutLabel,
-} from "./commands";
+  handleShortcut,
+  paletteEntries,
+} from "./command-registry";
 import type {
-  Command,
-  CommandId,
-  CommandMetadata,
-  CommandHandlers,
-  EditorCommands,
-  MonacoCommand,
-} from "./commands";
+  CommandActions,
+  CommandContext,
+  CommandState,
+  PopupKind,
+} from "./command-registry";
 import { MenuBar } from "./MenuBar";
 import { WorkbenchDialog } from "./WorkbenchDialog";
 import { ProblemsPanel } from "../language/ProblemsPanel";
@@ -175,9 +173,7 @@ export function Workbench() {
   const [settings, setSettings] = useState(false);
   const [dockMaximized, setDockMaximized] = useState(false);
   const [problemSeverity, setProblemSeverity] = useState("all");
-  const [popup, setPopup] = useState<
-    "commands" | "files" | "line" | "shortcuts" | "about" | "recent"
-  >();
+  const [popup, setPopup] = useState<PopupKind>();
   const [lineInput, setLineInput] = useState("");
   const [editorCommandsReady, setEditorCommands] = useState<EditorCommands>();
   const [terminalRunning, setTerminalRunning] = useState(false);
@@ -245,7 +241,6 @@ export function Workbench() {
   const runLanguage = active && executionLanguage(active.name);
   const cannotRun = active && runDisabledReason(active, explorer.native);
   const openFolder = () => editor.changeWorkspace(explorer.open);
-  const terminalSelected = terminal && dockView === "Terminal";
   const native = explorer.native;
   const workspaceBusy = !!explorer.busy || editor.busy;
   const focused =
@@ -310,239 +305,82 @@ export function Workbench() {
     [setDockView, terminal, toggleTerminal],
   );
 
-  const editorOnly: Record<
-    MonacoCommand,
-    Omit<Command, "run">
-  > = Object.fromEntries(
-    (Object.keys(editorCommands) as MonacoCommand[]).map((id) => {
-      const { label, edit, hint } = editorCommands[id];
-      return [
-        id,
-        {
-          label,
-          hint: hint?.(modifier),
-          hidden: id === "symbol" && !editorCommandsReady?.supports(id),
-          shortcut:
-            id === "definition" || id === "references"
-              ? { key: "F12", shift: id === "references" }
-              : undefined,
-          disabled:
-            !active ||
-            !editorCommandsReady?.supports(id) ||
-            (!!edit && editor.readOnly),
-        },
-      ];
-    }),
-  ) as Record<MonacoCommand, Omit<Command, "run">>;
-  const editorHandlers = Object.fromEntries(
-    (Object.keys(editorCommands) as MonacoCommand[]).map((id) => [
-      id,
-      () => editorCommandsReady?.run(id),
-    ]),
-  ) as Record<MonacoCommand, () => void>;
-  const commands: CommandMetadata = {
-    ...editorOnly,
-    newWindow: {
-      label: "New Window",
-      disabled: !native,
-      shortcut: { key: "n", primary: true, shift: true },
-    },
-    openRecent: { label: "Open Recent…", disabled: !native || workspaceBusy },
-    clearRecent: {
-      label: "Clear Recent History",
-      disabled: recents.length === 0,
-    },
-    newTerminal: {
-      label: "New Terminal",
-      disabled: !native,
-      shortcut: { key: "`", code: "Backquote", ctrl: true, shift: true },
-    },
-    splitTerminal: {
-      label: "Split Terminal",
-      disabled: !native,
-    },
-    terminalWindow: { label: "New Terminal Window", disabled: !native },
-    newText: {
-      label: "New Text File",
-      disabled: editor.busy,
-    },
-    newWorkspace: {
-      label: "New Workspace File",
-      disabled: !explorer.workspace || workspaceBusy,
-    },
-    openFile: {
-      label: "Open File",
-      disabled: !native || editor.busy,
-    },
-    openFolder: {
-      label: "Open Folder",
-      disabled: !native || workspaceBusy,
-    },
-    save: {
-      label: "Save",
-      disabled: !editor.canSave || editor.busy,
-      shortcut: { key: "s", primary: true },
-    },
-    saveAs: {
-      label: "Save As",
-      disabled: !native || !active || editor.busy,
-      shortcut: { key: "s", primary: true, shift: true },
-    },
-    autoSave: {
-      label: "Auto Save",
-      disabled: !native,
-      pressed: editor.autoSave,
-    },
-    rename: {
-      label: "Rename Explorer Item",
-      disabled:
-        sidebar !== "explorer" || !selectedEntry?.identity || workspaceBusy,
-      hint: "F2",
-    },
-    closeEditor: {
-      label: "Close Editor",
-      disabled: !active || editor.busy,
-    },
-    closeAll: {
-      label: "Close All Editors",
-      disabled: !editor.tabs.length || editor.busy,
-    },
-    explorer: { label: "Show Explorer" },
-    search: { label: "Show Search" },
-    sidebar: {
-      label: "Toggle Sidebar",
-    },
-    dock: {
-      label: terminal ? "Hide Bottom Panel" : "Show Bottom Panel",
-    },
-    showTerminal: { label: "Show Terminal" },
-    output: { label: "Show Output" },
-    problems: { label: "Show Problems" },
-    palette: {
-      label: "Command Palette",
-      shortcut: { key: "p", primary: true, shift: true },
-    },
-    settings: { label: "Open Settings" },
-    sourceControl: {
-      label: sidebar === "git" ? "Hide Source Control" : "Show Source Control",
-    },
-    assistant: {
-      label: assistant ? "Hide Turing AI" : "Show Turing AI",
-    },
-    goFile: {
-      label: "Go to File…",
-      disabled: editor.busy || (!native && !editor.tabs.length),
-      shortcut: { key: "p", primary: true },
-    },
-    goLine: {
-      label: "Go to Line/Column…",
-      disabled: !active || !editorCommandsReady,
-    },
-    nextProblem: {
-      label: "Next Problem",
-      shortcut: { key: "F8" },
-      disabled: !navigable.length,
-    },
-    previousProblem: {
-      label: "Previous Problem",
-      shortcut: { key: "F8", shift: true },
-      disabled: !navigable.length,
-    },
-    run: {
-      label: "Run Without Debugging",
-      shortcut: { key: "F5" },
-      disabled: !active || editor.busy || execution.busy || !!cannotRun,
-    },
-    stop: {
-      label: "Stop Execution",
-      disabled: !execution.busy || execution.run?.phase === "stopping",
-    },
-    openTerminal: {
-      label: "Open Terminal",
-      disabled: !native,
-      shortcut: { key: "`", ctrl: true },
-    },
-    closeTerminal: {
-      label: "Close Terminal",
-      disabled: !terminalRunning,
-    },
-    clearTerminal: {
-      label: "Clear Terminal",
-      disabled: !terminalRunning,
-    },
-    hideTerminal: {
-      label: "Hide Terminal panel",
-      disabled: !terminalSelected,
-    },
-    shortcuts: {
-      label: "Keyboard Shortcuts",
-    },
-    about: { label: "About Turing" },
+  const commandState: CommandState = {
+    native,
+    modifier,
+    modalOpen: !!popup || settings,
+    editorOpen: !!active,
+    editorBusy: editor.busy,
+    editorReady: !!editorCommandsReady,
+    editorSupports: (id) => !!editorCommandsReady?.supports(id),
+    readOnly: editor.readOnly,
+    canSave: editor.canSave,
+    autoSave: editor.autoSave,
+    tabCount: editor.tabs.length,
+    hasWorkspace: !!explorer.workspace,
+    workspaceBusy,
+    recentCount: recents.length,
+    sidebar,
+    renameTarget: !!selectedEntry?.identity,
+    bottomPanel: terminal,
+    dockView,
+    assistant,
+    problemCount: navigable.length,
+    executionBusy: execution.busy,
+    executionStopping: execution.run?.phase === "stopping",
+    runBlocked: !!cannotRun,
+    terminalRunning,
   };
-  const handlers: CommandHandlers = {
-    ...editorHandlers,
-    newWindow: () => void newWindow("window_new_workbench"),
-    openRecent: () => openPopup("recent"),
-    clearRecent: clearRecents,
-    newTerminal: () => createTerminalSession(false),
-    splitTerminal: () => createTerminalSession(true),
-    terminalWindow: () => void newWindow("window_new_terminal"),
-    newText: editor.newFile,
-    newWorkspace: createWorkspaceFromMenu,
+  const commandActions: CommandActions = {
+    openPopup,
+    openWindow: (kind) => void newWindow(kind),
+    clearRecents,
+    createTerminal: createTerminalSession,
+    closeTerminal: closeTerminalFromMenu,
+    clearTerminal: clearTerminalFromMenu,
+    toggleTerminal,
+    runEditorCommand: (id) => editorCommandsReady?.run(id),
+    newFile: editor.newFile,
+    createWorkspaceFile: createWorkspaceFromMenu,
     openFile: editor.openFile,
-    openFolder: openFolder,
+    openFolder,
     save: editor.save,
     saveAs: editor.saveAs,
-    autoSave: editor.toggleAutoSave,
-    rename: renameFromMenu,
-    closeEditor: () => {
+    toggleAutoSave: editor.toggleAutoSave,
+    renameSelection: renameFromMenu,
+    closeActiveEditor: () => {
       if (active) void editor.close(active);
     },
-    closeAll: editor.closeAll,
-    explorer: () => selectSidebar("explorer"),
-    search: () => selectSidebar("search"),
-    sidebar: toggleSidebarFromMenu,
-    dock: toggleBottomFromControl,
-    showTerminal: () => showDock("Terminal"),
-    output: () => showDock("Output"),
-    problems: () => showDock("Problems"),
-    palette: () => openPopup("commands"),
-    settings: () => setSettings(true),
-    sourceControl: () => toggleSidebar("git"),
-    assistant: toggleAssistant,
-    goFile: () => openPopup("files"),
-    goLine: () => {
+    closeAllEditors: editor.closeAll,
+    selectSidebar,
+    toggleSidebar: toggleSidebarFromMenu,
+    toggleSourceControl: () => toggleSidebar("git"),
+    toggleBottomPanel: toggleBottomFromControl,
+    showDock,
+    revealDock,
+    openSettings: () => setSettings(true),
+    toggleAssistant,
+    goToLine: () => {
       setLineInput("");
       openPopup("line");
     },
-    nextProblem: () => goToProblem(1),
-    previousProblem: () => goToProblem(-1),
-    run: () => {
+    goToProblem,
+    startRun: () => {
       if (active)
         void execution.start(active, native, () => showDock("Output"));
     },
-    stop: execution.stop,
-    openTerminal: () => revealDock("Terminal"),
-    closeTerminal: closeTerminalFromMenu,
-    clearTerminal: clearTerminalFromMenu,
-    hideTerminal: toggleTerminal,
-    shortcuts: () => openPopup("shortcuts"),
-    about: () => openPopup("about"),
+    stopRun: execution.stop,
   };
-  const runCommand = (id: CommandId) => dispatch(commands, handlers, id);
-
-  const paletteActions: (Omit<Command, "run"> & { id: CommandId })[] = [];
-  for (const id of commandIds) {
-    const { label, disabled, hidden, hint, shortcut } = commands[id];
-    paletteActions.push({
-      id,
-      label,
-      disabled,
-      hidden,
-      shortcut,
-      hint: shortcut ? shortcutLabel(shortcut, modifier) : hint,
-    });
-  }
+  const commandContext: CommandContext = {
+    state: commandState,
+    actions: commandActions,
+  };
+  const commands = describeCommands(commandState);
+  const runCommand = (
+    id: CommandId,
+    source: "menu" | "palette" | "control" = "control",
+  ) => dispatch(commandContext, id, { source });
+  const paletteActions = paletteEntries(commands);
   const quickFiles = useQuickFiles(
     popup === "files" ? explorer.workspace?.id : undefined,
     popup === "files",
@@ -580,35 +418,7 @@ export function Workbench() {
   }
 
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (
-      popup ||
-      settings ||
-      event.defaultPrevented ||
-      event.repeat ||
-      event.isComposing ||
-      document.querySelector("dialog[open]")
-    )
-      return;
-    const binding = paletteActions.find(
-      (command) => command.shortcut && matchesShortcut(event, command.shortcut),
-    );
-    if (!binding) return;
-    const { id, disabled } = binding;
-    const inTerminal =
-      event.target instanceof Element &&
-      event.target.closest(".terminal-screen");
-    if (
-      inTerminal &&
-      id !== "openTerminal" &&
-      id !== "newTerminal" &&
-      id !== "palette"
-    )
-      return;
-    if (!native && id === "run") return;
-    if (disabled && id !== "run") return;
-    event.preventDefault();
-    event.stopPropagation();
-    runCommand(id);
+    handleShortcut(commandContext, event);
   });
 
   useEffect(() => {
@@ -644,7 +454,7 @@ export function Workbench() {
             </span>
             <span className="brand-name">Turing Core</span>
           </h1>
-          <MenuBar commands={commands} modifier={modifier} onRun={runCommand} />
+          <MenuBar commands={commands} onRun={(id) => runCommand(id, "menu")} />
         </div>
         <button
           type="button"
@@ -779,7 +589,7 @@ export function Workbench() {
                         <span>{execution.run?.phase}</span>
                         <button
                           type="button"
-                          disabled={commands.stop.disabled}
+                          disabled={!commands.stop.enabled}
                           onClick={() => runCommand("stop")}
                         >
                           Stop
@@ -791,7 +601,7 @@ export function Workbench() {
                         aria-keyshortcuts="F5"
                         aria-description={cannotRun || undefined}
                         title={cannotRun || "Run File (F5)"}
-                        disabled={commands.run.disabled}
+                        disabled={!commands.run.enabled}
                         onClick={() => runCommand("run")}
                       >
                         Run File
@@ -806,14 +616,14 @@ export function Workbench() {
                     <h3>Start</h3>
                     <button
                       type="button"
-                      disabled={commands.newText.disabled}
+                      disabled={!commands.newText.enabled}
                       onClick={() => runCommand("newText")}
                     >
                       <FilePlus size={16} aria-hidden="true" /> New File…
                     </button>
                     <button
                       type="button"
-                      disabled={commands.openFolder.disabled}
+                      disabled={!commands.openFolder.enabled}
                       onClick={() => runCommand("openFolder")}
                     >
                       <FolderOpen size={16} aria-hidden="true" /> Open…
@@ -841,7 +651,7 @@ export function Workbench() {
                       <button
                         type="button"
                         key={`${entry.kind}:${entry.path}`}
-                        disabled={commands.openRecent.disabled}
+                        disabled={!commands.openRecent.enabled}
                         onClick={() => reopen(entry)}
                         title={entry.path}
                       >
@@ -853,7 +663,7 @@ export function Workbench() {
                     {recents.length > 0 && (
                       <button
                         type="button"
-                        disabled={commands.openRecent.disabled}
+                        disabled={!commands.openRecent.enabled}
                         onClick={() => runCommand("openRecent")}
                       >
                         More…
@@ -986,7 +796,7 @@ export function Workbench() {
           dismiss={dismissPopup}
           run={(action) => {
             dismissPopup();
-            runCommand(action.id);
+            runCommand(action.id, "palette");
           }}
         />
       )}

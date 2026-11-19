@@ -11,7 +11,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MenuBar } from "./MenuBar";
 import { menus } from "./commands";
-import type { Command, CommandId, Commands } from "./commands";
+import type { CommandId } from "./commands";
+import type { CommandView, CommandViews } from "./command-registry";
 
 afterEach(cleanup);
 
@@ -19,6 +20,12 @@ function fixture() {
   const run = vi.fn();
   const disabled = vi.fn();
   const outside = vi.fn();
+  const view = (id: CommandId, label: string, enabled = true): CommandView => ({
+    id,
+    label,
+    enabled,
+    visible: true,
+  });
   const commands = Object.fromEntries(
     menus
       .flatMap(({ entries }) =>
@@ -26,19 +33,20 @@ function fixture() {
           row === "-" ? [] : typeof row === "string" ? [row] : row.entries,
         ),
       )
-      .map((id): [CommandId, Command] => [id, { label: id, run: vi.fn() }]),
-  ) as Commands;
-  commands.newWindow = { label: "New Window", disabled: true, run: vi.fn() };
-  commands.newText = { label: "New Text File", run };
-  commands.newWorkspace = {
-    label: "New Workspace File",
-    disabled: true,
-    run: disabled,
+      .map((id): [CommandId, CommandView] => [id, view(id, id)]),
+  ) as CommandViews;
+  commands.newWindow = view("newWindow", "New Window", false);
+  commands.newText = view("newText", "New Text File");
+  commands.newWorkspace = view("newWorkspace", "New Workspace File", false);
+  commands.output = view("output", "Show Output");
+  const handlers: Partial<Record<CommandId, () => void>> = {
+    newText: run,
+    newWorkspace: disabled,
+    output: run,
   };
-  commands.output = { label: "Show Output", run };
   render(
     <>
-      <MenuBar commands={commands} onRun={(id) => commands[id].run()} />
+      <MenuBar commands={commands} onRun={(id) => handlers[id]?.()} />
       <p>Outside text</p>
       <button onClick={outside}>Outside action</button>
     </>,
