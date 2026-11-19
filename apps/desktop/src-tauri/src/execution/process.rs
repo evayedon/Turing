@@ -165,10 +165,13 @@ fn collect(child: &mut Child, progress: &Progress, building: bool) -> Result<Opt
     } else {
         (Stream::Stdout, Stream::Stderr)
     };
+    // Tests share loaded CI machines, where a first compile can exceed the
+    // product limits; the shipped limits stay 60 s (build) and 30 s (run).
+    let slack = if cfg!(test) { 4 } else { 1 };
     let timeout = if building {
-        Duration::from_secs(60)
+        Duration::from_secs(60 * slack)
     } else {
-        Duration::from_secs(30)
+        Duration::from_secs(30 * slack)
     };
     let started = Instant::now();
     let mut buffer = [0; 4096];

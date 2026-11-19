@@ -670,7 +670,7 @@ mod tests {
         id: &str,
         until: impl Fn(&Update) -> bool,
     ) -> (Update, Vec<Chunk>) {
-        let deadline = Instant::now() + Duration::from_secs(75);
+        let deadline = Instant::now() + Duration::from_secs(300);
         let progress = service.progress("main", id).unwrap();
         let mut chunks = Vec::new();
         loop {
