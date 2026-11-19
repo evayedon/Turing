@@ -27,3 +27,7 @@ coverage/
 __pycache__/
 *.pyc
 .venv/
+
+# Graphify local cache and machine-specific paths
+graphify-out/cache/
+graphify-out/.graphify_*
