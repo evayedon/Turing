@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod git;
 mod terminal;
 mod workspace;
 
@@ -32,6 +33,14 @@ fn main() {
             terminal::terminal_input,
             terminal::terminal_resize,
             terminal::terminal_close,
+            git::git_status,
+            git::git_diff,
+            git::git_stage,
+            git::git_unstage,
+            git::git_commit,
+            git::git_branches,
+            git::git_checkout,
+            git::git_log,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start Turing Core")

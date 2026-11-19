@@ -12,6 +12,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   isTauri: vi.fn(),
 }));
 
+// Source control polls in the background; keep it out of these IPC sequences.
+vi.mock("../git/git-ipc", async (original) => ({
+  ...(await original<typeof import("../git/git-ipc")>()),
+  invokeGit: vi.fn(() => Promise.reject("NOT_A_REPOSITORY")),
+}));
+
 const ipc = vi.mocked(invoke);
 const project = { id: "workspace", name: "project" };
 const entries = [

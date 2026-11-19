@@ -19,3 +19,14 @@ export type {
   TerminalSize,
   TerminalStarted,
 } from "./terminal";
+
+export type {
+  BranchInfo,
+  FileState,
+  GitCommands,
+  GitDiff,
+  GitError,
+  GitStatus,
+  LogEntry,
+  StatusEntry,
+} from "./git";

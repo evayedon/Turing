@@ -1,0 +1,13 @@
+[[permission]]
+identifier = "allow-git"
+description = "Query git status, diff, stage, unstage, commit, branch, and log in the active workspace."
+commands.allow = [
+  "git_status",
+  "git_diff",
+  "git_stage",
+  "git_unstage",
+  "git_commit",
+  "git_branches",
+  "git_checkout",
+  "git_log",
+]

@@ -16,6 +16,12 @@ import { Workbench } from "../shell/Workbench";
 import { useLayout } from "../state/layout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+
+// Source control polls in the background; keep it out of these IPC sequences.
+vi.mock("../git/git-ipc", async (original) => ({
+  ...(await original<typeof import("../git/git-ipc")>()),
+  invokeGit: vi.fn(() => Promise.reject("NOT_A_REPOSITORY")),
+}));
 vi.mock("./MonacoHost", () => ({
   default: ({
     active,

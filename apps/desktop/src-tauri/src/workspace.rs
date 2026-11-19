@@ -91,6 +91,8 @@ struct Workspace {
     owner: String,
     descriptor: WorkspaceDescriptor,
     root: Dir,
+    /// Canonical filesystem path of the workspace root; used by git subprocess.
+    canonical_path: std::path::PathBuf,
 }
 
 #[derive(Default)]
@@ -130,6 +132,7 @@ impl Registry {
             owner: owner.to_owned(),
             descriptor: descriptor.clone(),
             root,
+            canonical_path: canonical,
         });
         Ok(descriptor)
     }
@@ -146,6 +149,16 @@ impl Registry {
             .as_ref()
             .filter(|workspace| workspace.owner == owner && workspace.descriptor.id == id)
             .map(|workspace| &workspace.root)
+            .ok_or(WorkspaceError::PermissionDenied)
+    }
+
+    /// Returns the canonical filesystem path of the workspace root.
+    /// Used exclusively by the git adapter to pass to the git subprocess.
+    pub fn workspace_path(&self, owner: &str, id: &str) -> Result<&Path> {
+        self.active
+            .as_ref()
+            .filter(|workspace| workspace.owner == owner && workspace.descriptor.id == id)
+            .map(|workspace| workspace.canonical_path.as_path())
             .ok_or(WorkspaceError::PermissionDenied)
     }
 

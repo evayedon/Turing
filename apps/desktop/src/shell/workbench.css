@@ -1065,3 +1065,195 @@ svg {
   outline: var(--nebula-focus);
   outline-offset: -2px;
 }
+
+/* ── Source control ─────────────────────────────────────────────────────── */
+.git-panel {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  overflow: auto;
+  font-size: var(--nebula-sm);
+}
+.git-branch,
+.git-commit {
+  display: grid;
+  gap: var(--nebula-s2);
+  padding: var(--nebula-s3);
+  border-bottom: 1px solid var(--nebula-border);
+}
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nebula-s2);
+  min-width: 0;
+}
+.git-branch-button {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: flex-start;
+}
+.git-branch-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-sync {
+  color: var(--nebula-cyan);
+  font: var(--nebula-xs)/1 var(--nebula-mono);
+  white-space: nowrap;
+}
+.git-branch-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--nebula-border);
+  border-radius: var(--nebula-radius);
+  background: var(--nebula-canvas);
+}
+.git-branch-list li button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--nebula-s2);
+  padding: var(--nebula-s1) var(--nebula-s2);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: var(--nebula-xs)/1.6 var(--nebula-mono);
+}
+.git-branch-list li button:hover:not(:disabled) {
+  background: var(--nebula-hover);
+}
+.git-branch-list li button[aria-current] {
+  color: var(--nebula-accent);
+}
+.git-branch-spacer {
+  display: inline-block;
+  width: 12px;
+}
+.git-new-branch {
+  display: flex;
+  align-items: end;
+  gap: var(--nebula-s2);
+  margin-top: var(--nebula-s2);
+}
+.git-new-branch label {
+  display: grid;
+  flex: 1;
+  gap: var(--nebula-s1);
+  color: var(--nebula-muted);
+}
+.git-new-branch input,
+.git-commit textarea {
+  width: 100%;
+  min-width: 0;
+  padding: var(--nebula-s1) var(--nebula-s2);
+  color: var(--nebula-text);
+  background: var(--nebula-canvas);
+  border: 1px solid var(--nebula-border);
+  border-radius: var(--nebula-radius);
+  font: inherit;
+}
+.git-commit textarea {
+  resize: vertical;
+  min-height: 3.5em;
+}
+.git-commit textarea:focus-visible,
+.git-new-branch input:focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: -1px;
+}
+.git-commit button {
+  justify-content: center;
+}
+.git-commit button:not(:disabled) {
+  color: var(--nebula-accent);
+  background: var(--nebula-active);
+  border-color: var(--nebula-accent-border);
+}
+.git-error {
+  color: var(--nebula-danger);
+}
+.git-group header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--nebula-s2) var(--nebula-s3) var(--nebula-s1);
+}
+.git-group h3 {
+  margin: 0;
+  color: var(--nebula-muted);
+  font-size: var(--nebula-xs);
+  font-weight: 600;
+}
+.git-group h3 span {
+  margin-inline-start: var(--nebula-s1);
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--nebula-raised);
+  color: var(--nebula-text);
+}
+.git-group ul {
+  margin: 0;
+  padding: 0 0 var(--nebula-s2);
+  list-style: none;
+}
+.git-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 1.5em;
+  align-items: center;
+  padding-inline-end: var(--nebula-s3);
+}
+.git-entry:hover {
+  background: var(--nebula-hover);
+}
+.git-entry-open {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--nebula-s2);
+  padding: 3px var(--nebula-s3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.git-entry-name,
+.git-entry-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-entry-folder {
+  color: var(--nebula-muted);
+  font-size: var(--nebula-xs);
+}
+.git-entry-action {
+  opacity: 0;
+}
+.git-entry:hover .git-entry-action,
+.git-entry-action:focus-visible {
+  opacity: 1;
+}
+.git-badge {
+  justify-self: end;
+  font: 600 var(--nebula-xs)/1 var(--nebula-mono);
+  color: var(--nebula-cyan);
+}
+.git-badge-added,
+.git-badge-untracked {
+  color: var(--nebula-accent);
+}
+.git-badge-deleted,
+.git-badge-unmerged {
+  color: var(--nebula-danger);
+}
+.status-branch {
+  color: var(--nebula-text);
+}
+@media (hover: none) {
+  .git-entry-action {
+    opacity: 1;
+  }
+}

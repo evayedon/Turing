@@ -14,6 +14,8 @@ import type { EditorInfo } from "../editor/editor-info";
 import { useEditor } from "../editor/use-editor";
 import { Explorer } from "../explorer/Explorer";
 import { useExplorer } from "../explorer/use-explorer";
+import { GitPanel } from "../git/GitPanel";
+import { useGit } from "../git/use-git";
 import { SearchPanel } from "../search/SearchPanel";
 import { useLayout } from "../state/layout";
 import type { DockView } from "../state/dock-views";
@@ -50,6 +52,7 @@ function Panel({
 export function Workbench() {
   const explorer = useExplorer();
   const editor = useEditor(explorer.workspace?.id, explorer.native);
+  const git = useGit(explorer.workspace?.id, explorer.native);
   const sidebar = useLayout((state) => state.sidebar);
   const terminal = useLayout((state) => state.terminal);
   const assistant = useLayout((state) => state.assistant);
@@ -270,10 +273,11 @@ export function Workbench() {
                 title="Source Control"
                 className="sidebar"
               >
-                <div className="pane-empty">
-                  <GitBranch size={17} aria-hidden="true" />
-                  <p>Git integration is unavailable in this build.</p>
-                </div>
+                <GitPanel
+                  git={git}
+                  editorBusy={editor.busy}
+                  openFile={editor.open}
+                />
               </Panel>
             )}
             <Splitter {...layout.splitter("sidebar")} />
@@ -342,6 +346,20 @@ export function Workbench() {
             <Folder size={13} aria-hidden="true" />
             {explorer.workspace?.name ?? "No workspace"}
           </span>
+          {git.status && (
+            <span
+              className="status-branch"
+              title={
+                git.status.branch
+                  ? `Branch ${git.status.branch}`
+                  : "Detached HEAD"
+              }
+            >
+              <GitBranch size={13} aria-hidden="true" />
+              {git.status.branch ?? "detached"}
+              {git.status.entries.length > 0 && "*"}
+            </span>
+          )}
           {active && <span title={active.title}>{active.name}</span>}
           {saveState && (
             <span className={changed ? "status-dirty" : ""}>
