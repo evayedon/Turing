@@ -813,3 +813,118 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+
+    #[test]
+    fn error_codes_match_contract() {
+        use ExecutionError::*;
+        let all = [
+            PermissionDenied,
+            Busy,
+            UnsupportedLanguage,
+            SourceChanged,
+            SourceUnavailable,
+            PythonUnavailable,
+            CompilerUnavailable,
+            ProcessUnavailable,
+            TimedOut,
+            Internal,
+        ];
+        for error in &all {
+            match error {
+                PermissionDenied | Busy | UnsupportedLanguage | SourceChanged
+                | SourceUnavailable | PythonUnavailable | CompilerUnavailable
+                | ProcessUnavailable | TimedOut | Internal => {}
+            }
+        }
+        fixture::assert_error_codes("execution", &all);
+    }
+
+    #[test]
+    fn enums_match_contract() {
+        let languages = [Language::Python, Language::Cpp];
+        for language in &languages {
+            match language {
+                Language::Python | Language::Cpp => {}
+            }
+        }
+        fixture::assert_enum_values("ExecutionLanguage", &languages);
+
+        use Phase::*;
+        let phases = [Preparing, Compiling, Running, Stopping, Completed, Failed];
+        for phase in &phases {
+            match phase {
+                Preparing | Compiling | Running | Stopping | Completed | Failed => {}
+            }
+        }
+        fixture::assert_enum_values("ExecutionPhase", &phases);
+
+        let streams = [
+            Stream::BuildStdout,
+            Stream::BuildStderr,
+            Stream::Stdout,
+            Stream::Stderr,
+        ];
+        for stream in &streams {
+            match stream {
+                Stream::BuildStdout | Stream::BuildStderr | Stream::Stdout | Stream::Stderr => {}
+            }
+        }
+        fixture::assert_enum_values("ExecutionStream", &streams);
+    }
+
+    #[test]
+    fn payloads_match_contract() {
+        fixture::assert_payload(
+            "ExecutionStarted",
+            0,
+            &Started {
+                id: "run-1".into(),
+                name: "main.cpp".into(),
+                language: Language::Cpp,
+            },
+        );
+        fixture::assert_case_count("ExecutionStarted", 1);
+
+        fixture::assert_payload(
+            "ExecutionUpdate",
+            0,
+            &Update {
+                phase: Phase::Completed,
+                elapsed_ms: 1250,
+                exit_code: Some(0),
+                error: None,
+                cancelled: false,
+                truncated: false,
+                output: vec![
+                    Chunk {
+                        stream: Stream::BuildStderr,
+                        bytes: b"w".to_vec(),
+                    },
+                    Chunk {
+                        stream: Stream::Stdout,
+                        bytes: b"ok".to_vec(),
+                    },
+                ],
+            },
+        );
+        fixture::assert_payload(
+            "ExecutionUpdate",
+            1,
+            &Update {
+                phase: Phase::Failed,
+                elapsed_ms: 30_000,
+                exit_code: None,
+                error: Some(ExecutionError::TimedOut),
+                cancelled: false,
+                truncated: true,
+                output: Vec::new(),
+            },
+        );
+        fixture::assert_case_count("ExecutionUpdate", 2);
+    }
+}

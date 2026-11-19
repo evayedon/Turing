@@ -859,3 +859,66 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+
+    #[test]
+    fn error_codes_match_contract() {
+        use TerminalError::*;
+        let all = [
+            PermissionDenied,
+            SessionLimit,
+            SessionClosed,
+            InvalidSize,
+            InvalidLink,
+            InputTooLarge,
+            InputBusy,
+            ShellUnavailable,
+            PtyUnavailable,
+            IoError,
+        ];
+        for error in &all {
+            match error {
+                PermissionDenied | SessionLimit | SessionClosed | InvalidSize | InvalidLink
+                | InputTooLarge | InputBusy | ShellUnavailable | PtyUnavailable | IoError => {}
+            }
+        }
+        fixture::assert_error_codes("terminal", &all);
+    }
+
+    #[test]
+    fn payloads_match_contract() {
+        fixture::assert_payload(
+            "TerminalStarted",
+            0,
+            &TerminalStarted {
+                shell: "zsh".into(),
+                id: "term-1".into(),
+                workspace_directory: true,
+            },
+        );
+        fixture::assert_case_count("TerminalStarted", 1);
+        fixture::assert_payload(
+            "TerminalOutput",
+            0,
+            &TerminalOutput {
+                bytes: b"hi".to_vec(),
+                finished: false,
+                exit_code: None,
+            },
+        );
+        fixture::assert_payload(
+            "TerminalOutput",
+            1,
+            &TerminalOutput {
+                bytes: Vec::new(),
+                finished: true,
+                exit_code: Some(0),
+            },
+        );
+        fixture::assert_case_count("TerminalOutput", 2);
+    }
+}

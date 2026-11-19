@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   LanguageCapabilities,
   LanguageCommands,
+  LanguageError,
   LanguageFeature,
   LanguagePosition,
 } from "@turing/contracts";
@@ -38,12 +39,15 @@ type Session = {
 
 type Diagnostics = { tracked: Tracked; problems: Problem[] };
 
+const isError = (error: unknown, ...codes: LanguageError[]) =>
+  typeof error === "string" && (codes as string[]).includes(error);
+
 const failure = (error: unknown) =>
-  error === "UNAVAILABLE"
+  isError(error, "UNAVAILABLE")
     ? "clangd was not found. Install LLVM clangd and try again."
-    : error === "DENIED"
+    : isError(error, "DENIED")
       ? "The workspace or language session is no longer authorized."
-      : error === "INVALID_DOCUMENT"
+      : isError(error, "INVALID_DOCUMENT")
         ? "This file cannot be sent to clangd. Check that it is a supported workspace text file."
         : "clangd could not start or stopped responding. Enable it again to retry.";
 
@@ -244,7 +248,7 @@ export function useLanguage(
                 },
               });
             } catch (error) {
-              if (error === "INVALID_DOCUMENT" || error === "DENIED") {
+              if (isError(error, "INVALID_DOCUMENT", "DENIED")) {
                 if (live()) {
                   session.rejected.set(path, tab);
                   setMessage(failure("INVALID_DOCUMENT"));
@@ -261,7 +265,7 @@ export function useLanguage(
         }
       } catch (error) {
         if (!live()) return;
-        if (error !== "BUSY") {
+        if (!isError(error, "BUSY")) {
           current.current = undefined;
           dispose(session);
           setSession(undefined);

@@ -469,3 +469,33 @@ mod tests {
         assert!(!path.exists());
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+
+    fn version() -> SelectedFileVersion {
+        SelectedFileVersion {
+            file_id: "file-1".into(),
+            name: "notes.md".into(),
+            display_path: "~/notes.md".into(),
+            version: "v2".into(),
+        }
+    }
+
+    #[test]
+    fn selected_file_payloads_match_contract() {
+        fixture::assert_payload("SelectedFileVersion", 0, &version());
+        fixture::assert_case_count("SelectedFileVersion", 1);
+        fixture::assert_payload(
+            "SelectedFileSnapshot",
+            0,
+            &SelectedFileSnapshot {
+                file: version(),
+                content: "# Notes\n".into(),
+            },
+        );
+        fixture::assert_case_count("SelectedFileSnapshot", 1);
+    }
+}

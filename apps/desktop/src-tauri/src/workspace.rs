@@ -718,3 +718,102 @@ mod tests {
         assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+
+    #[test]
+    fn error_codes_match_contract() {
+        use WorkspaceError::*;
+        let all = [
+            Busy,
+            WindowLimit,
+            PermissionDenied,
+            OutsideWorkspace,
+            NotFound,
+            NotDirectory,
+            NotFile,
+            InvalidEncoding,
+            FileTooLarge,
+            FileConflict,
+            SaveRace,
+            InvalidName,
+            EntryChanged,
+            NameTaken,
+            RenameRace,
+            DirectoryTooLarge,
+            InvalidSearch,
+            SearchCancelled,
+            SearchBusy,
+            IoError,
+        ];
+        // Adding a variant breaks this match until it is listed above.
+        for error in &all {
+            match error {
+                Busy | WindowLimit | PermissionDenied | OutsideWorkspace | NotFound
+                | NotDirectory | NotFile | InvalidEncoding | FileTooLarge | FileConflict
+                | SaveRace | InvalidName | EntryChanged | NameTaken | RenameRace
+                | DirectoryTooLarge | InvalidSearch | SearchCancelled | SearchBusy | IoError => {}
+            }
+        }
+        fixture::assert_error_codes("workspace", &all);
+    }
+
+    #[test]
+    fn entry_kinds_match_contract() {
+        let all = [EntryKind::Directory, EntryKind::File];
+        for kind in &all {
+            match kind {
+                EntryKind::Directory | EntryKind::File => {}
+            }
+        }
+        fixture::assert_enum_values("EntryKind", &all);
+    }
+
+    #[test]
+    fn payloads_match_contract() {
+        fixture::assert_payload(
+            "WorkspaceDescriptor",
+            0,
+            &WorkspaceDescriptor {
+                id: "ws-1".into(),
+                name: "Turing".into(),
+                display_path: "~/Projects/Turing".into(),
+            },
+        );
+        fixture::assert_case_count("WorkspaceDescriptor", 1);
+
+        let entry = |name: &str, path: &str, kind, identity: &str| DirectoryEntry {
+            name: name.into(),
+            relative_path: path.into(),
+            kind,
+            identity: identity.into(),
+        };
+        fixture::assert_payload(
+            "DirectoryEntry",
+            0,
+            &entry("src", "src", EntryKind::Directory, "dev:1/ino:2"),
+        );
+        fixture::assert_payload(
+            "DirectoryEntry",
+            1,
+            &entry("main.rs", "src/main.rs", EntryKind::File, "dev:1/ino:3"),
+        );
+        fixture::assert_case_count("DirectoryEntry", 2);
+
+        fixture::assert_payload(
+            "TextFile",
+            0,
+            &TextFile {
+                workspace_id: "ws-1".into(),
+                relative_path: "src/main.rs".into(),
+                content: "fn main() {}\n".into(),
+                encoding: "utf-8",
+                version: "v1".into(),
+            },
+        );
+        fixture::assert_case_count("TextFile", 1);
+    }
+}

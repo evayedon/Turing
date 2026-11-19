@@ -644,3 +644,41 @@ mod tests {
         assert!(scan.response.files.is_empty());
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+
+    #[test]
+    fn search_response_matches_contract() {
+        fixture::assert_payload(
+            "SearchResponse",
+            0,
+            &SearchResponse {
+                files: vec![SearchFile {
+                    relative_path: "src/ünï.rs".into(),
+                    matches: vec![SearchMatch {
+                        line: 3,
+                        column: 5,
+                        before: "let ".into(),
+                        text: "café".into(),
+                        after: " = 1;".into(),
+                    }],
+                }],
+                truncated: false,
+                skipped_files: 2,
+            },
+        );
+        fixture::assert_payload(
+            "SearchResponse",
+            1,
+            &SearchResponse {
+                files: Vec::new(),
+                truncated: true,
+                skipped_files: 0,
+            },
+        );
+        fixture::assert_case_count("SearchResponse", 2);
+    }
+}

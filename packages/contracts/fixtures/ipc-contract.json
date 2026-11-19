@@ -1,0 +1,266 @@
+{
+  "$comment": "Shared IPC contract fixtures. Rust tests require native serialization to equal these values exactly; TypeScript tests require them to satisfy the declared contracts. Update both sides together.",
+  "errors": {
+    "workspace": {
+      "native": [
+        "BUSY",
+        "WINDOW_LIMIT",
+        "PERMISSION_DENIED",
+        "OUTSIDE_WORKSPACE",
+        "NOT_FOUND",
+        "NOT_DIRECTORY",
+        "NOT_FILE",
+        "INVALID_ENCODING",
+        "FILE_TOO_LARGE",
+        "FILE_CONFLICT",
+        "SAVE_RACE",
+        "INVALID_NAME",
+        "ENTRY_CHANGED",
+        "NAME_TAKEN",
+        "RENAME_RACE",
+        "DIRECTORY_TOO_LARGE",
+        "INVALID_SEARCH",
+        "SEARCH_CANCELLED",
+        "SEARCH_BUSY",
+        "IO_ERROR"
+      ],
+      "clientOnly": []
+    },
+    "terminal": {
+      "native": [
+        "PERMISSION_DENIED",
+        "SESSION_LIMIT",
+        "SESSION_CLOSED",
+        "INVALID_SIZE",
+        "INVALID_LINK",
+        "INPUT_TOO_LARGE",
+        "INPUT_BUSY",
+        "SHELL_UNAVAILABLE",
+        "PTY_UNAVAILABLE",
+        "IO_ERROR"
+      ],
+      "clientOnly": ["START_TIMEOUT"]
+    },
+    "git": {
+      "native": [
+        "NO_GIT",
+        "NOT_A_REPOSITORY",
+        "WORKSPACE_NOT_OPEN",
+        "INVALID_REF",
+        "INVALID_PATH",
+        "INVALID_MESSAGE",
+        "NOTHING_TO_COMMIT",
+        "IDENTITY_MISSING",
+        "UNCOMMITTED_CHANGES",
+        "OPERATION_FAILED",
+        "IO_ERROR"
+      ],
+      "clientOnly": []
+    },
+    "execution": {
+      "native": [
+        "PERMISSION_DENIED",
+        "BUSY",
+        "UNSUPPORTED_LANGUAGE",
+        "SOURCE_CHANGED",
+        "SOURCE_UNAVAILABLE",
+        "PYTHON_UNAVAILABLE",
+        "COMPILER_UNAVAILABLE",
+        "PROCESS_UNAVAILABLE",
+        "TIMED_OUT",
+        "INTERNAL"
+      ],
+      "clientOnly": []
+    },
+    "language": {
+      "native": [
+        "DENIED",
+        "UNAVAILABLE",
+        "START_FAILED",
+        "SERVER_EXITED",
+        "BUSY",
+        "INVALID_DOCUMENT",
+        "NOT_READY",
+        "INTERNAL"
+      ],
+      "clientOnly": []
+    }
+  },
+  "enums": {
+    "EntryKind": ["directory", "file"],
+    "FileState": [
+      "untracked",
+      "modified",
+      "added",
+      "deleted",
+      "renamed",
+      "copied",
+      "unmerged"
+    ],
+    "ExecutionLanguage": ["python", "cpp"],
+    "ExecutionPhase": [
+      "preparing",
+      "compiling",
+      "running",
+      "stopping",
+      "completed",
+      "failed"
+    ],
+    "ExecutionStream": ["buildStdout", "buildStderr", "stdout", "stderr"]
+  },
+  "payloads": {
+    "WorkspaceDescriptor": [
+      { "id": "ws-1", "name": "Turing", "displayPath": "~/Projects/Turing" }
+    ],
+    "DirectoryEntry": [
+      {
+        "name": "src",
+        "relativePath": "src",
+        "kind": "directory",
+        "identity": "dev:1/ino:2"
+      },
+      {
+        "name": "main.rs",
+        "relativePath": "src/main.rs",
+        "kind": "file",
+        "identity": "dev:1/ino:3"
+      }
+    ],
+    "TextFile": [
+      {
+        "workspaceId": "ws-1",
+        "relativePath": "src/main.rs",
+        "content": "fn main() {}\n",
+        "encoding": "utf-8",
+        "version": "v1"
+      }
+    ],
+    "SearchResponse": [
+      {
+        "files": [
+          {
+            "relativePath": "src/ünï.rs",
+            "matches": [
+              {
+                "line": 3,
+                "column": 5,
+                "before": "let ",
+                "text": "café",
+                "after": " = 1;"
+              }
+            ]
+          }
+        ],
+        "truncated": false,
+        "skippedFiles": 2
+      },
+      { "files": [], "truncated": true, "skippedFiles": 0 }
+    ],
+    "SelectedFileVersion": [
+      {
+        "fileId": "file-1",
+        "name": "notes.md",
+        "displayPath": "~/notes.md",
+        "version": "v2"
+      }
+    ],
+    "SelectedFileSnapshot": [
+      {
+        "fileId": "file-1",
+        "name": "notes.md",
+        "displayPath": "~/notes.md",
+        "version": "v2",
+        "content": "# Notes\n"
+      }
+    ],
+    "TerminalStarted": [
+      { "shell": "zsh", "id": "term-1", "workspaceDirectory": true }
+    ],
+    "TerminalOutput": [
+      { "bytes": [104, 105], "finished": false, "exitCode": null },
+      { "bytes": [], "finished": true, "exitCode": 0 }
+    ],
+    "GitStatus": [
+      {
+        "branch": "main",
+        "entries": [
+          {
+            "path": "src/new.rs",
+            "staged": true,
+            "state": "renamed",
+            "originalPath": "src/old.rs"
+          },
+          {
+            "path": "README.md",
+            "staged": false,
+            "state": "modified",
+            "originalPath": null
+          }
+        ],
+        "ahead": 1,
+        "behind": 0
+      },
+      { "branch": null, "entries": [], "ahead": 0, "behind": 0 }
+    ],
+    "GitDiff": [{ "text": "@@ -1 +1 @@\n-a\n+b\n", "truncated": false }],
+    "LogEntry": [
+      {
+        "hash": "07f841b0000000000000000000000000000000000",
+        "shortHash": "07f841b",
+        "subject": "merge: integrate branches",
+        "authorName": "Turing Dev",
+        "authorEmail": "dev@example.com",
+        "date": "2 days ago"
+      }
+    ],
+    "BranchInfo": [
+      { "name": "main", "isHead": true, "isRemote": false },
+      { "name": "origin/main", "isHead": false, "isRemote": true }
+    ],
+    "ExecutionStarted": [
+      { "id": "run-1", "name": "main.cpp", "language": "cpp" }
+    ],
+    "ExecutionUpdate": [
+      {
+        "phase": "completed",
+        "elapsedMs": 1250,
+        "exitCode": 0,
+        "error": null,
+        "cancelled": false,
+        "truncated": false,
+        "output": [
+          { "stream": "buildStderr", "bytes": [119] },
+          { "stream": "stdout", "bytes": [111, 107] }
+        ]
+      },
+      {
+        "phase": "failed",
+        "elapsedMs": 30000,
+        "exitCode": null,
+        "error": "TIMED_OUT",
+        "cancelled": false,
+        "truncated": true,
+        "output": []
+      }
+    ],
+    "LanguageUpdate": [
+      {
+        "capabilities": {
+          "hover": true,
+          "completion": true,
+          "definition": false
+        },
+        "events": [
+          {
+            "kind": "diagnostics",
+            "path": "src/main.cpp",
+            "version": 4,
+            "diagnostics": [{ "message": "unused variable" }]
+          },
+          { "kind": "response", "requestId": 7, "value": null }
+        ]
+      },
+      { "capabilities": null, "events": [] }
+    ]
+  }
+}

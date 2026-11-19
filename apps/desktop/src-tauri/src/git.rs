@@ -798,3 +798,120 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "dirty\n");
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+
+    #[test]
+    fn error_codes_match_contract() {
+        use GitError::*;
+        let all = [
+            NoGit,
+            NotARepository,
+            WorkspaceNotOpen,
+            InvalidRef,
+            InvalidPath,
+            InvalidMessage,
+            NothingToCommit,
+            IdentityMissing,
+            UncommittedChanges,
+            OperationFailed,
+            IoError,
+        ];
+        for error in &all {
+            match error {
+                NoGit | NotARepository | WorkspaceNotOpen | InvalidRef | InvalidPath
+                | InvalidMessage | NothingToCommit | IdentityMissing | UncommittedChanges
+                | OperationFailed | IoError => {}
+            }
+        }
+        fixture::assert_error_codes("git", &all);
+    }
+
+    #[test]
+    fn file_states_match_contract() {
+        use FileState::*;
+        let all = [
+            Untracked, Modified, Added, Deleted, Renamed, Copied, Unmerged,
+        ];
+        for state in &all {
+            match state {
+                Untracked | Modified | Added | Deleted | Renamed | Copied | Unmerged => {}
+            }
+        }
+        fixture::assert_enum_values("FileState", &all);
+    }
+
+    #[test]
+    fn payloads_match_contract() {
+        fixture::assert_payload(
+            "GitStatus",
+            0,
+            &GitStatus {
+                branch: Some("main".into()),
+                entries: vec![
+                    StatusEntry {
+                        path: "src/new.rs".into(),
+                        staged: true,
+                        state: FileState::Renamed,
+                        original_path: Some("src/old.rs".into()),
+                    },
+                    StatusEntry {
+                        path: "README.md".into(),
+                        staged: false,
+                        state: FileState::Modified,
+                        original_path: None,
+                    },
+                ],
+                ahead: 1,
+                behind: 0,
+            },
+        );
+        fixture::assert_payload(
+            "GitStatus",
+            1,
+            &GitStatus {
+                branch: None,
+                entries: Vec::new(),
+                ahead: 0,
+                behind: 0,
+            },
+        );
+        fixture::assert_case_count("GitStatus", 2);
+
+        fixture::assert_payload(
+            "GitDiff",
+            0,
+            &GitDiff {
+                text: "@@ -1 +1 @@\n-a\n+b\n".into(),
+                truncated: false,
+            },
+        );
+        fixture::assert_case_count("GitDiff", 1);
+
+        fixture::assert_payload(
+            "LogEntry",
+            0,
+            &LogEntry {
+                hash: "07f841b0000000000000000000000000000000000".into(),
+                short_hash: "07f841b".into(),
+                subject: "merge: integrate branches".into(),
+                author_name: "Turing Dev".into(),
+                author_email: "dev@example.com".into(),
+                date: "2 days ago".into(),
+            },
+        );
+        fixture::assert_case_count("LogEntry", 1);
+
+        let branch = |name: &str, is_head, is_remote| BranchInfo {
+            name: name.into(),
+            is_head,
+            is_remote,
+        };
+        fixture::assert_payload("BranchInfo", 0, &branch("main", true, false));
+        fixture::assert_payload("BranchInfo", 1, &branch("origin/main", false, true));
+        fixture::assert_case_count("BranchInfo", 2);
+    }
+}

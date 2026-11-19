@@ -20,6 +20,27 @@ and its workers are bundled locally and loaded on demand. Each tab keeps a
 Monaco model separate from its saved snapshot. Git and AI remain placeholder
 surfaces.
 
+## IPC contract fixtures
+
+`packages/contracts/fixtures/ipc-contract.json` is the shared description of
+values that cross the Tauri IPC boundary: every native error code per domain
+(plus client-only codes such as the terminal's `START_TIMEOUT`), serialized
+enum values, and representative payloads, including nulls and Unicode text.
+
+- Rust `contract_tests` modules serialize native values and require exact
+  equality with each fixture case, so renamed fields, casing changes, extra
+  fields and `null`-versus-omitted drift fail. Each error and enum list also
+  has an exhaustive `match`, so a new Rust variant does not compile until it is
+  added to the test and the fixture. Fixture cases without native coverage
+  fail as well.
+- `apps/desktop/src/contracts/ipc-contract.test.ts` describes each TypeScript
+  contract with compile-checked shapes. Changing a contract's fields,
+  optionality, nullability or error union fails typecheck until the shape is
+  updated, and a shape that disagrees with the fixtures fails the test.
+
+Change a contract by updating the Rust type, the TypeScript type and the
+fixture together. Request argument types are not covered yet.
+
 ## Workspace authorization
 
 The local `main` webview has explicit permissions for workspace commands,

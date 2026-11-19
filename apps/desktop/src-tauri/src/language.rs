@@ -979,3 +979,67 @@ mod boundary_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::contract_fixtures as fixture;
+    use serde_json::json;
+
+    #[test]
+    fn error_codes_match_contract() {
+        use Error::*;
+        let all = [
+            Denied,
+            Unavailable,
+            StartFailed,
+            ServerExited,
+            Busy,
+            InvalidDocument,
+            NotReady,
+            Internal,
+        ];
+        for error in &all {
+            match error {
+                Denied | Unavailable | StartFailed | ServerExited | Busy | InvalidDocument
+                | NotReady | Internal => {}
+            }
+        }
+        fixture::assert_error_codes("language", &all);
+    }
+
+    #[test]
+    fn update_matches_contract() {
+        fixture::assert_payload(
+            "LanguageUpdate",
+            0,
+            &Update {
+                capabilities: Some(Capabilities {
+                    hover: true,
+                    completion: true,
+                    definition: false,
+                }),
+                events: vec![
+                    Event::Diagnostics {
+                        path: "src/main.cpp".into(),
+                        version: 4,
+                        diagnostics: vec![json!({ "message": "unused variable" })],
+                    },
+                    Event::Response {
+                        request_id: 7,
+                        value: Value::Null,
+                    },
+                ],
+            },
+        );
+        fixture::assert_payload(
+            "LanguageUpdate",
+            1,
+            &Update {
+                capabilities: None,
+                events: Vec::new(),
+            },
+        );
+        fixture::assert_case_count("LanguageUpdate", 2);
+    }
+}

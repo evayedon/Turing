@@ -3,6 +3,7 @@ export type SidebarView = "explorer" | "search" | "git";
 export type {
   DirectoryEntry,
   SelectedFileSnapshot,
+  SelectedFileVersion,
   SearchMatch,
   SearchOptions,
   SearchResponse,
@@ -46,6 +47,7 @@ export type {
   LanguageAction,
   LanguageCapabilities,
   LanguageCommands,
+  LanguageError,
   LanguageEvent,
   LanguageFeature,
   LanguagePosition,

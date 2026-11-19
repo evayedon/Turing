@@ -1,3 +1,12 @@
+export type LanguageError =
+  | "DENIED"
+  | "UNAVAILABLE"
+  | "START_FAILED"
+  | "SERVER_EXITED"
+  | "BUSY"
+  | "INVALID_DOCUMENT"
+  | "NOT_READY"
+  | "INTERNAL";
 export type LanguageFeature = "hover" | "completion" | "definition";
 export type LanguageCapabilities = Record<LanguageFeature, boolean>;
 export type LanguagePosition = { line: number; character: number };
