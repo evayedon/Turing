@@ -298,6 +298,20 @@ impl TerminalService {
         drop(sessions);
     }
 
+    /// Number of fully started sessions, excluding in-flight reservations.
+    #[cfg(any(test, feature = "smoke"))]
+    pub fn live_sessions(&self) -> usize {
+        self.sessions
+            .lock()
+            .map(|sessions| {
+                sessions
+                    .values()
+                    .filter(|session| session.is_some())
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
     #[cfg(test)]
     pub(crate) fn start(
         &self,

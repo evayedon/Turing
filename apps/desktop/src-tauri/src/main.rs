@@ -6,6 +6,8 @@ mod contract_fixtures;
 mod execution;
 mod git;
 mod language;
+#[cfg(feature = "smoke")]
+mod smoke;
 mod terminal;
 mod windows;
 mod workspace;
@@ -13,7 +15,7 @@ mod workspace;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(windows::Windows::default())
         .on_page_load(|webview, payload| {
@@ -22,7 +24,14 @@ fn main() {
                     .state::<windows::Windows>()
                     .page_loading(webview.label());
             }
-        })
+            #[cfg(feature = "smoke")]
+            smoke::page_event(webview, payload.event());
+        });
+    // The lifecycle smoke harness exists only in builds with the non-default
+    // `smoke` feature and activates only when TURING_SMOKE=1.
+    #[cfg(feature = "smoke")]
+    let builder = smoke::install(builder);
+    builder
         .invoke_handler(tauri::generate_handler![
             windows::window_new_workbench,
             windows::window_new_terminal,

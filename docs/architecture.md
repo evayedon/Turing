@@ -369,6 +369,58 @@ editor, or Run & Build capability, and starts and focuses a shell in it.
 Closing it cleans up its sessions.
 PTYs execute with the user's operating-system privileges.
 
+### Native lifecycle smoke harness
+
+Tauri's WebDriver does not support macOS, so a Rust-driven harness checks the
+native window lifecycle on all three CI platforms. It is compiled only with
+the non-default `smoke` cargo feature and runs only when `TURING_SMOKE=1` is
+set. Normal and release builds contain no harness code, readiness script or
+extra IPC command, and a smoke build started without the variable behaves like
+a normal build. The harness adds no command, permission or capability.
+
+Run it locally after building the frontend:
+
+```sh
+pnpm build
+cd apps/desktop/src-tauri
+cargo build --release --features smoke,tauri/custom-protocol
+TURING_SMOKE=1 ./target/release/turing-core   # turing-core.exe on Windows
+```
+
+`tauri/custom-protocol` makes Cargo embed `dist` the same way `tauri build`
+does; without it the binary points at the dev server. Use
+`TURING_SMOKE_OUTPUT=<file>` to also write the summary to a file, which is
+useful where a GUI-subsystem Windows build has no console, and
+`TURING_SMOKE_TIMEOUT_SECS` to change the 180-second overall limit.
+
+The harness waits for the main page to load. It then opens two workbench
+windows and two terminal windows, one after another, through
+`windows::build`, the code behind **New Window** and **New Terminal Window**. For
+each window it waits for the page-load `Finished` event and for the frontend to
+mount. A smoke-only initialization script sets a sentinel document title once
+React renders into `#root`, and Rust observes the title. In each terminal window it waits until the
+frontend has started a PTY through the normal `terminal_start` IPC and
+`TerminalService`. It then closes every window the normal way, so workbenches
+go through the frontend's close flow and `editor_exit`. It checks that each
+window's registry entry and PTY sessions are released and that the registry and
+native window list hold only `main`. It prints one JSON line to stdout and exits
+with code 0. A failure or timeout prints the same JSON with `"status":"failed"`
+and an `error` message, and exits with code 1. Each step has a 60-second limit
+and a watchdog enforces the overall limit.
+
+The summary is the baseline for startup and interaction timing. All values are
+milliseconds: `mainPageLoadedMs` from process start, and per window
+`openToPageLoadedMs`, `openToReadyMs`, `readyToPtyMs` for terminals, and
+`closeMs`. `totalMs` covers the whole run.
+
+CI builds the harness without installers and runs it on macOS and Windows
+directly and on Linux under `xvfb-run`. It verifies window creation, page load,
+frontend mount, ACL-checked IPC from new windows, PTY start and teardown,
+and resource cleanup. It does not check pixels, layout, focus, keyboard or
+pointer interaction, editor behaviour, shell output, workspace access, or
+dirty-document prompts. A passing run does not show that installers or signed
+bundles launch.
+
 ## Code navigation and debugging status
 
 Definition, declaration, implementation, and references use Monaco's

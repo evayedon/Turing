@@ -56,3 +56,38 @@ jobs:
 
       - name: Test native workspace authorization
         run: cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      # Native lifecycle smoke harness: the real app opens and closes two
+      # workbench and two terminal windows. The non-default `smoke` feature is
+      # never part of the shipped build above. See docs/architecture.md.
+      - name: Test lifecycle smoke harness logic
+        run: cargo test --release --locked --features smoke --manifest-path apps/desktop/src-tauri/Cargo.toml smoke::tests
+
+      - name: Build lifecycle smoke harness without installers
+        run: cargo build --release --locked --features smoke,tauri/custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Install Linux virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends xvfb xauth
+
+      - name: Run native lifecycle smoke
+        timeout-minutes: 5
+        shell: bash
+        env:
+          TURING_SMOKE: "1"
+          TURING_SMOKE_TIMEOUT_SECS: "180"
+          TURING_SMOKE_OUTPUT: ${{ runner.temp }}/turing-smoke.json
+          # Software rendering for WebKitGTK under Xvfb; ignored elsewhere.
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: |
+          binary=apps/desktop/src-tauri/target/release/turing-core
+          if [ "$RUNNER_OS" = Windows ]; then binary="$binary.exe"; fi
+          status=0
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" "$binary" || status=$?
+          else
+            "$binary" || status=$?
+          fi
+          echo "Smoke summary:"
+          cat "$TURING_SMOKE_OUTPUT" || echo "No summary was written."
+          exit "$status"

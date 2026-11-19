@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# Native lifecycle smoke harness (see docs/architecture.md). Never enabled in
+# normal or release builds.
+smoke = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
