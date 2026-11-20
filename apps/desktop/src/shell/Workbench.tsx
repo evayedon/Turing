@@ -69,7 +69,12 @@ import { compilerBatches } from "../language/problems";
 import { currentProblems } from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import { adjacentProblem, orderProblems } from "../language/problem-navigation";
-import { useLanguage } from "../language/use-language";
+import { languagePath, useLanguage } from "../language/use-language";
+import { RenameSymbolDialog } from "../language/RenameSymbolDialog";
+import type { RenameOrigin } from "../language/RenameSymbolDialog";
+import { ModelRegistry } from "../editor/model-registry";
+import type { TextModels } from "../editor/MonacoHost";
+import { applyModelEdit } from "../editor/apply-model-edit";
 import { BottomDock } from "./BottomDock";
 import { CommandPalette } from "./CommandPalette";
 import { WorkspaceSymbolPicker } from "./WorkspaceSymbolPicker";
@@ -206,6 +211,8 @@ export function Workbench() {
   const [problemSeverity, setProblemSeverity] = useState("all");
   const [popup, setPopup] = useState<PopupKind>();
   const [lineInput, setLineInput] = useState("");
+  const [renameOrigin, setRenameOrigin] = useState<RenameOrigin>();
+  const [models] = useState<TextModels>(() => new ModelRegistry());
   const [editorCommandsReady, setEditorCommands] = useState<EditorCommands>();
   const [terminalRunning, setTerminalRunning] = useState(false);
   const [windowError, setWindowError] = useState<string>();
@@ -336,10 +343,13 @@ export function Workbench() {
     [setDockView, terminal, toggleTerminal],
   );
 
+  const renameWorkspace = explorer.workspace?.id;
+  const currentRename =
+    renameOrigin?.workspaceId === renameWorkspace ? renameOrigin : undefined;
   const commandState: CommandState = {
     native,
     modifier,
-    modalOpen: !!popup || settings,
+    modalOpen: !!popup || settings || !!currentRename,
     editorOpen: !!active,
     editorBusy: editor.busy,
     editorReady: !!editorCommandsReady,
@@ -355,6 +365,14 @@ export function Workbench() {
     recentCount: recents.length,
     sidebar,
     renameTarget: !!selectedEntry?.identity,
+    canRenameSymbol: !!(
+      language.capabilities?.rename &&
+      editorCommandsReady &&
+      active &&
+      languagePath(active, renameWorkspace) &&
+      !active.changedOnDisk &&
+      !active.recovered
+    ),
     bottomPanel: terminal,
     dockView,
     assistant,
@@ -381,6 +399,16 @@ export function Workbench() {
     saveAs: editor.saveAs,
     toggleAutoSave: editor.toggleAutoSave,
     renameSelection: renameFromMenu,
+    renameSymbol: () => {
+      const cursor = editorCommandsReady?.position();
+      if (active && renameWorkspace && cursor)
+        setRenameOrigin({
+          workspaceId: renameWorkspace,
+          tab: active,
+          position: { line: cursor.line - 1, character: cursor.column - 1 },
+          prepare: !!language.capabilities?.prepareRename,
+        });
+    },
     closeActiveEditor: () => {
       if (active) void editor.close(active);
     },
@@ -648,6 +676,7 @@ export function Workbench() {
             )}
             <EditorWorkspace
               {...editor}
+              sharedModels={models}
               language={language}
               problems={problems}
               workspaceId={explorer.workspace?.id}
@@ -960,6 +989,21 @@ export function Workbench() {
             if (action.entry) reopen(action.entry);
             else runCommand("clearRecent");
           }}
+        />
+      )}
+      {currentRename && (
+        <RenameSymbolDialog
+          origin={currentRename}
+          language={language}
+          close={() => setRenameOrigin(undefined)}
+          apply={(targets, included) =>
+            editor.applyWorkspaceEdit(
+              currentRename.workspaceId,
+              targets,
+              included,
+              (tab, edits, next) => applyModelEdit(models, tab, edits, next),
+            )
+          }
         />
       )}
       {popup === "line" && (

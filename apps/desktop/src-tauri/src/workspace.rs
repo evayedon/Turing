@@ -20,7 +20,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -77,7 +77,7 @@ pub struct WorkspaceDescriptor {
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum EntryKind {
+pub(crate) enum EntryKind {
     Directory,
     File,
 }
@@ -86,8 +86,8 @@ enum EntryKind {
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
     name: String,
-    relative_path: String,
-    kind: EntryKind,
+    pub(crate) relative_path: String,
+    pub(crate) kind: EntryKind,
     identity: String,
 }
 
@@ -96,9 +96,9 @@ pub struct DirectoryEntry {
 pub struct TextFile {
     workspace_id: String,
     relative_path: String,
-    content: String,
+    pub(crate) content: String,
     encoding: &'static str,
-    version: String,
+    pub(crate) version: String,
 }
 
 struct Workspace {

@@ -2045,3 +2045,61 @@ svg {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+.rename-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-width: none;
+}
+
+.rename-dialog form {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.rename-dialog h3 {
+  font-size: var(--nebula-sm);
+}
+
+.rename-files {
+  max-height: 45vh;
+  overflow: auto;
+  margin-block: var(--nebula-s3);
+  border-block: 1px solid var(--nebula-border);
+}
+
+.rename-files section {
+  padding: var(--nebula-s2);
+  border-bottom: 1px solid var(--nebula-border);
+}
+
+.rename-files label {
+  display: flex;
+  align-items: center;
+  gap: var(--nebula-s2);
+  overflow-wrap: anywhere;
+}
+
+.rename-changes {
+  list-style: none;
+  margin: var(--nebula-s2) 0 0;
+  padding: 0;
+}
+
+.rename-changes li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 var(--nebula-s2);
+}
+
+.rename-changes span {
+  grid-column: 1 / -1;
+  color: var(--nebula-muted);
+}
+
+.rename-changes pre {
+  margin: var(--nebula-s1) 0;
+  padding: var(--nebula-s1) var(--nebula-s2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--nebula-panel);
+}

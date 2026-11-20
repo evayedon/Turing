@@ -80,6 +80,7 @@
         "SERVER_EXITED",
         "BUSY",
         "INVALID_DOCUMENT",
+        "INVALID_WORKSPACE_EDIT",
         "NOT_READY",
         "INTERNAL"
       ],
@@ -282,7 +283,9 @@
         "capabilities": {
           "hover": true,
           "completion": true,
-          "definition": false
+          "definition": false,
+          "rename": true,
+          "prepareRename": true
         },
         "events": [
           {
@@ -295,6 +298,81 @@
         ]
       },
       { "capabilities": null, "events": [] }
+    ],
+    "RenameAction": [
+      {
+        "kind": "request",
+        "path": "src/main.cpp",
+        "version": 4,
+        "position": {
+          "line": 0,
+          "character": 4
+        },
+        "requestId": 7,
+        "feature": "prepareRename"
+      },
+      {
+        "kind": "request",
+        "path": "src/main.cpp",
+        "version": 4,
+        "position": {
+          "line": 0,
+          "character": 4
+        },
+        "requestId": 7,
+        "feature": "rename",
+        "newName": "renamed"
+      }
+    ],
+    "PrepareRename": [
+      {
+        "placeholder": "item"
+      }
+    ],
+    "WorkspaceEditFailure": [
+      {
+        "error": "INVALID_WORKSPACE_EDIT"
+      }
+    ],
+    "RenamePreview": [
+      {
+        "files": [
+          {
+            "path": "src/main.cpp",
+            "baseVersion": "v1",
+            "documentVersion": 4,
+            "edits": [
+              {
+                "start": 4,
+                "end": 8,
+                "position": {
+                  "line": 0,
+                  "character": 4
+                },
+                "before": "item",
+                "after": "renamed"
+              }
+            ]
+          },
+          {
+            "path": "src/utils.hpp",
+            "baseVersion": "v2",
+            "documentVersion": null,
+            "edits": [
+              {
+                "start": 4,
+                "end": 8,
+                "position": {
+                  "line": 0,
+                  "character": 4
+                },
+                "before": "item",
+                "after": "renamed"
+              }
+            ]
+          }
+        ]
+      }
     ]
   }
 }

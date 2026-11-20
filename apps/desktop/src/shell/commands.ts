@@ -55,6 +55,7 @@ export type CommandId =
   | "saveAs"
   | "autoSave"
   | "rename"
+  | "renameSymbol"
   | "closeEditor"
   | "closeAll"
   | "splitEditor"
@@ -188,6 +189,7 @@ export const menus: { label: string; entries: MenuRow[] }[] = [
       "-",
       "find",
       "replace",
+      "renameSymbol",
       "comment",
     ],
   },

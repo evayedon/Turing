@@ -111,26 +111,27 @@ export default function MonacoHost({
   const lastReveal = useRef<typeof reveal>(undefined);
   const change = useEffectEvent(
     (
+      key: string,
       model: monaco.editor.ITextModel,
       event: monaco.editor.IModelContentChangedEvent,
     ) => {
-      // Every view of a shared model hears the edit; only one reports it.
-      if (models.get(active.key) !== model) return;
-      if (!models.claimChange(active.key, model.getVersionId())) return;
-      const snapshot = models.snapshot(active.key);
+      if (models.syncing) return;
+      const tab = tabs.find((item) => item.key === key);
+      if (!tab || !models.claimChange(key, event.versionId)) return;
+      const snapshot = models.snapshot(key);
       const value =
         snapshot && !event.isFlush && !event.isEolChange
           ? applyTextChanges(snapshot.text, snapshot.bom, event.changes)
           : model.getValue(undefined, true);
       models.remember(
-        active.key,
+        key,
         value,
         value,
         event.isFlush
           ? Number(value.charCodeAt(0) === 0xfeff)
           : (snapshot?.bom ?? 0),
       );
-      onChange(active, value);
+      onChange(tab, value);
     },
   );
   const isFocused = useEffectEvent(() => focused);
@@ -321,16 +322,11 @@ export default function MonacoHost({
     lastReveal.current = undefined;
     shownKey.current = undefined;
     const states = viewStates.current;
-    const subscription = instance.onDidChangeModelContent((event) => {
-      const model = instance.getModel();
-      if (!models.syncing && model) change(model, event);
-    });
     const cursor = instance.onDidChangeCursorPosition(() => {
       if (!models.syncing) report(instance);
     });
     return () => {
       cursor.dispose();
-      subscription.dispose();
       opener?.dispose();
       if (isFocused()) reportCommands(undefined);
       detachView();
@@ -345,27 +341,30 @@ export default function MonacoHost({
     const instance = editor.current;
     if (!instance) return;
     const activeKey = active.key;
-    const mode = modeOf(active);
-    const model = models.acquire(activeKey, () => {
-      let uri = monaco.Uri.from(
-        active.source.kind === "workspace"
-          ? {
-              scheme: "turing-workspace",
-              authority: active.source.workspaceId,
-              path: `/${active.source.relativePath}`,
-            }
-          : { scheme: "turing-document", path: `/${activeKey}/${active.name}` },
-      );
-      if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: activeKey });
-      const created = monaco.editor.createModel(active.draft, mode, uri);
-      models.remember(
-        activeKey,
-        active.draft,
-        created.getValue(undefined, true),
-        Number(active.draft.charCodeAt(0) === 0xfeff),
-      );
-      return created;
-    });
+    const acquire = (tab: EditorTab) =>
+      models.acquire(tab.key, () => {
+        let uri = monaco.Uri.from(
+          tab.source.kind === "workspace"
+            ? {
+                scheme: "turing-workspace",
+                authority: tab.source.workspaceId,
+                path: `/${tab.source.relativePath}`,
+              }
+            : { scheme: "turing-document", path: `/${tab.key}/${tab.name}` },
+        );
+        if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: tab.key });
+        const created = monaco.editor.createModel(tab.draft, modeOf(tab), uri);
+        models.remember(
+          tab.key,
+          tab.draft,
+          created.getValue(undefined, true),
+          Number(tab.draft.charCodeAt(0) === 0xfeff),
+        );
+        return created;
+      });
+
+    if (primary) tabs.forEach(acquire);
+    const model = acquire(active);
 
     models.sync(() => {
       if (instance.getModel() !== model) {
@@ -407,7 +406,19 @@ export default function MonacoHost({
       }
     });
     report(instance);
-  }, [active, tabs, models]);
+  }, [active, tabs, models, primary]);
+
+  useLayoutEffect(() => {
+    // The primary view observes all open models, including hidden tabs.
+    const subscriptions = (
+      primary ? tabs.map(({ key }) => key) : [active.key]
+    ).map((key) => {
+      const model = models.get(key);
+      return model?.onDidChangeContent((event) => change(key, model, event));
+    });
+    return () =>
+      subscriptions.forEach((subscription) => subscription?.dispose());
+  }, [active.key, models, primary, tabs]);
 
   useLayoutEffect(() => {
     const instance = editor.current;

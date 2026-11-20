@@ -7,6 +7,7 @@
 
 type Position = { lineNumber: number; column: number };
 type ContentEvent = {
+  versionId: number;
   changes: { rangeOffset: number; rangeLength: number; text: string }[];
   isFlush: boolean;
   isEolChange: boolean;
@@ -35,6 +36,7 @@ export class FakeUri {
 export class FakeModel {
   version = 1;
   disposed = false;
+  private content = new Set<(event: ContentEvent) => void>();
   private undoStack: string[] = [];
   private redoStack: string[] = [];
 
@@ -55,6 +57,44 @@ export class FakeModel {
   }
   getEOL() {
     return "\n";
+  }
+  getPositionAt(offset: number) {
+    const lines = this.value.slice(0, offset).split("\n");
+    return {
+      lineNumber: lines.length,
+      column: (lines.at(-1)?.length ?? 0) + 1,
+    };
+  }
+  pushStackElement() {}
+  pushEditOperations(
+    _selection: null,
+    operations: {
+      range: {
+        startLineNumber: number;
+        startColumn: number;
+        endLineNumber: number;
+        endColumn: number;
+      };
+      text: string;
+    }[],
+  ) {
+    const offset = (line: number, column: number) => {
+      const lines = this.value.split("\n");
+      return (
+        lines
+          .slice(0, line - 1)
+          .reduce((sum, text) => sum + text.length + 1, 0) +
+        column -
+        1
+      );
+    };
+    let text = this.value;
+    for (const { range, text: replacement } of [...operations].reverse()) {
+      const start = offset(range.startLineNumber, range.startColumn);
+      const end = offset(range.endLineNumber, range.endColumn);
+      text = text.slice(0, start) + replacement + text.slice(end);
+    }
+    this.type(text);
   }
   /** Programmatic replacement, which resets the undo stack like Monaco. */
   setValue(value: string) {
@@ -88,6 +128,17 @@ export class FakeModel {
     this.value = previous;
     this.changed(0, length, previous);
   }
+  redo() {
+    const next = this.redoStack.pop();
+    if (next === undefined) return;
+    this.undoStack.push(this.value);
+    const length = this.value.length;
+    this.value = next;
+    this.changed(0, length, next);
+  }
+  onDidChangeContent(listener: (event: ContentEvent) => void) {
+    return subscribe(this.content, listener);
+  }
   validatePosition(position: Position) {
     return position;
   }
@@ -106,13 +157,15 @@ export class FakeModel {
     isFlush = false,
   ) {
     this.version += 1;
+    const event = {
+      versionId: this.version,
+      changes: [{ rangeOffset, rangeLength, text }],
+      isFlush,
+      isEolChange: false,
+    };
     for (const editor of editors)
-      if (editor.model === this)
-        editor.notifyContent({
-          changes: [{ rangeOffset, rangeLength, text }],
-          isFlush,
-          isEolChange: false,
-        });
+      if (editor.model === this) editor.notifyContent();
+    for (const listener of this.content) listener(event);
   }
 }
 
@@ -130,7 +183,6 @@ export class FakeEditor {
   disposed = false;
   readonly input: HTMLTextAreaElement;
   readonly options: Record<string, unknown> = {};
-  private content = new Set<(event: ContentEvent) => void>();
   private cursor = new Set<Listener>();
 
   constructor(readonly container: HTMLElement) {
@@ -165,21 +217,18 @@ export class FakeEditor {
   revealPositionInCenter(position: Position) {
     this.scrollTop = position.lineNumber * 10;
   }
-  onDidChangeModelContent(listener: (event: ContentEvent) => void) {
-    return subscribe(this.content, listener);
-  }
   onDidChangeCursorPosition(listener: Listener) {
     return subscribe(this.cursor, listener);
   }
-  notifyContent(event: ContentEvent) {
+  notifyContent() {
     this.input.value = this.model?.value ?? "";
-    for (const listener of this.content) listener(event);
   }
   getAction() {
     return undefined;
   }
   trigger(_source: string, id: string) {
     if (id === "undo") this.model?.undo();
+    if (id === "redo") this.model?.redo();
   }
   updateOptions(options: Record<string, unknown>) {
     Object.assign(this.options, options);

@@ -50,7 +50,13 @@ const diagnostic = {
   message: "Undeclared identifier",
   range: { start: { line: 1, character: 2 }, end: { line: 1, character: 4 } },
 };
-const caps = { hover: true, completion: true, definition: true };
+const caps = {
+  hover: true,
+  completion: true,
+  definition: true,
+  prepareRename: false,
+  rename: false,
+};
 
 let events: LanguageEvent[];
 let actions: LanguageAction[];

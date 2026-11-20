@@ -1,3 +1,9 @@
+import { editedText } from "./workspace-edit";
+import type {
+  WorkspaceEditResult,
+  WorkspaceEditTarget,
+} from "./workspace-edit";
+import type { WorkspaceTextEdit } from "@turing/contracts";
 import {
   isDirty,
   useDraftRecovery,
@@ -75,6 +81,7 @@ export interface EditorTab {
   languageOverride?: string;
   saveError?: string;
   recovered?: boolean;
+  workspaceEditDraft?: boolean;
 }
 
 type NewTab = Omit<EditorTab, "key" | "revision" | "uri">;
@@ -250,6 +257,7 @@ export function useEditor(
             tab.draft !== tab.content &&
             !tab.changedOnDisk &&
             !tab.recovered &&
+            !tab.workspaceEditDraft &&
             !tab.saveError,
         )
       : undefined;
@@ -674,6 +682,112 @@ export function useEditor(
     update(active, { languageOverride });
   }
 
+  function snapshotWorkspaceDocuments(id: string) {
+    const documents = new Map<string, EditorTab>();
+    for (const tab of latest.current) {
+      if (tab.source.kind === "workspace" && tab.source.workspaceId === id)
+        documents.set(tab.source.relativePath, tab);
+    }
+    return documents;
+  }
+
+  function applyWorkspaceEdit(
+    id: string,
+    targets: readonly WorkspaceEditTarget[],
+    included: ReadonlySet<string>,
+    applyToModel: (
+      tab: EditorTab,
+      edits: readonly WorkspaceTextEdit[],
+      next: string,
+    ) => boolean,
+  ) {
+    return perform(async () => {
+      const results: WorkspaceEditResult[] = [];
+      for (const target of targets) {
+        const { path } = target;
+        const conflict = (reason: string) =>
+          results.push({ path, outcome: "conflict", reason });
+        if (!included.has(path)) {
+          results.push({ path, outcome: "excluded" });
+          continue;
+        }
+        const source = {
+          kind: "workspace" as const,
+          workspaceId: id,
+          relativePath: path,
+          version: target.baseVersion,
+        };
+        const check = () => {
+          if (currentWorkspace.current !== id) return "The workspace changed.";
+          const tab = snapshotWorkspaceDocuments(id).get(path);
+          if (
+            tab?.recovered ||
+            target.tab?.recovered ||
+            recovery.available.some(
+              ({ source }) =>
+                source.kind === "workspace" &&
+                source.root === workspacePath &&
+                source.relativePath === path,
+            )
+          )
+            return "This file has a recovered draft.";
+          if (tab?.changedOnDisk || target.tab?.changedOnDisk)
+            return "The workspace watcher flagged a disk change.";
+          if (
+            target.stale ||
+            tab?.uri !== target.tab?.uri ||
+            tab?.revision !== target.tab?.revision ||
+            tab?.editRevision !== target.tab?.editRevision
+          )
+            return "The editor document changed since the preview.";
+          if (
+            tab?.source.kind === "workspace" &&
+            tab.source.version !== target.baseVersion
+          )
+            return "The disk version differs from the preview.";
+        };
+        const initialConflict = check();
+        if (initialConflict) {
+          conflict(initialConflict);
+          continue;
+        }
+        try {
+          const disk = await readFile(source);
+          const afterReadConflict = check();
+          if (afterReadConflict || disk.version !== target.baseVersion) {
+            conflict(
+              afterReadConflict ?? "The disk version differs from the preview.",
+            );
+            continue;
+          }
+          const tab = snapshotWorkspaceDocuments(id).get(path);
+          const next = editedText(tab?.draft ?? disk.content, target.edits);
+          if (next === undefined) {
+            conflict("The preview text no longer matches the file.");
+          } else if (tab) {
+            if (!applyToModel(tab, target.edits, next)) {
+              conflict("The editor model no longer matches the preview.");
+              continue;
+            }
+            update(tab, {
+              draft: next,
+              editRevision: (tab.editRevision ?? 0) + 1,
+              workspaceEditDraft: true,
+              saveError: undefined,
+            });
+            results.push({ path, outcome: "draft" });
+          } else {
+            await writeFile(source, next);
+            results.push({ path, outcome: "saved" });
+          }
+        } catch (cause) {
+          conflict(workspaceErrorMessage(cause));
+        }
+      }
+      return results;
+    });
+  }
+
   function saveAs() {
     if (!active || !native) return;
     const { key } = active;
@@ -690,6 +804,7 @@ export function useEditor(
         ...selectedTab({ ...file, content: active.draft }),
         saveError: undefined,
         recovered: false,
+        workspaceEditDraft: false,
       });
       if (
         active.source.kind === "selected" &&
@@ -712,6 +827,7 @@ export function useEditor(
           content: draft,
           savedVersion: version,
           recovered: false,
+          workspaceEditDraft: false,
           source: { ...source, version },
           changedOnDisk: false,
           saveError: undefined,
@@ -777,6 +893,7 @@ export function useEditor(
         content: file.content,
         draft: file.content,
         recovered: false,
+        workspaceEditDraft: false,
         source: { ...source, version: file.version },
         changedOnDisk: false,
         saveError: undefined,
@@ -933,5 +1050,7 @@ export function useEditor(
     reload,
     changeWorkspace,
     applyDiskChanges,
+    snapshotWorkspaceDocuments,
+    applyWorkspaceEdit,
   };
 }

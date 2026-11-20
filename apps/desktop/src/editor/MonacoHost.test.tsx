@@ -29,7 +29,6 @@ vi.mock("monaco-editor", () => ({
   editor: {
     defineTheme: vi.fn(),
     create: () => ({
-      onDidChangeModelContent: () => ({ dispose() {} }),
       onDidChangeCursorPosition: () => ({ dispose() {} }),
       getPosition: () => ({ lineNumber: 8, column: 4 }),
       getModel: mocks.getModel,
@@ -56,6 +55,7 @@ vi.mock("monaco-editor", () => ({
 it("changes language on the same model after a rename and a manual selection", () => {
   let language = "plaintext";
   const model = {
+    onDidChangeContent: () => ({ dispose() {} }),
     getLanguageId: () => language,
     getValue: () => "my draft",
     getEOL: () => "\n",
@@ -128,6 +128,7 @@ it("changes language on the same model after a rename and a manual selection", (
 
 it("updates and clears clangd and compiler markers independently", () => {
   const model = {
+    onDidChangeContent: () => ({ dispose() {} }),
     getLanguageId: () => "cpp",
     getValue: () => "int x;",
     getEOL: () => "\n",

@@ -41,6 +41,7 @@ function state(overrides: Partial<CommandState> = {}): CommandState {
     recentCount: 0,
     sidebar: "explorer",
     renameTarget: false,
+    canRenameSymbol: false,
     bottomPanel: false,
     dockView: "Terminal",
     assistant: false,
@@ -71,6 +72,7 @@ function actions(): CommandActions {
     saveAs: vi.fn(),
     toggleAutoSave: vi.fn(),
     renameSelection: vi.fn(),
+    renameSymbol: vi.fn(),
     closeActiveEditor: vi.fn(),
     closeAllEditors: vi.fn(),
     splitEditor: vi.fn(),
@@ -225,6 +227,23 @@ describe("declarative command registry", () => {
     ).toBe("ran");
     expect(target.actions.createTerminal).toHaveBeenCalledWith(false);
     screenElement.remove();
+  });
+
+  it("routes Rename Symbol F2 only in Monaco and allows the menu invocation", () => {
+    const editor = document.createElement("div");
+    editor.className = "monaco-host";
+    const input = document.createElement("textarea");
+    editor.append(input);
+    const terminalList = document.createElement("button");
+    terminalList.className = "terminal-session";
+    const target = context({ canRenameSymbol: true });
+    expect(describeCommands(target.state).renameSymbol.hint).toBe("F2");
+    const terminalKey = key({ key: "F2" }, terminalList);
+    expect(handleShortcut(target, terminalKey)).toBe("ignored");
+    expect(terminalKey.defaultPrevented).toBe(false);
+    expect(handleShortcut(target, key({ key: "F2" }, input))).toBe("ran");
+    expect(dispatch(target, "renameSymbol", { source: "menu" })).toBe("ran");
+    expect(target.actions.renameSymbol).toHaveBeenCalledTimes(2);
   });
 
   it("leaves F5 to the browser preview and reserves it natively", () => {

@@ -12,6 +12,13 @@ import type {
   GitError,
   GitStatus,
   LanguageCapabilities,
+  LanguageAction,
+  LanguagePosition,
+  RenamePreview,
+  PrepareRename,
+  WorkspaceEditFailure,
+  WorkspaceFileEdit,
+  WorkspaceTextEdit,
   LanguageError,
   LanguageEvent,
   LanguageUpdate,
@@ -148,6 +155,7 @@ const errors = {
     "SERVER_EXITED",
     "BUSY",
     "INVALID_DOCUMENT",
+    "INVALID_WORKSPACE_EDIT",
     "NOT_READY",
     "INTERNAL",
   ]),
@@ -211,6 +219,8 @@ const capabilities = shape<LanguageCapabilities>()({
   hover: "required",
   completion: "required",
   definition: "required",
+  prepareRename: "required",
+  rename: "required",
 });
 const diagnosticsEvent = shape<
   Extract<LanguageEvent, { kind: "diagnostics" }>
@@ -224,6 +234,24 @@ const responseEvent = shape<Extract<LanguageEvent, { kind: "response" }>>()({
   kind: { values: ["response"] },
   requestId: "required",
   value: "optional-nullable",
+});
+
+const languagePosition = shape<LanguagePosition>()({
+  line: "required",
+  character: "required",
+});
+const workspaceTextEdit = shape<WorkspaceTextEdit>()({
+  start: "required",
+  end: "required",
+  position: { object: languagePosition },
+  before: "required",
+  after: "required",
+});
+const workspaceFileEdit = shape<WorkspaceFileEdit>()({
+  path: "required",
+  baseVersion: "required",
+  documentVersion: "nullable",
+  edits: { array: workspaceTextEdit },
 });
 
 const payloads: Record<keyof typeof fixture.payloads, Spec> = {
@@ -334,6 +362,22 @@ const payloads: Record<keyof typeof fixture.payloads, Spec> = {
         bytes: "required",
       }),
     },
+  }),
+  RenameAction: shape<Extract<LanguageAction, { kind: "request" }>>()({
+    kind: { values: ["request"] },
+    path: "required",
+    version: "required",
+    position: { object: languagePosition },
+    feature: { values: ["prepareRename", "rename"] },
+    requestId: "required",
+    newName: "optional",
+  }),
+  PrepareRename: shape<PrepareRename>()({ placeholder: "required" }),
+  WorkspaceEditFailure: shape<WorkspaceEditFailure>()({
+    error: { values: ["INVALID_WORKSPACE_EDIT"] },
+  }),
+  RenamePreview: shape<RenamePreview>()({
+    files: { array: workspaceFileEdit },
   }),
   LanguageUpdate: shape<LanguageUpdate>()({
     capabilities: "nullable",
