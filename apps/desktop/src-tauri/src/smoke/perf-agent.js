@@ -85,7 +85,8 @@
 
   function viewText() {
     var lines = document.querySelector(".monaco-editor .view-lines");
-    return lines ? lines.textContent : "";
+    // Monaco renders spaces as non-breaking spaces.
+    return lines ? lines.textContent.replaceAll("\u00a0", " ") : "";
   }
 
   function cursorText() {
@@ -139,7 +140,18 @@
       path + " in the editor",
       () =>
         activeTab() === path && viewText().includes(marker) && editorInput(),
-    );
+    ).catch((error) => {
+      throw new Error(
+        error.message +
+          " (active tab: " +
+          JSON.stringify(activeTab()) +
+          ", view text: " +
+          JSON.stringify(viewText().slice(0, 40)) +
+          ", input: " +
+          (editorInput() ? editorInput().kind : "none") +
+          ")",
+      );
+    });
     await nextPaint();
     return round(performance.now() - started);
   }
@@ -161,8 +173,7 @@
     await waitFor(
       "the typed text in Monaco",
       () =>
-        cursorText()?.column === text.length + 1 &&
-        viewText().replaceAll("\u00a0", " ").includes(text),
+        cursorText()?.column === text.length + 1 && viewText().includes(text),
     );
     await runMenu("File", "Save");
     await waitFor(

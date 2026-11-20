@@ -1,0 +1,681 @@
+{
+  "schema": 1,
+  "harness": "turing-startup-interaction-baseline",
+  "capturedAt": "2026-11-20T05:07:43.540Z",
+  "os": "macos",
+  "arch": "aarch64",
+  "osRelease": "25.6.0",
+  "cpu": "Apple M4",
+  "metrics": [
+    {
+      "metric": "Main page loaded",
+      "unit": "ms",
+      "count": 10,
+      "p50": 291.5,
+      "p95": 384.2
+    },
+    {
+      "metric": "Main ready",
+      "unit": "ms",
+      "count": 10,
+      "p50": 362.5,
+      "p95": 455.2
+    },
+    {
+      "metric": "workbench 1 open → ready",
+      "unit": "ms",
+      "count": 10,
+      "p50": 94.2,
+      "p95": 96
+    },
+    {
+      "metric": "workbench 2 open → ready",
+      "unit": "ms",
+      "count": 10,
+      "p50": 95.4,
+      "p95": 100.6
+    },
+    {
+      "metric": "terminal 1 open → ready",
+      "unit": "ms",
+      "count": 10,
+      "p50": 82.5,
+      "p95": 84.3
+    },
+    {
+      "metric": "terminal 2 open → ready",
+      "unit": "ms",
+      "count": 10,
+      "p50": 88.2,
+      "p95": 91.3
+    },
+    {
+      "metric": "App RSS at startup",
+      "unit": "MiB",
+      "count": 10,
+      "p50": 101.5625,
+      "p95": 102.125
+    },
+    {
+      "metric": "App RSS after opening windows",
+      "unit": "MiB",
+      "count": 10,
+      "p50": 115.4375,
+      "p95": 115.765625
+    },
+    {
+      "metric": "App RSS after closing windows",
+      "unit": "MiB",
+      "count": 10,
+      "p50": 129.0625,
+      "p95": 130.1875
+    },
+    {
+      "metric": "Monaco typing burst",
+      "unit": "ms",
+      "count": 10,
+      "p50": 66,
+      "p95": 14198
+    },
+    {
+      "metric": "Monaco large document open",
+      "unit": "ms",
+      "count": 10,
+      "p50": 476,
+      "p95": 493
+    },
+    {
+      "metric": "PTY start → first command output",
+      "unit": "ms",
+      "count": 10,
+      "p50": 52.3,
+      "p95": 77.4
+    },
+    {
+      "metric": "PTY output duration",
+      "unit": "ms",
+      "count": 10,
+      "p50": 278.8,
+      "p95": 299.5
+    },
+    {
+      "metric": "PTY output throughput",
+      "unit": "MiB/s",
+      "count": 10,
+      "p50": 21.62722829641974,
+      "p95": 23.307737434914355
+    }
+  ],
+  "runs": [
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 309.6,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-fb96c683-9945-4b75-8b08-71584a44ec71",
+          "openToPageLoadedMs": 71.5,
+          "openToReadyMs": 94.5,
+          "closeMs": 24.5
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-a4445db2-c5ec-4c17-b84e-6472f249caec",
+          "openToPageLoadedMs": 72.3,
+          "openToReadyMs": 96.2,
+          "closeMs": 12.6
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-3bfb8b8f-3003-4294-9161-b0fb8390d5d5",
+          "openToPageLoadedMs": 65.7,
+          "openToReadyMs": 82.8,
+          "readyToPtyMs": 37.5,
+          "closeMs": 12.5
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-ec89177f-ddc7-4d52-98b5-e9239e687ffe",
+          "openToPageLoadedMs": 67.1,
+          "openToReadyMs": 84.3,
+          "readyToPtyMs": 34.8,
+          "closeMs": 12.5
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 379.1,
+        "startupRssBytes": 106266624,
+        "afterOpenRssBytes": 121290752,
+        "afterCloseRssBytes": 135692288,
+        "editor": {
+          "largeFileOpenMs": 473,
+          "typingBurstMs": 66
+        },
+        "terminal": {
+          "startMs": 66.3,
+          "outputMs": 267.4,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 23937952.080147255
+        }
+      },
+      "totalMs": 1810.8
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 292.9,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-4f877d23-c849-46fd-ab91-cf64146e9e9f",
+          "openToPageLoadedMs": 69.1,
+          "openToReadyMs": 92.6,
+          "closeMs": 24.5
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-b70e7380-0546-4246-8dbf-1878566117db",
+          "openToPageLoadedMs": 71.6,
+          "openToReadyMs": 95.2,
+          "closeMs": 12.7
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-01821468-cb15-4676-becd-513fbca49b62",
+          "openToPageLoadedMs": 65.9,
+          "openToReadyMs": 82.5,
+          "readyToPtyMs": 37.4,
+          "closeMs": 11.6
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-7a61da58-359a-4020-a5f1-de6c60a9a121",
+          "openToPageLoadedMs": 67,
+          "openToReadyMs": 84.2,
+          "readyToPtyMs": 36.4,
+          "closeMs": 12.5
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 362.5,
+        "startupRssBytes": 106774528,
+        "afterOpenRssBytes": 121274368,
+        "afterCloseRssBytes": 135675904,
+        "editor": {
+          "largeFileOpenMs": 468,
+          "typingBurstMs": 67
+        },
+        "terminal": {
+          "startMs": 72.3,
+          "outputMs": 284.4,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 22501693.173303775
+        }
+      },
+      "totalMs": 1801.4
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 277.9,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-3a1272b9-460b-4317-abf3-4a53ae18cf36",
+          "openToPageLoadedMs": 71.3,
+          "openToReadyMs": 95.4,
+          "closeMs": 33.8
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-1de82e5c-2cf2-4f54-a882-77d7df9c1f01",
+          "openToPageLoadedMs": 76.8,
+          "openToReadyMs": 100.6,
+          "closeMs": 10.7
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-351b9dc0-66cd-4a46-8db5-12d4bce80340",
+          "openToPageLoadedMs": 65.4,
+          "openToReadyMs": 82.1,
+          "readyToPtyMs": 36.4,
+          "closeMs": 21.8
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-106b262f-755a-4c45-ab01-b679e34c1ec6",
+          "openToPageLoadedMs": 71,
+          "openToReadyMs": 88.2,
+          "readyToPtyMs": 33.7,
+          "closeMs": 12.1
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 347.7,
+        "startupRssBytes": 106790912,
+        "afterOpenRssBytes": 121012224,
+        "afterCloseRssBytes": 134676480,
+        "editor": {
+          "largeFileOpenMs": 474,
+          "typingBurstMs": 65
+        },
+        "terminal": {
+          "startMs": 52.3,
+          "outputMs": 278.8,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 22955352.084097046
+        }
+      },
+      "totalMs": 1791.5
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 291.5,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-916fe5e6-4fdf-41c1-9c51-52fb8516747f",
+          "openToPageLoadedMs": 71.1,
+          "openToReadyMs": 94.2,
+          "closeMs": 24.9
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-fa95def4-0f09-4ac3-9acd-4a84a7e04244",
+          "openToPageLoadedMs": 73,
+          "openToReadyMs": 96.8,
+          "closeMs": 22.2
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-ec84b535-3ca7-48d5-a7b8-69ace7242a3f",
+          "openToPageLoadedMs": 67.3,
+          "openToReadyMs": 84.1,
+          "readyToPtyMs": 33.1,
+          "closeMs": 12.4
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-469fdd49-40c3-4522-9691-6f8fee23a156",
+          "openToPageLoadedMs": 73.1,
+          "openToReadyMs": 90.4,
+          "readyToPtyMs": 33.8,
+          "closeMs": 12.5
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 365,
+        "startupRssBytes": 106496000,
+        "afterOpenRssBytes": 121290752,
+        "afterCloseRssBytes": 135430144,
+        "editor": {
+          "largeFileOpenMs": 488,
+          "typingBurstMs": 61
+        },
+        "terminal": {
+          "startMs": 40.9,
+          "outputMs": 290.9,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 22004334.08366279
+        }
+      },
+      "totalMs": 1814.9
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 271.9,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-e1be5b91-aa27-43ac-bbbf-ec5dec887b4b",
+          "openToPageLoadedMs": 71.9,
+          "openToReadyMs": 96,
+          "closeMs": 25.2
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-ccb2c2e9-8bc4-4313-b6ad-8da78becaefb",
+          "openToPageLoadedMs": 69.7,
+          "openToReadyMs": 94,
+          "closeMs": 12.5
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-a6b674b4-884e-43e9-93ad-b6e942a86d43",
+          "openToPageLoadedMs": 63.1,
+          "openToReadyMs": 80.2,
+          "readyToPtyMs": 37.6,
+          "closeMs": 10.5
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-6cb01bfd-74ef-4b0b-be8d-dd70714f8461",
+          "openToPageLoadedMs": 67.9,
+          "openToReadyMs": 85,
+          "readyToPtyMs": 37.6,
+          "closeMs": 11.8
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 341.5,
+        "startupRssBytes": 107085824,
+        "afterOpenRssBytes": 120979456,
+        "afterCloseRssBytes": 135561216,
+        "editor": {
+          "largeFileOpenMs": 490,
+          "typingBurstMs": 83
+        },
+        "terminal": {
+          "startMs": 76.9,
+          "outputMs": 271.4,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 23585535.801645648
+        }
+      },
+      "totalMs": 1827
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 304.5,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-ddc34294-a10a-47bc-995f-bd1fd1bddf8c",
+          "openToPageLoadedMs": 71.3,
+          "openToReadyMs": 94.9,
+          "closeMs": 23.2
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-5d3acb2e-a7fa-4194-a77c-67a5ffd82a9e",
+          "openToPageLoadedMs": 76,
+          "openToReadyMs": 99.6,
+          "closeMs": 10.8
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-334547a8-4d8e-4789-80c4-59939a51341c",
+          "openToPageLoadedMs": 65.5,
+          "openToReadyMs": 82.5,
+          "readyToPtyMs": 36.5,
+          "closeMs": 11.7
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-dada99ad-3039-4e32-aa50-c59e26d6ab96",
+          "openToPageLoadedMs": 73.3,
+          "openToReadyMs": 90.5,
+          "readyToPtyMs": 35.5,
+          "closeMs": 24.3
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 373.7,
+        "startupRssBytes": 106446848,
+        "afterOpenRssBytes": 121389056,
+        "afterCloseRssBytes": 135331840,
+        "editor": {
+          "largeFileOpenMs": 476,
+          "typingBurstMs": 59
+        },
+        "terminal": {
+          "startMs": 73.5,
+          "outputMs": 261.9,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 24439934.088552754
+        }
+      },
+      "totalMs": 1823.3
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 264.4,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-f786b528-a2b4-42cb-9943-78eb3b61511d",
+          "openToPageLoadedMs": 69.9,
+          "openToReadyMs": 94.7,
+          "closeMs": 23
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-58c81a15-002b-44c1-9886-f93fa3f1f5c1",
+          "openToPageLoadedMs": 73.2,
+          "openToReadyMs": 97.5,
+          "closeMs": 25
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-417fd6e6-a930-46d9-8099-877f6cdab981",
+          "openToPageLoadedMs": 65.6,
+          "openToReadyMs": 82.6,
+          "readyToPtyMs": 37.6,
+          "closeMs": 11.5
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-f234059b-04e0-48b6-a0d4-de118187e965",
+          "openToPageLoadedMs": 67.6,
+          "openToReadyMs": 85,
+          "readyToPtyMs": 34.1,
+          "closeMs": 11
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 334.6,
+        "startupRssBytes": 106381312,
+        "afterOpenRssBytes": 121044992,
+        "afterCloseRssBytes": 134873088,
+        "editor": {
+          "largeFileOpenMs": 487,
+          "typingBurstMs": 67
+        },
+        "terminal": {
+          "startMs": 38.6,
+          "outputMs": 299.5,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 21365761.859368246
+        }
+      },
+      "totalMs": 1804.1
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 384.2,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-a304e770-7975-4486-854c-a41fea1160bf",
+          "openToPageLoadedMs": 67.8,
+          "openToReadyMs": 91.3,
+          "closeMs": 12.5
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-e00f3704-5bf9-45f1-82dd-937f39d22ca0",
+          "openToPageLoadedMs": 71,
+          "openToReadyMs": 95.2,
+          "closeMs": 12.5
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-c3601232-003a-4c39-9a03-1f27494a6617",
+          "openToPageLoadedMs": 66.7,
+          "openToReadyMs": 84.3,
+          "readyToPtyMs": 37.2,
+          "closeMs": 12.5
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-dbc7c568-7af6-467f-b36d-bdf514abfa3c",
+          "openToPageLoadedMs": 73,
+          "openToReadyMs": 90.5,
+          "readyToPtyMs": 35.8,
+          "closeMs": 12.5
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 455.2,
+        "startupRssBytes": 106496000,
+        "afterOpenRssBytes": 120668160,
+        "afterCloseRssBytes": 136511488,
+        "editor": {
+          "largeFileOpenMs": 493,
+          "typingBurstMs": 14198
+        },
+        "terminal": {
+          "startMs": 77.4,
+          "outputMs": 297.6,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 21502450.10339655
+        }
+      },
+      "totalMs": 16089.1
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 299.8,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-ed4a779b-622e-41b6-be94-4a84a7cb9cb5",
+          "openToPageLoadedMs": 69.8,
+          "openToReadyMs": 93.5,
+          "closeMs": 25
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-9188e987-c62e-4e4d-a59c-5bfb4bab9f0a",
+          "openToPageLoadedMs": 71,
+          "openToReadyMs": 95.4,
+          "closeMs": 11.7
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-7dd1048c-ed28-4525-a6c6-2d454427b452",
+          "openToPageLoadedMs": 65.2,
+          "openToReadyMs": 82,
+          "readyToPtyMs": 33.9,
+          "closeMs": 11.6
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-661c3cda-3465-4b0a-86a7-4d835847ecb2",
+          "openToPageLoadedMs": 73.1,
+          "openToReadyMs": 90,
+          "readyToPtyMs": 35.8,
+          "closeMs": 12.5
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 372.2,
+        "startupRssBytes": 105922560,
+        "afterOpenRssBytes": 119914496,
+        "afterCloseRssBytes": 134316032,
+        "editor": {
+          "largeFileOpenMs": 465,
+          "typingBurstMs": 60
+        },
+        "terminal": {
+          "startMs": 39.3,
+          "outputMs": 276.7,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 23131248.14769302
+        }
+      },
+      "totalMs": 1772
+    },
+    {
+      "harness": "turing-native-lifecycle-smoke",
+      "schema": 1,
+      "status": "passed",
+      "os": "macos",
+      "arch": "aarch64",
+      "mainPageLoadedMs": 283.2,
+      "windows": [
+        {
+          "kind": "workbench",
+          "label": "workbench-f1858606-3319-4048-b557-61353607044f",
+          "openToPageLoadedMs": 70.1,
+          "openToReadyMs": 93.3,
+          "closeMs": 33.6
+        },
+        {
+          "kind": "workbench",
+          "label": "workbench-44c748cf-94f4-4c06-be58-37901d29d1d1",
+          "openToPageLoadedMs": 72,
+          "openToReadyMs": 95.4,
+          "closeMs": 12.6
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-b7508c96-a209-4b68-ad8b-94babbc49aad",
+          "openToPageLoadedMs": 67.1,
+          "openToReadyMs": 83.7,
+          "readyToPtyMs": 32.8,
+          "closeMs": 12.2
+        },
+        {
+          "kind": "terminal",
+          "label": "terminal-8f456141-9156-4b66-a7cb-d7f2f972a99a",
+          "openToPageLoadedMs": 73.9,
+          "openToReadyMs": 91.3,
+          "readyToPtyMs": 31.8,
+          "closeMs": 12.5
+        }
+      ],
+      "perf": {
+        "mainReadyMs": 355.8,
+        "startupRssBytes": 106627072,
+        "afterOpenRssBytes": 121208832,
+        "afterCloseRssBytes": 135249920,
+        "editor": {
+          "largeFileOpenMs": 484,
+          "typingBurstMs": 69
+        },
+        "terminal": {
+          "startMs": 40,
+          "outputMs": 282.2,
+          "payloadBytes": 6400000,
+          "payloadBytesPerSecond": 22677792.538146626
+        }
+      },
+      "totalMs": 1804.7
+    }
+  ]
+}

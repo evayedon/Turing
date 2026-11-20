@@ -322,7 +322,11 @@ pub fn instrument<'a>(
     };
     #[cfg(feature = "perf")]
     let builder = if _probe.perf.is_some() {
-        let builder = builder.incognito(true);
+        // Measurements must not depend on whether the window happens to be
+        // in front: an occluded WebView throttles timers and rendering.
+        let builder = builder
+            .incognito(true)
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
         if _label.starts_with("workbench-") {
             builder.initialization_script(perf::EDITOR_SCRIPT)
         } else {
