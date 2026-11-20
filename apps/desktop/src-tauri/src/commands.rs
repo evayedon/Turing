@@ -129,15 +129,51 @@ pub async fn fs_write_file(
     relative_path: String,
     expected_version: String,
     content: String,
-) -> Result<String> {
+    recreate: Option<bool>,
+) -> Result<Option<String>> {
+    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+
     in_workspace(window, move |window| {
-        workbench(&window)?.workspace.registry()?.write(
-            window.label(),
-            &workspace_id,
-            &relative_path,
-            &expected_version,
-            &content,
-        )
+        let workbench = workbench(&window)?;
+        let service = &workbench.workspace;
+        if recreate == Some(true) {
+            validate_save_content(&content)?;
+            let workspace_path = service
+                .registry()?
+                .workspace_path(window.label(), &workspace_id)?
+                .display()
+                .to_string();
+            if !window
+                .dialog()
+                .message(format!(
+                    "Recreate {relative_path} in {workspace_path} using the text in this tab?"
+                ))
+                .title("Recreate file")
+                .parent(&window)
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Recreate file".into(),
+                    "Cancel".into(),
+                ))
+                .blocking_show()
+            {
+                return Ok(None);
+            }
+            return service
+                .registry()?
+                .recreate(window.label(), &workspace_id, &relative_path, &content)
+                .map(Some);
+        }
+        let registry = service.registry()?;
+        registry
+            .write(
+                window.label(),
+                &workspace_id,
+                &relative_path,
+                &expected_version,
+                &content,
+            )
+            .map(Some)
     })
     .await
 }

@@ -194,3 +194,181 @@ describe("editor watcher reconciliation", () => {
     expect(ipc).not.toHaveBeenCalled();
   });
 });
+
+it("keeps a clean tab at its saved version until explicitly reloaded after atomic replacement", async () => {
+  const { result } = await openAll();
+  const original = result.current.tabs[0];
+  act(() => result.current.select(original.key));
+  disk.set("src/a.ts", "replacement");
+  await act(async () =>
+    result.current.applyDiskChanges("workspace", {
+      paths: ["src/.tmp", "src/a.ts", "src/a.ts"],
+      rescan: false,
+    }),
+  );
+  expect(result.current.active).toMatchObject({
+    key: original.key,
+    revision: original.revision,
+    changedOnDisk: true,
+    deletedOnDisk: false,
+    source: { version: "v1" },
+  });
+  await act(async () => result.current.reload());
+  expect(result.current.active).toMatchObject({
+    key: original.key,
+    changedOnDisk: false,
+    source: { version: "replacement" },
+  });
+});
+
+it("protects the draft through compare, keep, blocked Save and explicit reload", async () => {
+  const { result } = await openAll();
+  const tab = result.current.active!;
+  act(() => result.current.edit(tab, "mine"));
+  disk.set("README.md", "v2");
+  await act(async () =>
+    result.current.applyDiskChanges("workspace", {
+      paths: ["README.md"],
+      rescan: false,
+    }),
+  );
+  await act(async () => result.current.compareDisk(result.current.active!));
+  expect(result.current.active).toMatchObject({
+    draft: "mine",
+    diskComparison: { version: "v2", content: "contents of README.md" },
+  });
+  act(() => result.current.keepDraft(result.current.active!));
+  ipc.mockRejectedValueOnce("FILE_CONFLICT");
+  await act(async () => result.current.save());
+  expect(ipc).toHaveBeenCalledWith(
+    "fs_write_file",
+    expect.objectContaining({
+      expectedVersion: "v1",
+      content: "mine",
+    }),
+  );
+  expect(result.current.active).toMatchObject({
+    changedOnDisk: true,
+    draft: "mine",
+    keptDraft: true,
+  });
+  ipc.mockResolvedValueOnce(false);
+  await act(async () => result.current.reload());
+  expect(result.current.active?.draft).toBe("mine");
+  ipc.mockResolvedValueOnce(true);
+  await act(async () => result.current.reload());
+  expect(result.current.active).toMatchObject({
+    changedOnDisk: false,
+    draft: "contents of README.md",
+  });
+});
+
+it("marks external rename as deleted and recreates only through the native confirmation flow", async () => {
+  const { result } = await openAll();
+  const original = result.current.active!;
+  disk.delete("README.md");
+  disk.set("RENAMED.md", "moved");
+  await act(async () =>
+    result.current.applyDiskChanges("workspace", {
+      paths: ["README.md", "RENAMED.md"],
+      rescan: false,
+    }),
+  );
+  expect(result.current.active).toMatchObject({
+    key: original.key,
+    deletedOnDisk: true,
+    title: "README.md",
+  });
+  expect(result.current.canSave).toBe(true);
+  ipc.mockResolvedValueOnce(null); // Native confirmation canceled.
+  await act(async () => result.current.save());
+  expect(ipc).toHaveBeenLastCalledWith("fs_write_file", {
+    workspaceId: "workspace",
+    relativePath: "README.md",
+    content: original.draft,
+    expectedVersion: "v1",
+    recreate: true,
+  });
+  expect(result.current.active?.deletedOnDisk).toBe(true);
+  expect(disk.has("README.md")).toBe(false);
+
+  ipc.mockRejectedValueOnce("FILE_CONFLICT"); // An external process won the name.
+  await act(async () => result.current.save());
+  expect(result.current.active).toMatchObject({
+    draft: original.draft,
+    deletedOnDisk: true,
+  });
+  await act(async () => result.current.save());
+  expect(result.current.active).toMatchObject({
+    deletedOnDisk: false,
+    changedOnDisk: false,
+  });
+});
+
+it("clears deleted status when a file reappears and discards late disk checks", async () => {
+  const { result } = await openAll();
+  const changes = { paths: ["README.md"], rescan: false };
+  disk.delete("README.md");
+  await act(async () => result.current.applyDiskChanges("workspace", changes));
+  expect(result.current.active?.deletedOnDisk).toBe(true);
+
+  let rejectRead!: (cause: string) => void;
+  ipc.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectRead = reject;
+      }),
+  );
+  const oldCheck = result.current.applyDiskChanges("workspace", changes);
+  disk.set("README.md", "v2");
+  await act(async () => result.current.applyDiskChanges("workspace", changes));
+  await act(async () => {
+    rejectRead("NOT_FOUND");
+    await oldCheck;
+  });
+  expect(result.current.active).toMatchObject({
+    changedOnDisk: true,
+    deletedOnDisk: false,
+  });
+});
+
+it("ignores a pending read from a replaced registration even before old tabs are removed", async () => {
+  const { result, rerender } = renderHook(({ id }) => useEditor(id, true), {
+    initialProps: { id: "workspace" },
+  });
+  await act(async () => result.current.open("README.md"));
+  let rejectRead!: (cause: string) => void;
+  ipc.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectRead = reject;
+      }),
+  );
+  const oldCheck = result.current.applyDiskChanges("workspace", {
+    paths: [],
+    rescan: true,
+  });
+  rerender({ id: "replacement" });
+  await act(async () => {
+    rejectRead("NOT_FOUND");
+    await oldCheck;
+  });
+  expect(result.current.active?.changedOnDisk).toBe(false);
+});
+
+it("keeps the draft when a polled path is replaced by an unsupported link", async () => {
+  const { result } = await openAll();
+  act(() => result.current.edit(result.current.active!, "private draft"));
+  ipc.mockRejectedValueOnce("OUTSIDE_WORKSPACE");
+  await act(async () =>
+    result.current.applyDiskChanges("workspace", {
+      paths: ["README.md"],
+      rescan: false,
+    }),
+  );
+  expect(result.current.active).toMatchObject({
+    changedOnDisk: true,
+    deletedOnDisk: false,
+    draft: "private draft",
+  });
+});

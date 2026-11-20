@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
+import { pollWorkspaceChanges } from "../explorer/watch-ipc";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -123,6 +125,62 @@ describe("editor workspace", () => {
     expect(
       screen.getByRole("tab", { name: "notes.md", selected: true }),
     ).toBeTruthy();
+  });
+
+  it("offers the shared conflict choices and shows deletion on both tab strips", async () => {
+    let deliver!: (value: { paths: string[]; rescan: boolean }) => void;
+    vi.mocked(pollWorkspaceChanges).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          deliver = resolve;
+        }),
+    );
+    const { user, editor } = await openFile();
+    await user.click(
+      screen.getByRole("button", { name: "Split Editor Right" }),
+    );
+    fireEvent.change(editor, { target: { value: "my draft" } });
+    const normal = ipc.getMockImplementation()!;
+    let deleted = false;
+    ipc.mockImplementation(async (command, args) => {
+      if (command === "fs_read_file") {
+        if (deleted) throw "NOT_FOUND";
+        return snapshot("main.ts", "external text", "v2");
+      }
+      return normal(command, args);
+    });
+    await act(async () => deliver({ paths: ["main.ts"], rescan: false }));
+    await waitFor(() =>
+      expect(screen.getAllByText(/Keep your draft, compare it/)).toHaveLength(
+        2,
+      ),
+    );
+    const left = within(screen.getByRole("region", { name: "Editor group 1" }));
+    await user.click(left.getByRole("button", { name: "Compare with disk" }));
+    expect(
+      left.getByRole("region", { name: "Disk comparison" }).textContent,
+    ).toContain("external text");
+    expect(left.getByRole("button", { name: "Save As a copy…" })).toBeTruthy();
+    await user.click(left.getByRole("button", { name: "Keep mine" }));
+    expect(screen.getAllByText(/Draft kept/)).toHaveLength(2);
+
+    deleted = true;
+    vi.mocked(pollWorkspaceChanges).mockResolvedValueOnce({
+      paths: ["main.ts"],
+      rescan: false,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("tab", {
+          name: "main.ts (unsaved) (Deleted on disk)",
+        }),
+      ).toHaveLength(2),
+    );
+    expect(
+      screen
+        .getAllByRole<HTMLTextAreaElement>("textbox", { name: "File editor" })
+        .map(({ value }) => value),
+    ).toEqual(["my draft", "my draft"]);
   });
 
   it("creates a named workspace file and enables Run for its saved extension", async () => {

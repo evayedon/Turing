@@ -349,6 +349,23 @@ impl Registry {
         Ok((snapshot.content, snapshot.version, root.try_clone()?))
     }
 
+    pub fn recreate(
+        &self,
+        owner: &str,
+        id: &str,
+        relative_path: &str,
+        content: &str,
+    ) -> Result<String> {
+        let workspace = self
+            .active
+            .as_ref()
+            .filter(|workspace| workspace.owner == owner && workspace.descriptor.id == id)
+            .ok_or(WorkspaceError::PermissionDenied)?;
+        file::recreate(&workspace.root, relative_path, content, || {
+            !workspace.root_replaced()
+        })
+    }
+
     pub fn write(
         &self,
         owner: &str,
@@ -753,6 +770,154 @@ mod tests {
                 .map(|index| format!("renamed-{index}.txt"))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn real_watch_reconciles_edits_replacements_and_directory_moves_during_search() {
+        let (folder, mut registry, workspace) = approved();
+        let root = folder.path();
+        let id = &workspace.id;
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/open.txt"), "initial").unwrap();
+        fs::write(root.join("atomic.txt"), "before replacement").unwrap();
+        let atomic = registry.read(OWNER, id, "atomic.txt").unwrap();
+        let original = registry.read(OWNER, id, "src/open.txt").unwrap();
+        let canonical = root.canonicalize().unwrap();
+        registry
+            .attach_watch(OWNER, id, watch::Watch::start(&canonical).unwrap())
+            .unwrap();
+        let options = serde_json::from_value(
+            serde_json::json!({ "query": "needle", "caseSensitive": false, "wholeWord": false }),
+        )
+        .unwrap();
+        let search_id = registry.begin_search(OWNER, id, options).unwrap();
+        let search = registry.claim_search(OWNER, id, &search_id).unwrap();
+
+        let wait = |registry: &mut Registry, paths: &[&str]| {
+            let mut seen = std::collections::BTreeSet::new();
+            poll_until(registry, id, |changes| {
+                seen.extend(changes.paths.iter().cloned());
+                changes.rescan
+                    || paths.iter().all(|path| {
+                        seen.iter()
+                            .any(|hint| *path == hint || path.starts_with(&format!("{hint}/")))
+                    })
+            })
+        };
+
+        for index in 0..20 {
+            fs::write(root.join("src/open.txt"), format!("edit {index}")).unwrap();
+        }
+        let batches = wait(&mut registry, &["src/open.txt"]);
+        for batch in batches {
+            assert!(batch.paths.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert_eq!(
+            registry.read(OWNER, id, "src/open.txt").unwrap().content,
+            "edit 19"
+        );
+        assert_eq!(
+            registry.write(
+                OWNER,
+                id,
+                "src/open.txt",
+                &original.version,
+                "unsaved draft"
+            ),
+            Err(WorkspaceError::FileConflict)
+        );
+
+        fs::write(root.join(".external.tmp"), "after replacement").unwrap();
+        fs::rename(root.join(".external.tmp"), root.join("atomic.txt")).unwrap();
+        wait(&mut registry, &["atomic.txt"]);
+        let replacement = registry.read(OWNER, id, "atomic.txt").unwrap();
+        assert_eq!(replacement.relative_path, atomic.relative_path);
+        assert_ne!(replacement.version, atomic.version);
+        assert_eq!(replacement.content, "after replacement");
+
+        fs::rename(root.join("src"), root.join("moved")).unwrap();
+        wait(&mut registry, &["src", "moved"]);
+        assert!(matches!(
+            registry.read(OWNER, id, "src/open.txt"),
+            Err(WorkspaceError::NotFound)
+        ));
+        fs::rename(root.join("moved/open.txt"), root.join("moved/renamed.txt")).unwrap();
+        wait(&mut registry, &["moved/open.txt", "moved/renamed.txt"]);
+        fs::remove_file(root.join("moved/renamed.txt")).unwrap();
+        wait(&mut registry, &["moved/renamed.txt"]);
+        assert!(registry.list(OWNER, id, "moved").unwrap().is_empty());
+
+        fs::write(root.join("moved/new.txt"), "needle").unwrap();
+        wait(&mut registry, &["moved/new.txt"]);
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.join("outside-link")).unwrap();
+            fs::write(outside.path().join("private.txt"), "needle outside").unwrap();
+            let batches = wait(&mut registry, &["outside-link"]);
+            assert!(batches
+                .iter()
+                .flat_map(|batch| &batch.paths)
+                .all(|path| !path.starts_with("outside-link/")));
+            assert!(matches!(
+                registry.read(OWNER, id, "outside-link/private.txt"),
+                Err(WorkspaceError::OutsideWorkspace)
+            ));
+        }
+        let response = serde_json::to_value(search.run().unwrap()).unwrap();
+        assert_eq!(response["files"][0]["relativePath"], "moved/new.txt");
+        registry.finish_search(OWNER, id, &search_id).unwrap();
+    }
+
+    #[test]
+    fn recreate_is_exclusive_and_scoped_to_the_current_workspace() {
+        let (folder, registry, workspace) = approved();
+        let id = &workspace.id;
+        let path = folder.path().join("deleted.txt");
+        fs::write(&path, "external").unwrap();
+        assert_eq!(
+            registry.recreate(OWNER, id, "deleted.txt", "mine"),
+            Err(WorkspaceError::FileConflict)
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            registry.recreate("other", id, "deleted.txt", "mine"),
+            Err(WorkspaceError::PermissionDenied)
+        );
+        assert_eq!(
+            registry.recreate(OWNER, id, "../deleted.txt", "mine"),
+            Err(WorkspaceError::OutsideWorkspace)
+        );
+        let version = registry.recreate(OWNER, id, "deleted.txt", "mine").unwrap();
+        let snapshot = registry.read(OWNER, id, "deleted.txt").unwrap();
+        assert_eq!(snapshot.version, version);
+        assert_eq!(snapshot.content, "mine");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recreate_rejects_link_targets_and_replaced_roots() {
+        let container = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = container.path().join("approved");
+        fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        let mut registry = Registry::default();
+        let id = registry.register(OWNER, &root).unwrap().id;
+        assert_eq!(
+            registry.recreate(OWNER, &id, "link/new.txt", "mine"),
+            Err(WorkspaceError::OutsideWorkspace)
+        );
+        assert!(!outside.path().join("new.txt").exists());
+        fs::rename(&root, container.path().join("moved")).unwrap();
+        fs::create_dir(&root).unwrap();
+        assert_eq!(
+            registry.recreate(OWNER, &id, "new.txt", "mine"),
+            Err(WorkspaceError::OutsideWorkspace)
+        );
+        assert!(!root.join("new.txt").exists());
+        assert!(!container.path().join("moved/new.txt").exists());
     }
 
     #[test]

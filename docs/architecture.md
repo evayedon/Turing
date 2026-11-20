@@ -170,14 +170,21 @@ permission bits are carried forward. Replacement creates a new inode, so hard
 link associations, extended attributes, and custom ACLs are outside the current
 save guarantees. File checks on focus and every four seconds cover the active
 tab, and workspace watcher events revalidate every touched tab (see
-[Workspace watcher](#workspace-watcher)). Each save checks its version
-independently.
+[Workspace watcher](#workspace-watcher)). Each ordinary save checks its version
+independently. When the target of a workspace tab has disappeared, explicit
+Save offers native confirmation to recreate it.
+The authorized write rechecks the root and parent and publishes the staged
+text only if the destination is still vacant. A process that restores the
+name first keeps its file.
 
 The File menu's Auto Save setting is off at startup and applies for the current
 session. It waits one second before saving changed, already named desktop tabs
 through the same version-checked commands. Edits made during a write remain in
 the draft. Failed writes stay dirty and pause automatic retries for that tab.
-Known disk conflicts require the normal reload or Save As workflow. Untitled
+Known disk conflicts require explicit resolution. Keep mine leaves the
+draft and conflict in place. Compare with disk reads an authorized snapshot
+and shows it beside the editor text. Reload asks before discarding dirty text.
+Save As can preserve the draft in a separate file. Untitled
 documents still use the native picker on explicit Save, and browser preview
 keeps its drafts in memory.
 
@@ -289,22 +296,27 @@ cannot reach a later registration.
 
 **Frontend.** The workbench polls every 500 ms while the document is visible,
 backs off to 2 s after a transient failure and stops on `PERMISSION_DENIED`.
-Replies for a workspace that is no longer current are dropped. The Explorer
-re-lists each loaded folder that contains a changed path or lies below one,
-and forgets folders that no longer exist, moving the browse location to the
-parent. The editor re-reads touched workspace tabs and sets `changedOnDisk`
-when the version differs or the file is gone. Each touched document is checked
-once per change set, and all its groups share the flag. The watcher preserves
-drafts, and a
-reply applies only to the revision it was issued for, so Turing's own saves
-and renames win. A tab whose file was renamed outside Turing is flagged as
-changed, not moved to the new name. Its save is refused as a conflict until the
-user reloads or uses Save As.
+Replies for a workspace that is no longer current are dropped. Explorer
+re-lists each loaded or pending folder that contains a changed path or lies
+below one. A newer listing supersedes earlier reads of the same folder.
+When a folder disappears, Explorer forgets that subtree and returns to its
+surviving parent.
+
+The editor checks each affected document once per batch. It compares the
+current disk version to the saved base and ignores a reply superseded by a
+newer check, tab revision, or workspace registration. All groups share the
+result. Clean tabs offer explicit reload, and dirty tabs keep their draft.
+An external rename or removal marks the original tab **Deleted on disk**.
+A temp-file replacement at the original path is seen as a version change
+when the path exists at revalidation. A later event clears the deleted
+status if the path reappears. Search runs independently of polling and reads
+the workspace as it traverses the filesystem.
 
 The active-tab check on focus and every four seconds remains as a fallback.
 `notify` cannot report a ReadDirectoryChangesW buffer overflow on Windows, and
 network or virtual filesystems may not deliver events. Runtime behavior on
 Linux and Windows is covered only by CI unit tests, not GUI smoke tests.
+See the [macOS watcher acceptance steps](testing/file-watcher-manual.md).
 
 ## Workbench layout
 

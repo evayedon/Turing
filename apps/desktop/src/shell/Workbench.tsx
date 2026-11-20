@@ -528,17 +528,19 @@ export function Workbench() {
   const source = active?.source;
   const saveState = editor.busy
     ? "Working…"
-    : active?.changedOnDisk
-      ? "Disk changed"
-      : active?.saveError
-        ? "Save failed"
-        : changed
-          ? "Unsaved"
-          : source?.kind === "untitled"
-            ? "Untitled"
-            : active
-              ? "Saved"
-              : null;
+    : active?.deletedOnDisk
+      ? "Deleted on disk"
+      : active?.changedOnDisk
+        ? "Disk changed"
+        : active?.saveError
+          ? "Save failed"
+          : changed
+            ? "Unsaved"
+            : source?.kind === "untitled"
+              ? "Untitled"
+              : active
+                ? "Saved"
+                : null;
 
   return (
     <div className="workbench">

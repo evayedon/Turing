@@ -162,9 +162,43 @@ pub(super) fn write(
     Ok(prepared.version)
 }
 
+pub(super) fn recreate(
+    root: &Dir,
+    relative_path: &str,
+    content: &str,
+    root_current: impl Fn() -> bool,
+) -> Result<String> {
+    let parts = relative_parts(relative_path)?;
+    let (name, parents) = parts.split_last().ok_or(WorkspaceError::OutsideWorkspace)?;
+    if !root_current() {
+        return Err(WorkspaceError::OutsideWorkspace);
+    }
+    let directory = directory_at(root, parents)?;
+    create_checked(&directory, name, content, || {
+        if !root_current() {
+            return Err(WorkspaceError::OutsideWorkspace);
+        }
+        let current = directory_at(root, parents)?;
+        if !same_file(&directory.dir_metadata()?, &current.dir_metadata()?) {
+            return Err(WorkspaceError::FileConflict);
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn create(directory: &Dir, name: &str, content: &str) -> Result<String> {
+    create_checked(directory, name, content, || Ok(()))
+}
+
+fn create_checked(
+    directory: &Dir,
+    name: &str,
+    content: &str,
+    verify_parent: impl FnOnce() -> Result<()>,
+) -> Result<String> {
     validate_content(content.as_bytes())?;
     let (mut staging, prepared) = stage(directory, content, None)?;
+    verify_parent()?;
     if !same_file(
         &prepared.metadata,
         &directory.symlink_metadata(&staging.name)?,
@@ -345,6 +379,25 @@ mod tests {
     use super::*;
     use cap_std::ambient_authority;
     use std::fs;
+
+    #[test]
+    fn recreate_rejects_a_parent_replaced_after_staging() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path();
+        let root = Dir::open_ambient_dir(path, ambient_authority()).unwrap();
+        fs::create_dir(path.join("parent")).unwrap();
+        let validated = std::cell::Cell::new(false);
+        let result = recreate(&root, "parent/new", "draft", || {
+            if validated.replace(true) {
+                fs::rename(path.join("parent"), path.join("moved")).unwrap();
+                fs::create_dir(path.join("parent")).unwrap();
+            }
+            true
+        });
+        assert_eq!(result, Err(WorkspaceError::FileConflict));
+        assert!(fs::read_dir(path.join("parent")).unwrap().next().is_none());
+        assert!(fs::read_dir(path.join("moved")).unwrap().next().is_none());
+    }
 
     #[test]
     fn preserves_an_edit_made_after_preflight() {
