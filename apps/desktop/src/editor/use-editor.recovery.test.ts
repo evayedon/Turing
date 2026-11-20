@@ -386,3 +386,31 @@ it("keeps legacy storage until Rust acknowledges import and lists the migrated d
     "keep me",
   ]);
 });
+
+it("re-imports an interrupted migration once, skips damaged legacy keys, and restores the draft", async () => {
+  const key = "turing:draft:v1:old";
+  const legacy: RecoveryDraft = {
+    id: "old",
+    name: "legacy",
+    title: "legacy",
+    draft: "keep me",
+    source: { kind: "copy" },
+    timestamp: 1,
+  };
+  // Rust already holds the import, but the WebView stopped before removal.
+  journal.set(legacy.id, legacy);
+  localStorage.setItem(key, JSON.stringify(legacy));
+  localStorage.setItem("turing:draft:v1:broken", "{not json");
+  const { result } = await relaunch();
+  expect(localStorage.getItem(key)).toBeNull();
+  expect(localStorage.getItem("turing:draft:v1:broken")).not.toBeNull();
+  expect(result.current.recoveryDrafts).toHaveLength(1);
+  await act(async () =>
+    result.current.restoreDraft(result.current.recoveryDrafts[0]),
+  );
+  expect(result.current.active).toMatchObject({
+    draft: "keep me",
+    source: { kind: "untitled" },
+  });
+  expect(result.current.recoveryDrafts).toEqual([]);
+});

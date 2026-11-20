@@ -239,7 +239,9 @@ Rust owns the journal under the directory returned by Tauri’s
 Unix directory and file permissions are `0700` and `0600`. Records use a
 versioned header, length and SHA-256 checksum. Rust writes and syncs a
 temporary file in the journal directory, renames it into place, and syncs
-the directory on Unix. It ignores stale temporary files. Damaged records
+the directory on Unix. It ignores stale temporary files.
+Record file names are Rust-derived 64-character SHA-256 keys. Any other
+ID is rejected before it reaches the filesystem. Damaged records
 are skipped with a workbench notice and count toward the cap until they
 expire. The journal contains unsaved source text,
 and the application excludes it from logs.

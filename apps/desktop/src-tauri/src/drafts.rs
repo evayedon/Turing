@@ -473,10 +473,11 @@ impl Journal {
             Err(error) if error.kind() == io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
         }
+        // Forget the record only once its unlink is durable, so a retry syncs again.
+        sync_dir(&self.path)?;
         self.records.remove(id);
         self.damaged.remove(id);
         self.claims.remove(id);
-        sync_dir(&self.path)?;
         Ok(())
     }
 
@@ -500,6 +501,9 @@ impl Journal {
         write: impl FnOnce(&Path, &str, &[u8]) -> io::Result<()>,
     ) -> Result<()> {
         validate(&record.entry)?;
+        if !id_valid(&record.entry.id) || record.replaces.as_ref().is_some_and(|id| !id_valid(id)) {
+            return Err(Error::InvalidDraft);
+        }
         self.expire()?;
         let id = record.entry.id.clone();
         let body = serde_json::to_vec(&record).map_err(|_| Error::InvalidDraft)?;
@@ -867,6 +871,81 @@ mod tests {
             journal.records[&key(&[&current, "a"])].record.entry.draft,
             "live"
         );
+    }
+
+    #[test]
+    fn atomic_write_leaves_one_checksummed_record_and_no_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = journal(&dir);
+        let first = record("old", "a", "first");
+        let id = first.entry.id.clone();
+        journal.write(first).unwrap();
+        journal.write(record("old", "a", "second")).unwrap();
+        let mut names: Vec<_> = fs::read_dir(&journal.path)
+            .unwrap()
+            .map(|item| item.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, [format!("{id}.draft"), "journal.lock".to_string()]);
+        let path = journal.path.join(format!("{id}.draft"));
+        assert_eq!(&fs::read(&path).unwrap()[..8], MAGIC);
+        assert_eq!(decode(&path, &id).unwrap().record.entry.draft, "second");
+    }
+
+    #[test]
+    fn truncated_records_are_skipped_without_blocking_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut journal = journal(&dir);
+            for (uri, keep) in [("a", 20), ("b", HEADER + 4)] {
+                let broken = record("old", uri, "truncated");
+                let path = journal.path.join(format!("{}.draft", broken.entry.id));
+                journal.write(broken).unwrap();
+                let bytes = fs::read(&path).unwrap();
+                fs::write(path, &bytes[..keep]).unwrap();
+            }
+            journal.write(record("old", "c", "valid")).unwrap();
+        }
+        let mut journal = journal(&dir);
+        let (entries, skipped) = list(&mut journal, "new");
+        assert!(skipped);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].draft, "valid");
+        assert_eq!(journal.damaged.len(), 2);
+    }
+
+    #[test]
+    fn record_count_is_capped_but_existing_records_can_be_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = journal(&dir);
+        for index in 0..MAX_RECORDS {
+            journal
+                .write(record("old", &index.to_string(), "x"))
+                .unwrap();
+        }
+        assert_eq!(
+            journal.write(record("old", "one-more", "x")),
+            Err(Error::DraftLimit)
+        );
+        journal.write(record("old", "0", "updated")).unwrap();
+        assert_eq!(journal.records.len(), MAX_RECORDS);
+    }
+
+    #[test]
+    fn traversal_ids_never_reach_the_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.draft");
+        fs::write(&outside, "keep").unwrap();
+        let mut journal = journal(&dir);
+        let mut escaping = record("old", "a", "escape");
+        escaping.entry.id = "../outside".into();
+        assert_eq!(journal.write(escaping), Err(Error::InvalidDraft));
+        let mut replacing = record("old", "b", "replace");
+        replacing.replaces = Some("../outside".into());
+        assert_eq!(journal.write(replacing), Err(Error::InvalidDraft));
+        journal.remove("../outside").unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+        assert!(journal.records.is_empty());
     }
 
     #[cfg(unix)]
