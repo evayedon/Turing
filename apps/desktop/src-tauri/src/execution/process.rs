@@ -1,4 +1,4 @@
-use super::{ExecutionError, Progress, Result, Stream};
+use super::{ExecutionError, Progress, Result, State, Stream};
 use cap_std::fs::Dir;
 use std::{
     io::{self, Read},
@@ -157,8 +157,12 @@ pub(super) fn probe(
         return Ok(None);
     }
     let state = captured.state();
+    Ok(version_output(&state))
+}
+
+fn version_output(state: &State) -> Option<String> {
     if state.truncated {
-        return Ok(None);
+        return None;
     }
     // Keep warnings on stderr from corrupting a version printed on stdout.
     // Some tools (including Java 8) print the version to stderr instead.
@@ -178,7 +182,7 @@ pub(super) fn probe(
     } else {
         stdout
     };
-    Ok(Some(String::from_utf8_lossy(&output).into_owned()))
+    Some(String::from_utf8_lossy(&output).into_owned())
 }
 
 fn supervise(
@@ -287,23 +291,23 @@ mod tests {
 
     #[test]
     fn version_probe_keeps_stdout_and_stderr_separate() {
-        let path = std::env::var_os("PATH");
-        let python = toolchain::tool(Language::Python, path.as_deref()).unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let cwd = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
-        let progress = Progress::new(None);
-        for (source, expected) in [
-            (
-                "import sys; print('warning', file=sys.stderr); print('version')",
-                "version",
-            ),
-            ("import sys; print('version', file=sys.stderr)", "version"),
-        ] {
-            let mut command = Command::new(&python);
-            command.args(["-I", "-c", source]);
-            let output = probe(&mut command, &cwd, temp.path(), &progress).unwrap();
-            assert_eq!(output.as_deref().map(str::trim), Some(expected));
-        }
+        let captured = Progress::new(None);
+        captured.record(Stream::Stderr, b"warning\n");
+        captured.record(Stream::Stdout, b"ver");
+        captured.record(Stream::Stderr, b"another warning\n");
+        captured.record(Stream::Stdout, b"sion\n");
+        assert_eq!(
+            version_output(&captured.state()).as_deref(),
+            Some("version\n")
+        );
+
+        let captured = Progress::new(None);
+        captured.record(Stream::Stdout, b" \r\n");
+        captured.record(Stream::Stderr, b"version\n");
+        assert_eq!(
+            version_output(&captured.state()).as_deref(),
+            Some("version\n")
+        );
     }
 
     #[test]
