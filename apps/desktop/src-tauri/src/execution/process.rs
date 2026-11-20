@@ -4,7 +4,7 @@ use std::{
     io::{self, Read},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
-    sync::atomic::Ordering::Relaxed,
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
     thread,
     time::{Duration, Instant},
 };
@@ -125,7 +125,62 @@ pub(super) fn run(
     progress: &Progress,
     building: bool,
 ) -> Result<Option<ExitStatus>> {
-    if progress.stopped.load(Relaxed) {
+    // Allow for cold compiles on shared CI hosts.
+    let slack = if cfg!(test) { 4 } else { 1 };
+    let timeout = Duration::from_secs(if building { 60 } else { 30 } * slack);
+    supervise(
+        command,
+        cwd,
+        staging,
+        progress,
+        &progress.stopped,
+        building,
+        timeout,
+    )
+}
+
+pub(super) fn probe(
+    command: &mut Command,
+    cwd: &Dir,
+    staging: &Path,
+    progress: &Progress,
+) -> Option<String> {
+    let captured = Progress::new(None);
+    let status = supervise(
+        command,
+        cwd,
+        staging,
+        &captured,
+        &progress.stopped,
+        false,
+        Duration::from_secs(5),
+    )
+    .ok()??;
+    if !status.success() {
+        return None;
+    }
+    let state = captured.state();
+    if state.truncated {
+        return None;
+    }
+    let output: Vec<_> = state
+        .output
+        .iter()
+        .flat_map(|chunk| chunk.bytes.iter().copied())
+        .collect();
+    Some(String::from_utf8_lossy(&output).into_owned())
+}
+
+fn supervise(
+    command: &mut Command,
+    cwd: &Dir,
+    staging: &Path,
+    progress: &Progress,
+    stopped: &AtomicBool,
+    building: bool,
+    timeout: Duration,
+) -> Result<Option<ExitStatus>> {
+    if stopped.load(Relaxed) {
         return Ok(None);
     }
     prepare(command, cwd, staging);
@@ -145,7 +200,7 @@ pub(super) fn run(
             return Err(ExecutionError::ProcessUnavailable);
         }
     };
-    let result = collect(&mut child, progress, building);
+    let result = collect(&mut child, progress, stopped, building, timeout);
     #[cfg(windows)]
     drop(guard);
     if !matches!(result, Ok(Some(_))) {
@@ -154,7 +209,13 @@ pub(super) fn run(
     result
 }
 
-fn collect(child: &mut Child, progress: &Progress, building: bool) -> Result<Option<ExitStatus>> {
+fn collect(
+    child: &mut Child,
+    progress: &Progress,
+    stopped: &AtomicBool,
+    building: bool,
+    timeout: Duration,
+) -> Result<Option<ExitStatus>> {
     let mut stdout = child.stdout.take().ok_or(ExecutionError::Internal)?;
     let mut stderr = child.stderr.take().ok_or(ExecutionError::Internal)?;
     configure(&stdout)
@@ -165,19 +226,11 @@ fn collect(child: &mut Child, progress: &Progress, building: bool) -> Result<Opt
     } else {
         (Stream::Stdout, Stream::Stderr)
     };
-    // Tests share loaded CI machines, where a first compile can exceed the
-    // product limits; the shipped limits stay 60 s (build) and 30 s (run).
-    let slack = if cfg!(test) { 4 } else { 1 };
-    let timeout = if building {
-        Duration::from_secs(60 * slack)
-    } else {
-        Duration::from_secs(30 * slack)
-    };
     let started = Instant::now();
     let mut buffer = [0; 4096];
     let mut exit = None;
     loop {
-        if progress.stopped.load(Relaxed) {
+        if stopped.load(Relaxed) {
             return Ok(None);
         }
         if started.elapsed() >= timeout {
@@ -203,5 +256,39 @@ fn collect(child: &mut Child, progress: &Progress, building: bool) -> Result<Opt
         if written + errors == 0 && exit.is_none() {
             thread::sleep(Duration::from_millis(12));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{toolchain, Language};
+    use super::*;
+
+    #[test]
+    fn timeout_terminates_a_live_process() {
+        let path = std::env::var_os("PATH");
+        let Ok(python) = toolchain::tool(Language::Python, path.as_deref()) else {
+            eprintln!("skipping process timeout test: Python is unavailable");
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+        let progress = Progress::new(None);
+        let mut command = Command::new(python);
+        command.args(["-I", "-c", "import time; time.sleep(20)"]);
+        let start = Instant::now();
+        assert_eq!(
+            supervise(
+                &mut command,
+                &cwd,
+                temp.path(),
+                &progress,
+                &progress.stopped,
+                false,
+                Duration::from_millis(100),
+            ),
+            Err(ExecutionError::TimedOut)
+        );
+        assert!(start.elapsed() < Duration::from_secs(10));
     }
 }

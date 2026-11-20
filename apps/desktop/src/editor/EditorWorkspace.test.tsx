@@ -93,11 +93,11 @@ afterEach(() => {
   useLayout.setState(useLayout.getInitialState(), true);
 });
 
-async function openFile() {
+async function openFile(name = "main.ts") {
   const user = userEvent.setup();
   render(<Workbench />);
   await user.click(screen.getByRole("button", { name: "Open folder" }));
-  await user.click(await screen.findByRole("button", { name: "main.ts" }));
+  await user.click(await screen.findByRole("button", { name }));
   const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", {
     name: "File editor",
   });
@@ -304,9 +304,9 @@ describe("editor workspace", () => {
   });
 
   it("keeps a non-executable saved filename blocked after a Python override", async () => {
-    const { user } = await openFile();
+    const { user } = await openFile("notes.md");
     await user.click(
-      screen.getByRole("button", { name: "Language mode: TypeScript" }),
+      screen.getByRole("button", { name: "Language mode: Markdown" }),
     );
     await user.click(
       within(

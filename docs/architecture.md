@@ -389,29 +389,47 @@ through Save As. If the saved revision changes on disk, reload the file first.
 One Run & Build job per workbench can be active while its terminal sessions
 continue.
 
-Supported sources are Python 3.7+ (`.py`) and single-file C++17 (`.cpp`,
-`.cc`, `.cxx`). The application looks for Python and for clang++ or g++ in
-absolute directories on its inherited PATH. These tools must be installed and
-functional on the host, including any system C++ headers and linker. On Windows,
-use an installed compiler with its target toolchain available. Project build
-systems, sibling imports or headers, custom flags, external libraries that
-require extra link arguments, and multiple source files are outside this
-workflow.
+Run discovers tools in inherited PATH order, ignoring relative directories and
+WindowsApps aliases. Within a directory it tries the names in the order shown
+below (with `.exe` on Windows). Bounded tool probes check that the selected
+installation can start. Install the toolchain on the host and expose it on
+Turing’s PATH. Missing or unusable installations return language-specific
+errors with installation guidance. Run remains available for a retry.
+
+| Source                             | Tool and execution                                                                                                                                                                                                                                              |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Python (`.py`)                     | `python3`, then `python` (`python` first on Windows). Runs isolated Python 3.7+.                                                                                                                                                                                |
+| C (`.c`)                           | `clang`, then `gcc`. Compiles C17 and runs the staged binary.                                                                                                                                                                                                   |
+| C++ (`.cpp`, `.cc`, `.cxx`, `.C`)  | `clang++`, then `g++`. Compiles C++17 and runs the staged binary.                                                                                                                                                                                               |
+| Rust (`.rs`)                       | `rustc`. Compiles one Rust 2021 source with an explicit crate name and runs the staged binary.                                                                                                                                                                  |
+| Go (`.go`)                         | `go`. Builds the staged file, then invokes `go run` from scratch using that build cache. Clears GOFLAGS, keeps Go caches and temp files in scratch, and disables module/toolchain downloads and cgo.                                                            |
+| Java (`.java`)                     | `java` and `javac` (next to the selected `java` if present, then on PATH). Uses javac for build diagnostics when available. Java 11+ launches the staged source directly. Earlier versions run the compiled class matching the filename, including its package. |
+| JavaScript (`.js`, `.mjs`, `.cjs`) | `node`. Checks syntax and runs the staged source.                                                                                                                                                                                                               |
+| TypeScript (`.ts`, `.mts`, `.cts`) | `node --experimental-strip-types`. Requires a Node installation with a working strip-types loader and supports only erasable TypeScript syntax.                                                                                                                 |
+| C# (`.cs`)                         | `dotnet`. Requires a local .NET 6+ SDK and targeting packs. Builds a generated console project with NuGet package sources cleared, then runs the resulting DLL.                                                                                                 |
+
+Use self-contained source with the host toolchain’s standard library and, for
+native compilers, an installed linker and system headers. Project build
+systems, sibling imports or headers, custom flags, external packages, and
+multiple source files are outside this workflow.
 
 Rust checks caller ownership and reads the versioned source through the existing
 workspace or standalone file grant. It stages those exact bytes in a unique
-OS temporary directory and constructs process arguments itself. A successful C++
-compile runs the binary created for that run. Failure leaves the compiler's
-diagnostics in Output. Scratch files are cleaned up when the worker finishes.
-Python's `__file__` and compiler diagnostic paths point at staged files.
-On Unix the child starts through the retained workspace root or standalone
-parent directory handle. On Windows the child starts in the scratch directory
-because standard process launch accepts a path for its working directory.
+OS temporary directory and constructs process arguments itself. Scratch files
+are cleaned up when the worker finishes. Builds and tool probes run in scratch
+with an allowlist of environment variables. On Unix, programs normally start
+through the retained workspace root or standalone parent directory handle. Go
+and the Java source launcher start in scratch. On Windows, all processes start
+in scratch because standard process launch accepts a path for its working directory.
 
-Output distinguishes compiler stdout and stderr from program stdout and stderr.
+Output distinguishes build stdout and stderr from program stdout and stderr.
 It reports phase, exit code, elapsed time, and Stop. Output retains at most
-256 KiB per run and decodes UTF-8 with replacement for invalid bytes, including
-legacy compiler encodings. Compiler diagnostics remain text in Output.
+256 KiB per run and decodes UTF-8 with replacement for invalid bytes. The
+Problems panel maps recognized C, C++, Rust, Go, Java, Node syntax, TypeScript,
+and C# diagnostics for the staged file back to the exact saved revision.
+Byte and scalar columns are converted to UTF-16 for the editor. Java source
+launch and Node’s TypeScript loader combine build and run in one process, so
+their diagnostics can arrive on program stderr. Other messages remain in Output.
 Stdin is closed, so programs receive EOF. Use the integrated terminal to run
 programs that need interactive input.
 
@@ -419,7 +437,7 @@ The dedicated local-workbench capability accepts only a saved file grant and
 version, then an opaque Run ID for reading and stopping. Phase notifications
 use a per-run Tauri channel. The shell terminal and any future AI integration
 have separate authorization paths. Code executes with the user's OS privileges.
-The compiler is limited to 60 seconds and the program to 30 seconds. Stop and
+Tool probes are limited to five seconds each, builds to 60 seconds, and programs to 30 seconds. Stop and
 normal app shutdown cancel active subprocesses. Unix uses a process group for
 cancellation and disables core dumps. Windows uses a Job Object. On Unix, a program that exits normally can leave
 children running. Processes that escape cancellation or start before Windows

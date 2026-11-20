@@ -1,4 +1,5 @@
 mod process;
+mod toolchain;
 
 use crate::windows::workbench;
 use crate::workspace::{Registry, WorkspaceError};
@@ -7,14 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     fs,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
         Arc, Mutex, MutexGuard,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tauri::{ipc::Channel, WebviewWindow};
 
@@ -30,6 +30,13 @@ pub enum ExecutionError {
     SourceUnavailable,
     PythonUnavailable,
     CompilerUnavailable,
+    CCompilerUnavailable,
+    RustUnavailable,
+    GoUnavailable,
+    JavaUnavailable,
+    NodeUnavailable,
+    TypescriptUnavailable,
+    DotnetUnavailable,
     ProcessUnavailable,
     TimedOut,
     Internal,
@@ -72,6 +79,13 @@ pub enum Source {
 pub enum Language {
     Python,
     Cpp,
+    C,
+    Rust,
+    Go,
+    Java,
+    JavaScript,
+    TypeScript,
+    CSharp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
@@ -166,6 +180,14 @@ impl Snapshot {
         {
             Some("py") => Language::Python,
             Some("cpp" | "cc" | "cxx") => Language::Cpp,
+            Some("c") if name.ends_with(".C") => Language::Cpp,
+            Some("c") => Language::C,
+            Some("rs") => Language::Rust,
+            Some("go") => Language::Go,
+            Some("java") => Language::Java,
+            Some("js" | "mjs" | "cjs") => Language::JavaScript,
+            Some("ts" | "mts" | "cts") => Language::TypeScript,
+            Some("cs") => Language::CSharp,
             _ => return Err(ExecutionError::UnsupportedLanguage),
         };
         Ok(Self {
@@ -332,21 +354,6 @@ enum Outcome {
     Stopped,
 }
 
-fn tools(language: Language, path: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
-    let names: &[&str] = match (language, cfg!(windows)) {
-        (Language::Python, true) => &["python.exe", "python3.exe"],
-        (Language::Python, false) => &["python3", "python"],
-        (Language::Cpp, true) => &["clang++.exe", "g++.exe"],
-        (Language::Cpp, false) => &["clang++", "g++"],
-    };
-    path.into_iter()
-        .flat_map(std::env::split_paths)
-        .filter(|dir| dir.is_absolute() && !dir.ends_with("WindowsApps"))
-        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
-        .filter(|candidate| is_executable(candidate))
-        .collect()
-}
-
 fn is_executable(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
@@ -385,111 +392,21 @@ fn column_unit_flag(version_output: &str) -> Option<&'static str> {
     (major >= 11).then_some("-fdiagnostics-column-unit=byte")
 }
 
-/// Reads `--version` from the selected compiler, bounded in time and size.
-/// Any failure yields an empty string, which adds no flag.
-fn compiler_version(executable: &Path, path: &std::ffi::OsStr, cwd: &Path) -> String {
-    use std::io::Read;
-    let Ok(mut child) = Command::new(executable)
-        .arg("--version")
-        .env("PATH", path)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return String::new();
-    };
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return String::new();
-            }
-        }
-    }
-    let mut output = String::new();
-    if let Some(stdout) = child.stdout.take() {
-        let _ = stdout.take(4096).read_to_string(&mut output);
-    }
-    output
-}
-
-fn tool(language: Language, path: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
-    tools(language, path)
-        .into_iter()
-        .next()
-        .ok_or(match language {
-            Language::Python => ExecutionError::PythonUnavailable,
-            Language::Cpp => ExecutionError::CompilerUnavailable,
-        })
-}
-
 fn execute(snapshot: Snapshot, progress: &Arc<Progress>) -> Result<Outcome> {
     if progress.stopped.load(Relaxed) {
         return Ok(Outcome::Stopped);
     }
-    let path = std::env::var_os("PATH");
-    let executable = tool(snapshot.language, path.as_deref())?;
-    let child_path = std::env::join_paths(
-        path.as_deref()
-            .into_iter()
-            .flat_map(std::env::split_paths)
-            .filter(|dir| dir.is_absolute()),
-    )
-    .map_err(|_| ExecutionError::ProcessUnavailable)?;
     let scratch = tempfile::Builder::new()
         .prefix("turing-run-")
         .tempdir()
         .map_err(|_| ExecutionError::Internal)?;
-    let source = scratch.path().join(&snapshot.name);
+    let mut source = scratch.path().join(&snapshot.name);
+    if let Some(extension) = source.extension().and_then(std::ffi::OsStr::to_str) {
+        let extension = extension.to_ascii_lowercase();
+        source.set_extension(extension);
+    }
     fs::write(&source, snapshot.content).map_err(|_| ExecutionError::Internal)?;
-    let mut command = match snapshot.language {
-        Language::Python => {
-            let mut command = Command::new(executable);
-            command.args(["-I", "-B", "-u", "-X", "utf8"]).arg(&source);
-            command
-        }
-        Language::Cpp => {
-            progress.stage(Phase::Compiling);
-            let binary = scratch.path().join(if cfg!(windows) {
-                "program.exe"
-            } else {
-                "program"
-            });
-            let column_unit =
-                column_unit_flag(&compiler_version(&executable, &child_path, scratch.path()));
-            let mut compiler = Command::new(executable);
-            compiler
-                .args(["-std=c++17", "-fdiagnostics-color=never"])
-                .args(column_unit)
-                .args(["-x", "c++"])
-                .arg(&source);
-            compiler.arg("-o").arg(&binary).env("PATH", &child_path);
-            let Some(status) =
-                process::run(&mut compiler, &snapshot.cwd, scratch.path(), progress, true)?
-            else {
-                return Ok(Outcome::Stopped);
-            };
-            if !status.success() {
-                return Ok(Outcome::BuildFailed(status.code()));
-            }
-            Command::new(binary)
-        }
-    };
-    progress.stage(Phase::Running);
-    Ok(
-        match process::run(&mut command, &snapshot.cwd, scratch.path(), progress, false)? {
-            Some(status) => Outcome::Ran(status.code()),
-            None => Outcome::Stopped,
-        },
-    )
+    toolchain::execute(snapshot.language, &source, &snapshot.cwd, progress)
 }
 
 struct Job {
@@ -649,6 +566,13 @@ mod tests {
         let file = match language {
             Language::Python => "file ü.py",
             Language::Cpp => "file ü.cpp",
+            Language::C => "file ü.c",
+            Language::Rust => "file ü.rs",
+            Language::Go => "file ü.go",
+            Language::Java => "Main.java",
+            Language::JavaScript => "file ü.mjs",
+            Language::TypeScript => "file ü.mts",
+            Language::CSharp => "file ü.cs",
         };
         let started = service
             .start(
@@ -715,7 +639,7 @@ mod tests {
             ),
         ] {
             let path = std::env::join_paths([Path::new("."), temp.path()]).unwrap();
-            assert_eq!(tool(language, Some(&path)), Err(error));
+            assert_eq!(toolchain::tool(language, Some(&path)), Err(error));
             let executable = temp.path().join(name);
             fs::write(&executable, []).unwrap();
             #[cfg(unix)]
@@ -723,8 +647,86 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
             }
-            assert_eq!(tool(language, Some(&path)), Ok(executable));
+            assert_eq!(toolchain::tool(language, Some(&path)), Ok(executable));
         }
+    }
+
+    fn run_installed(language: Language, content: &str, unavailable: ExecutionError) {
+        let (_workspace, service, started) = run_job(language, content);
+        let (result, chunks) = wait(&service, &started.id, |update| update.phase.finished());
+        if result.error == Some(unavailable) {
+            eprintln!("skipping {language:?}: {unavailable:?} (no usable installed toolchain)");
+            return;
+        }
+        assert_eq!(
+            result.exit_code,
+            Some(0),
+            "{language:?}: {:?}\n{}\n{}\n{}",
+            result.error,
+            stream(&chunks, Stream::BuildStdout),
+            stream(&chunks, Stream::BuildStderr),
+            stream(&chunks, Stream::Stderr)
+        );
+        assert_eq!(stream(&chunks, Stream::Stdout).trim(), "ran");
+    }
+
+    #[test]
+    fn c_runs_single_file() {
+        run_installed(
+            Language::C,
+            "#include <stdio.h>\nint main(void) { puts(\"ran\"); }",
+            ExecutionError::CCompilerUnavailable,
+        );
+    }
+
+    #[test]
+    fn rust_runs_without_cargo() {
+        run_installed(
+            Language::Rust,
+            "fn main() { println!(\"ran\"); }",
+            ExecutionError::RustUnavailable,
+        );
+    }
+
+    #[test]
+    fn go_runs_single_file_offline() {
+        run_installed(
+            Language::Go,
+            "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"ran\") }",
+            ExecutionError::GoUnavailable,
+        );
+    }
+
+    #[test]
+    fn java_compiles_packaged_single_file() {
+        run_installed(Language::Java, "package demos; public class Main { public static void main(String[] args) { System.out.println(\"ran\"); } }", ExecutionError::JavaUnavailable);
+    }
+
+    #[test]
+    fn javascript_runs_with_node() {
+        run_installed(
+            Language::JavaScript,
+            "console.log('ran');",
+            ExecutionError::NodeUnavailable,
+        );
+    }
+
+    #[test]
+    fn typescript_uses_nodes_strip_types_loader() {
+        run_installed(
+            Language::TypeScript,
+            "const text: string = 'ran'; console.log(text);",
+            ExecutionError::TypescriptUnavailable,
+        );
+    }
+
+    #[test]
+    fn csharp_uses_only_local_sdk() {
+        run_installed(
+            Language::CSharp,
+            "System.Console.WriteLine(\"ran\");",
+            ExecutionError::DotnetUnavailable,
+        );
     }
 
     #[test]
@@ -922,15 +924,36 @@ mod contract_tests {
             SourceUnavailable,
             PythonUnavailable,
             CompilerUnavailable,
+            CCompilerUnavailable,
+            RustUnavailable,
+            GoUnavailable,
+            JavaUnavailable,
+            NodeUnavailable,
+            TypescriptUnavailable,
+            DotnetUnavailable,
             ProcessUnavailable,
             TimedOut,
             Internal,
         ];
         for error in &all {
             match error {
-                PermissionDenied | Busy | UnsupportedLanguage | SourceChanged
-                | SourceUnavailable | PythonUnavailable | CompilerUnavailable
-                | ProcessUnavailable | TimedOut | Internal => {}
+                PermissionDenied
+                | Busy
+                | UnsupportedLanguage
+                | SourceChanged
+                | SourceUnavailable
+                | PythonUnavailable
+                | CompilerUnavailable
+                | CCompilerUnavailable
+                | RustUnavailable
+                | GoUnavailable
+                | JavaUnavailable
+                | NodeUnavailable
+                | TypescriptUnavailable
+                | DotnetUnavailable
+                | ProcessUnavailable
+                | TimedOut
+                | Internal => {}
             }
         }
         fixture::assert_error_codes("execution", &all);
@@ -938,10 +961,13 @@ mod contract_tests {
 
     #[test]
     fn enums_match_contract() {
-        let languages = [Language::Python, Language::Cpp];
+        use Language::*;
+        let languages = [
+            Python, Cpp, C, Rust, Go, Java, JavaScript, TypeScript, CSharp,
+        ];
         for language in &languages {
             match language {
-                Language::Python | Language::Cpp => {}
+                Python | Cpp | C | Rust | Go | Java | JavaScript | TypeScript | CSharp => {}
             }
         }
         fixture::assert_enum_values("ExecutionLanguage", &languages);

@@ -1,5 +1,5 @@
 import { isLargeDocument } from "../editor/performance-budget";
-import type { LanguagePosition } from "@turing/contracts";
+import type { ExecutionLanguage, LanguagePosition } from "@turing/contracts";
 import type { EditorTab } from "../editor/use-editor";
 import type { useExecution } from "../execution/use-execution";
 import { stampOf } from "./diagnostic-store";
@@ -121,11 +121,137 @@ export function compilerBatches(
   ];
 }
 
+type BuildDiagnostic = {
+  path: string;
+  row: number;
+  column: number;
+  unit: "byte" | "scalar" | "utf16";
+  severity: Severity;
+  message: string;
+};
+
+function buildDiagnostic(
+  language: ExecutionLanguage,
+  lines: string[],
+  index: number,
+): BuildDiagnostic | undefined {
+  const line = lines[index];
+  const located =
+    /^(.+?):(\d+):(\d+): (fatal error|error|warning|note): (.+)$/.exec(line);
+  if (located && (language === "c" || language === "cpp"))
+    return {
+      path: located[1],
+      row: Number(located[2]),
+      column: Number(located[3]),
+      unit: "byte",
+      severity:
+        located[4] === "warning"
+          ? "warning"
+          : located[4] === "note"
+            ? "info"
+            : "error",
+      message: located[5],
+    };
+
+  if (language === "rust") {
+    const header = /^(error|warning)(?:\[[^\]]+\])?: (.+)$/.exec(line);
+    const span = /^\s*--> (.+):(\d+):(\d+)$/.exec(lines[index + 1] ?? "");
+    if (header && span)
+      return {
+        path: span[1],
+        row: Number(span[2]),
+        column: Number(span[3]),
+        unit: "scalar",
+        severity: header[1] === "warning" ? "warning" : "error",
+        message: header[2],
+      };
+  }
+
+  if (language === "go") {
+    const match = /^(.+?):(\d+):(?:(\d+):)? (.+)$/.exec(line);
+    if (match)
+      return {
+        path: match[1],
+        row: Number(match[2]),
+        column: Number(match[3] ?? 1),
+        unit: "byte",
+        severity: "error",
+        message: match[4],
+      };
+  }
+
+  if (language === "typescript" || language === "csharp") {
+    const match =
+      /^(.+?)\((\d+),(\d+)\): (error|warning) ((?:TS|CS)\d+: .+)$/.exec(line);
+    if (match)
+      return {
+        path: match[1],
+        row: Number(match[2]),
+        column: Number(match[3]),
+        unit: "utf16",
+        severity: match[4] === "warning" ? "warning" : "error",
+        message: match[5].replace(/ \[.*\.csproj\]$/, ""),
+      };
+  }
+
+  const caret = /^([ \t]*)\^/.exec(lines[index + 2] ?? "");
+  if (language === "java") {
+    const match = /^(.+?\.java):(\d+): (error|warning): (.+)$/i.exec(line);
+    if (match)
+      return {
+        path: match[1],
+        row: Number(match[2]),
+        column: (caret?.[1].length ?? 0) + 1,
+        unit: "utf16",
+        severity: match[3] === "warning" ? "warning" : "error",
+        message: match[4],
+      };
+  }
+
+  if (language === "javascript" || language === "typescript") {
+    const match = /^(.+):(\d+)$/.exec(line);
+    const message =
+      lines[index + 3] === "" ? lines[index + 4] : lines[index + 3];
+    const syntax = /^SyntaxError(?: \[[^\]]+\])?: (.+)$/.exec(message ?? "");
+    if (match && caret && syntax)
+      return {
+        path: match[1],
+        row: Number(match[2]),
+        column: caret[1].length + 1,
+        unit: "utf16",
+        severity: "error",
+        message: syntax[1],
+      };
+  }
+}
+
+function isStagedSource(
+  path: string,
+  name: string,
+  language: ExecutionLanguage,
+) {
+  if (path.startsWith("file://")) {
+    try {
+      path = decodeURIComponent(new URL(path).pathname);
+    } catch {
+      return false;
+    }
+  }
+  const segments = path.replaceAll("\\", "/").split("/");
+  const dot = name.lastIndexOf(".");
+  const stagedName = name.slice(0, dot) + name.slice(dot).toLowerCase();
+  return (
+    (segments.at(-1) === name || segments.at(-1) === stagedName) &&
+    (segments.at(-2)?.startsWith("turing-run-") ||
+      (language === "go" && segments.length === 2 && segments[0] === "."))
+  );
+}
+
 export function compilerProblems(
   run: ReturnType<typeof useExecution>["run"],
   tabs: EditorTab[],
 ): Problem[] {
-  if (!run || run.language !== "cpp" || run.cancelled) return [];
+  if (!run || run.language === "python" || run.cancelled) return [];
   const tab = tabs.find(
     (tab) =>
       tab.key === run.document.key &&
@@ -137,46 +263,55 @@ export function compilerProblems(
       tab.source.version === run.document.version,
   );
   if (!tab) return [];
-  const lines = tab.content.split(/\r?\n/);
-  return run.output
-    .filter((chunk) => chunk.stream === "buildStderr")
-    .flatMap((chunk) => chunk.text.split(/\r?\n/))
-    .flatMap((line, index): Problem[] => {
-      const match =
-        /^(.+?):(\d+):(\d+): (fatal error|error|warning|note): (.+)$/.exec(
-          line,
-        );
-      if (!match) return [];
-      const path = match[1].replaceAll("\\", "/").split("/");
-      if (path.at(-1) !== tab.name || !path.at(-2)?.startsWith("turing-run-"))
-        return [];
-      const row = Number(match[2]) - 1;
-      const column = Number(match[3]) - 1;
-      // A line outside the compiled text cannot be converted; keep the
-      // reported column and let the editor clamp it when revealing.
-      const text = lines[row];
-      const start = position({
-        line: row,
-        character: text === undefined ? column : utf16Column(text, column),
+  const source = tab.content.split(/\r?\n/);
+  const streams =
+    run.language === "csharp"
+      ? ["buildStdout", "buildStderr"]
+      : run.language === "typescript" || run.language === "java"
+        ? ["buildStderr", "stderr"]
+        : ["buildStderr"];
+  const problems: Problem[] = [];
+  const seen = new Set<string>();
+  for (const stream of streams) {
+    const lines = run.output
+      .filter((chunk) => chunk.stream === stream)
+      .map(({ text }) => text)
+      .join("")
+      .split(/\r?\n/);
+    for (const [index] of lines.entries()) {
+      const item = buildDiagnostic(run.language, lines, index);
+      if (!item || !isStagedSource(item.path, tab.name, run.language)) continue;
+      const line = item.row - 1;
+      const rawColumn = item.column - 1;
+      const text = source[line];
+      let character = rawColumn;
+      if (text !== undefined && rawColumn >= 0) {
+        if (item.unit === "byte") character = utf16Column(text, rawColumn);
+        else if (item.unit === "scalar")
+          character = Array.from(text).slice(0, rawColumn).join("").length;
+        else character = Math.min(rawColumn, text.length);
+      }
+      const start = position({ line, character });
+      const key = JSON.stringify([
+        line,
+        character,
+        item.severity,
+        item.message,
+      ]);
+      if (!start || seen.has(key)) continue;
+      seen.add(key);
+      problems.push({
+        id: `compiler:${tab.key}:${stream}:${index}`,
+        tabKey: tab.key,
+        filename: tab.title,
+        source: "compiler",
+        severity: item.severity,
+        message: item.message.slice(0, 2000),
+        start,
+        end: start,
       });
-      if (!start) return [];
-      return [
-        {
-          id: `compiler:${tab.key}:${index}`,
-          tabKey: tab.key,
-          filename: tab.title,
-          source: "compiler",
-          severity:
-            match[4] === "warning"
-              ? "warning"
-              : match[4] === "note"
-                ? "info"
-                : "error",
-          message: match[5].slice(0, 2000),
-          start,
-          end: start,
-        },
-      ];
-    })
-    .slice(0, 200);
+      if (problems.length === 200) return problems;
+    }
+  }
+  return problems;
 }

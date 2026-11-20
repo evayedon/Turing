@@ -278,6 +278,11 @@ export function Workbench() {
   const active = editor.active;
   const runLanguage = active && executionLanguage(active.name);
   const cannotRun = active && runDisabledReason(active, explorer.native);
+  const runDescription =
+    cannotRun ||
+    (execution.run?.language === runLanguage
+      ? execution.run?.unavailableTool
+      : undefined);
   const openFolder = () => editor.changeWorkspace(explorer.open);
   const native = explorer.native;
   const workspaceBusy = !!explorer.busy || editor.busy;
@@ -684,7 +689,10 @@ export function Workbench() {
               onSaveCommand={() => runCommand("save")}
               runControls={
                 active && (
-                  <div className="editor-run" title={cannotRun || undefined}>
+                  <div
+                    className="editor-run"
+                    title={runDescription || undefined}
+                  >
                     {runLanguage && <span>{languageLabels[runLanguage]}</span>}
                     {execution.busy ? (
                       <>
@@ -701,8 +709,8 @@ export function Workbench() {
                       <button
                         type="button"
                         aria-keyshortcuts="F5"
-                        aria-description={cannotRun || undefined}
-                        title={cannotRun || "Run File (F5)"}
+                        aria-description={runDescription || undefined}
+                        title={runDescription || "Run File (F5)"}
                         disabled={!commands.run.enabled}
                         onClick={() => runCommand("run")}
                       >
@@ -1064,7 +1072,7 @@ export function Workbench() {
           <p>Turing Core v0.1.0</p>
           <p>
             Desktop code editor with workspace search, an integrated terminal,
-            and Python and C++ Run &amp; Build.
+            and Run &amp; Build.
           </p>
         </WorkbenchDialog>
       )}
