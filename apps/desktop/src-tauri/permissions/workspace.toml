@@ -27,3 +27,8 @@ commands.allow = ["workspace_search_begin", "workspace_search_run", "workspace_s
 identifier = "allow-workspace-entry-mutations"
 description = "Create a new file and rename a listed regular workspace entry without replacing an existing name."
 commands.allow = ["workspace_create_file", "workspace_rename_entry"]
+
+[[permission]]
+identifier = "allow-workspace-watch"
+description = "Poll coalesced change hints for the active authorized workspace."
+commands.allow = ["workspace_watch_poll"]

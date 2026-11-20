@@ -128,7 +128,9 @@ document. The editor retains its draft and reports the conflict. Ordinary Unix
 permission bits are carried forward. Replacement creates a new inode, so hard
 link associations, extended attributes, and custom ACLs are outside the current
 save guarantees. File checks on focus and every four seconds cover the active
-tab. Each save checks its version independently.
+tab, and workspace watcher events revalidate every touched tab (see
+[Workspace watcher](#workspace-watcher)). Each save checks its version
+independently.
 
 The File menu's Auto Save setting is off at startup and applies for the current
 session. It waits one second before saving changed, already named desktop tabs
@@ -181,6 +183,84 @@ and disposes them after the last group drops the tab and the views have
 detached. The primary group registers language providers for all visible
 models. Editor commands, status and Problems navigation (including F8)
 follow the active group.
+
+### Draft recovery
+
+The desktop workbench journals unsaved text in its local WebView storage,
+with separate records for each dirty buffer. Snapshots are written at most
+once per 400 ms during editing and flushed when the page is hidden or unloaded.
+A hard crash can lose edits made since the last snapshot. Storage failures are
+shown in the editor. Browser previews still keep drafts in memory.
+
+On the next launch, **Recover unsaved drafts** offers Restore and Discard.
+To restore into a workspace file, reopen the original workspace through the
+native picker. The editor reads the file through the new grant and compares
+the saved base version. A mismatch keeps the newer disk text intact and
+offers Save As. Missing files, standalone files, and workspaces without a
+current matching grant recover as untitled copies. The journal grants no
+filesystem access, and recovered tabs wait for an explicit save even when
+Auto Save is enabled. Save, successful reload, or confirmed discard removes
+the corresponding snapshot. A restored snapshot is replaced only after its
+new journal record has been written. Restoring opens the draft in the active
+editor group. Closing a group that shares the draft with another group keeps
+the draft and its journal entry. Closing its last view requires confirmation.
+
+## Workspace watcher
+
+Rust starts one recursive OS watcher (the `notify` crate: FSEvents, inotify or
+ReadDirectoryChangesW) for each approved workspace registration when
+`workspace_open` succeeds. The watcher is created without holding the registry
+lock and is attached only if the same caller and registration are still
+active, so a watcher that finishes starting after a close or replacement is
+dropped. Watching is best effort: if it cannot start, the workspace still
+opens and the views keep their manual and periodic checks.
+
+**Security model.** Events are hints, never grants. The webview can only poll
+`workspace_watch_poll` (permission `allow-workspace-watch`) for the caller's
+active registration; any other ID is `PERMISSION_DENIED`. The watcher does not
+follow symbolic links. OS event paths are converted to workspace-relative
+paths under the canonical root and dropped if they lie outside it, contain a
+non-normal or unrepresentable component, or fall inside `.turing-save-*`
+staging. At poll time each path is checked against the retained root handle,
+and paths below an existing link or reparse point are dropped. Each poll also
+compares the canonical root path with the approved handle. If the root was
+moved, deleted or replaced, the watcher stops and reports one rescan, so
+events from an unapproved directory at the old path are never forwarded.
+Views act on hints only through the authorized listing and read commands.
+
+**Coalescing.** Pending paths form a set in which a path stands for itself and
+everything below it, so an ancestor absorbs its descendants. A burst is
+delivered once no event has arrived for 150 ms or its first event is one
+second old. Reads and opens are ignored.
+
+**Overflow.** A queue overflow, any watcher error, an event without paths, a
+change to the root itself, or more than 256 distinct pending paths replaces
+the per-path set with a single `rescan` signal. On rescan the Explorer
+re-lists every loaded folder and the editor revalidates every workspace tab.
+
+**Lifecycle.** Each watcher belongs to one registration. Closing or replacing
+the workspace, a page load and window destruction or app exit drop it. Before
+the OS watcher stops, its inbox is closed, so late callbacks are discarded and
+cannot reach a later registration.
+
+**Frontend.** The workbench polls every 500 ms while the document is visible,
+backs off to 2 s after a transient failure and stops on `PERMISSION_DENIED`.
+Replies for a workspace that is no longer current are dropped. The Explorer
+re-lists each loaded folder that contains a changed path or lies below one,
+and forgets folders that no longer exist, moving the browse location to the
+parent. The editor re-reads touched workspace tabs and sets `changedOnDisk`
+when the version differs or the file is gone. Each touched document is checked
+once per change set, and all its groups share the flag. The watcher preserves
+drafts, and a
+reply applies only to the revision it was issued for, so Turing's own saves
+and renames win. A tab whose file was renamed outside Turing is flagged as
+changed, not moved to the new name. Its save is refused as a conflict until the
+user reloads or uses Save As.
+
+The active-tab check on focus and every four seconds remains as a fallback.
+`notify` cannot report a ReadDirectoryChangesW buffer overflow on Windows, and
+network or virtual filesystems may not deliver events. Runtime behavior on
+Linux and Windows is covered only by CI unit tests, not GUI smoke tests.
 
 ## Workbench layout
 
@@ -394,6 +474,58 @@ Window** opens a terminal-only application window with no workspace,
 editor, or Run & Build capability, and starts and focuses a shell in it.
 Closing it cleans up its sessions.
 PTYs execute with the user's operating-system privileges.
+
+### Native lifecycle smoke harness
+
+Tauri's WebDriver does not support macOS, so a Rust-driven harness checks the
+native window lifecycle on all three CI platforms. It is compiled only with
+the non-default `smoke` cargo feature and runs only when `TURING_SMOKE=1` is
+set. Normal and release builds contain no harness code, readiness script or
+extra IPC command, and a smoke build started without the variable behaves like
+a normal build. The harness adds no command, permission or capability.
+
+Run it locally after building the frontend:
+
+```sh
+pnpm build
+cd apps/desktop/src-tauri
+cargo build --release --features smoke,tauri/custom-protocol
+TURING_SMOKE=1 ./target/release/turing-core   # turing-core.exe on Windows
+```
+
+`tauri/custom-protocol` makes Cargo embed `dist` the same way `tauri build`
+does; without it the binary points at the dev server. Use
+`TURING_SMOKE_OUTPUT=<file>` to also write the summary to a file, which is
+useful where a GUI-subsystem Windows build has no console, and
+`TURING_SMOKE_TIMEOUT_SECS` to change the 180-second overall limit.
+
+The harness waits for the main page to load. It then opens two workbench
+windows and two terminal windows, one after another, through
+`windows::build`, the code behind **New Window** and **New Terminal Window**. For
+each window it waits for the page-load `Finished` event and for the frontend to
+mount. A smoke-only initialization script sets a sentinel document title once
+React renders into `#root`, and Rust observes the title. In each terminal window it waits until the
+frontend has started a PTY through the normal `terminal_start` IPC and
+`TerminalService`. It then closes every window the normal way, so workbenches
+go through the frontend's close flow and `editor_exit`. It checks that each
+window's registry entry and PTY sessions are released and that the registry and
+native window list hold only `main`. It prints one JSON line to stdout and exits
+with code 0. A failure or timeout prints the same JSON with `"status":"failed"`
+and an `error` message, and exits with code 1. Each step has a 60-second limit
+and a watchdog enforces the overall limit.
+
+The summary is the baseline for startup and interaction timing. All values are
+milliseconds: `mainPageLoadedMs` from process start, and per window
+`openToPageLoadedMs`, `openToReadyMs`, `readyToPtyMs` for terminals, and
+`closeMs`. `totalMs` covers the whole run.
+
+CI builds the harness without installers and runs it on macOS and Windows
+directly and on Linux under `xvfb-run`. It verifies window creation, page load,
+frontend mount, ACL-checked IPC from new windows, PTY start and teardown,
+and resource cleanup. It does not check pixels, layout, focus, keyboard or
+pointer interaction, editor behaviour, shell output, workspace access, or
+dirty-document prompts. A passing run does not show that installers or signed
+bundles launch.
 
 ## Code navigation and debugging status
 

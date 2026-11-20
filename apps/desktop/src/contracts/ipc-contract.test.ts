@@ -25,6 +25,7 @@ import type {
   TerminalOutput,
   TerminalStarted,
   TextFile,
+  WorkspaceChanges,
   WorkspaceDescriptor,
   WorkspaceError,
 } from "@turing/contracts";
@@ -227,6 +228,10 @@ const payloads: Record<keyof typeof fixture.payloads, Spec> = {
     content: "required",
     encoding: { values: ["utf-8"] },
     version: "required",
+  }),
+  WorkspaceChanges: shape<WorkspaceChanges>()({
+    paths: "required",
+    rescan: "required",
   }),
   SearchResponse: shape<SearchResponse>()({
     files: {

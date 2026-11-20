@@ -25,6 +25,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invoke,
   isTauri: () => true,
 }));
+
+// The workspace watcher polls in the background; hold it out of IPC sequences.
+vi.mock("../explorer/watch-ipc", () => ({
+  pollWorkspaceChanges: vi.fn(() => new Promise(() => {})),
+}));
 vi.mock("./terminal-view", () => ({ createTerminalView: mocks.create }));
 
 function deferred<T>() {

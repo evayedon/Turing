@@ -1,4 +1,5 @@
 import { FileCode2, X } from "lucide-react";
+import { isDirty } from "./use-draft-recovery";
 import type { EditorTab } from "./use-editor";
 
 /** One editor group's tabs, with arrow-key, Home and End navigation. */
@@ -21,7 +22,7 @@ export function EditorTabStrip({
     <div className="editor-tabs" role="tablist" aria-label={label}>
       {tabs.map((tab) => {
         const { name } = tab;
-        const dirty = tab.draft !== tab.content;
+        const dirty = isDirty(tab);
         return (
           <div className="editor-tab" key={tab.key}>
             <button

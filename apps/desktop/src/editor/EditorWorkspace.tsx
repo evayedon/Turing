@@ -47,6 +47,10 @@ export function EditorWorkspace({
   groups,
   active,
   reveal,
+  recoveryDrafts,
+  recoveryError,
+  restoreDraft,
+  discardDraft,
   busy,
   readOnly,
   error,
@@ -171,12 +175,27 @@ export function EditorWorkspace({
             {error}
           </p>
         )}
-        {isActive && active?.changedOnDisk && (
+        {shown?.recovered && (
+          <p className="editor-notice" role="status">
+            {shown.changedOnDisk
+              ? "The file on disk changed since this draft was saved. Use Save As to keep a separate copy."
+              : shown.source.kind === "untitled"
+                ? "Recovered copy. Use Save As to choose where to save it."
+                : "Recovered draft. Save when you are ready to write it to disk."}
+          </p>
+        )}
+        {shown?.changedOnDisk && (
           <div className="editor-notice">
             <span>This file changed on disk.</span>
-            <button type="button" disabled={busy} onClick={() => void reload()}>
-              Reload from disk
-            </button>
+            {isActive && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void reload()}
+              >
+                Reload from disk
+              </button>
+            )}
           </div>
         )}
         {shown ? (
@@ -216,5 +235,54 @@ export function EditorWorkspace({
     );
   }
 
-  return <div className="editor-groups">{groups.groups.map(pane)}</div>;
+  return (
+    <>
+      {recoveryError && (
+        <p className="editor-notice" role="alert">
+          {recoveryError}
+        </p>
+      )}
+      {recoveryDrafts.length > 0 && (
+        <details className="editor-recovery">
+          <summary>Recover unsaved drafts ({recoveryDrafts.length})</summary>
+          {recoveryDrafts.some(({ source }) => source.kind === "workspace") && (
+            <p>Open the original workspace to restore a draft to its file.</p>
+          )}
+          <ul>
+            {recoveryDrafts.map((entry) => (
+              <li key={entry.id}>
+                <span
+                  title={
+                    entry.source.kind === "workspace"
+                      ? `${entry.source.root}/${entry.title}`
+                      : entry.title
+                  }
+                >
+                  {entry.name}
+                  {entry.source.kind === "workspace" && (
+                    <small>{entry.source.root}</small>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void restoreDraft(entry)}
+                >
+                  Restore <span className="visually-hidden">{entry.name}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void discardDraft(entry)}
+                >
+                  Discard <span className="visually-hidden">{entry.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <div className="editor-groups">{groups.groups.map(pane)}</div>
+    </>
+  );
 }

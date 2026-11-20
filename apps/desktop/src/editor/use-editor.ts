@@ -1,3 +1,8 @@
+import {
+  isDirty,
+  useDraftRecovery,
+  type RecoveryDraft,
+} from "./use-draft-recovery";
 import type { NavigationTarget } from "./navigation";
 import {
   activeDocument,
@@ -26,8 +31,10 @@ import {
 import type {
   SelectedFileSnapshot,
   TextFile,
+  WorkspaceChanges,
   WorkspaceCommands,
 } from "@turing/contracts";
+import { touches } from "../explorer/use-workspace-watcher";
 import {
   invokeWorkspace,
   workspaceErrorMessage,
@@ -66,6 +73,7 @@ export interface EditorTab {
   changedOnDisk: boolean;
   languageOverride?: string;
   saveError?: string;
+  recovered?: boolean;
 }
 
 type NewTab = Omit<EditorTab, "key" | "revision" | "uri">;
@@ -131,6 +139,26 @@ function writeFile(source: SavedSource, content: string) {
   });
 }
 
+/** Read failures that mean the saved source no longer matches disk. */
+const missingOnDisk = [
+  "FILE_CONFLICT",
+  "NOT_FOUND",
+  "NOT_FILE",
+  "OUTSIDE_WORKSPACE",
+  "INVALID_ENCODING",
+  "FILE_TOO_LARGE",
+];
+
+/** Compares disk with the saved version; `undefined` if it cannot tell. */
+async function diskChanged(source: SavedSource) {
+  try {
+    const file = await readFile(source);
+    return file.version !== source.version;
+  } catch (cause) {
+    return missingOnDisk.includes(String(cause)) ? true : undefined;
+  }
+}
+
 export const AUTO_SAVE_DELAY_MS = 1000;
 export const autoSaveKey = "turing:auto-save:v1";
 
@@ -146,7 +174,12 @@ type Operation = "foreground" | "automatic";
 type DiscardAction =
   WorkspaceCommands["editor_confirm_discard"]["args"]["action"];
 
-export function useEditor(workspaceId: string | undefined, native: boolean) {
+export function useEditor(
+  workspaceId: string | undefined,
+  native: boolean,
+  workspacePath?: string,
+) {
+  const recovery = useDraftRecovery(native);
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   // Always the latest tabs, so work resumed after an await never acts on, or
   // writes back, a stale snapshot. Every change goes through `commitTabs`.
@@ -170,7 +203,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const untitledCount = useRef(0);
   const tabSequence = useRef(0);
   const active = tabs.find((tab) => tab.key === activeKey);
-  const dirty = tabs.some((tab) => tab.draft !== tab.content);
+  const dirty = tabs.some(isDirty);
   const canSave =
     native &&
     !!active &&
@@ -181,7 +214,9 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   }, [workspaceId]);
 
   function commitTabs(next: (previous: EditorTab[]) => EditorTab[]) {
-    latest.current = next(latest.current);
+    const previous = latest.current;
+    latest.current = next(previous);
+    recovery.track(previous, latest.current, workspacePath);
     setTabs(latest.current);
   }
 
@@ -213,6 +248,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
             tab.source.kind !== "untitled" &&
             tab.draft !== tab.content &&
             !tab.changedOnDisk &&
+            !tab.recovered &&
             !tab.saveError,
         )
       : undefined;
@@ -366,6 +402,68 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     });
   }
 
+  function restoreDraft(entry: RecoveryDraft) {
+    return perform(async () => {
+      const source = entry.source;
+      let tab: NewTab | undefined;
+      if (
+        source.kind === "workspace" &&
+        workspaceId &&
+        workspacePath === source.root &&
+        !latest.current.some(
+          ({ source: open }) =>
+            open.kind === "workspace" &&
+            open.workspaceId === workspaceId &&
+            open.relativePath === source.relativePath,
+        )
+      ) {
+        try {
+          const file = await invokeWorkspace("fs_read_file", {
+            workspaceId,
+            relativePath: source.relativePath,
+          });
+          if (currentWorkspace.current !== workspaceId) return;
+          if (file.content === entry.draft) {
+            recovery.remove(entry.id, entry);
+            addTab(workspaceTab(file));
+            return;
+          }
+          tab = {
+            ...workspaceTab(file),
+            source: {
+              kind: "workspace",
+              workspaceId,
+              relativePath: source.relativePath,
+              version: source.version,
+            },
+            changedOnDisk: file.version !== source.version,
+          };
+        } catch (cause) {
+          if (!missingOnDisk.includes(String(cause))) throw cause;
+        }
+      }
+      const key = addTab({
+        ...(tab ?? {
+          name: `Recovered-${++untitledCount.current}-${entry.name}`,
+          title: entry.title,
+          source: { kind: "untitled" },
+          content: "",
+          changedOnDisk: false,
+        }),
+        draft: entry.draft,
+        recovered: true,
+        languageOverride: entry.languageOverride,
+      });
+      recovery.recovered(entry, key);
+    });
+  }
+
+  function discardDraft(entry: RecoveryDraft) {
+    return perform(async () => {
+      if (await confirmDiscard("tab")) recovery.remove(entry.id, entry);
+    });
+  }
+
   function newFile() {
     if (pending.current) return;
     const name = `Untitled-${++untitledCount.current}`;
@@ -483,11 +581,12 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       const shown = latestGroups.current.groups.some(
         ({ id, keys }) => id === from && keys.includes(key),
       );
-      if (shown && viewCount(latestGroups.current, key) > 1) {
+      if (!shown) return;
+      if (viewCount(latestGroups.current, key) > 1) {
         commitGroups((previous) => closeDocumentInGroup(previous, key, from));
         return;
       }
-      if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
+      if (isDirty(tab) && !(await confirmDiscard("tab"))) return;
       await releaseFile(tab, latest.current);
       commitTabs((previous) => previous.filter((item) => item.key !== key));
       forgetDocuments([key]);
@@ -506,7 +605,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         (key) => find(key) ?? [],
       );
       for (const tab of closing)
-        if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
+        if (isDirty(tab) && !(await confirmDiscard("tab"))) return;
       const remaining = [...closing];
       try {
         while (remaining.length) {
@@ -531,10 +630,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   function closeAll() {
     return perform(async () => {
-      if (
-        latest.current.some((tab) => tab.draft !== tab.content) &&
-        !(await confirmDiscard("closeAll"))
-      )
+      if (latest.current.some(isDirty) && !(await confirmDiscard("closeAll")))
         return;
       const remaining = [...latest.current];
       try {
@@ -591,6 +687,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       update(active, {
         ...selectedTab({ ...file, content: active.draft }),
         saveError: undefined,
+        recovered: false,
       });
       if (
         active.source.kind === "selected" &&
@@ -612,6 +709,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         update(tab, {
           content: draft,
           savedVersion: version,
+          recovered: false,
           source: { ...source, version },
           changedOnDisk: false,
           saveError: undefined,
@@ -676,6 +774,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       update(active, {
         content: file.content,
         draft: file.content,
+        recovered: false,
         source: { ...source, version: file.version },
         changedOnDisk: false,
         saveError: undefined,
@@ -688,10 +787,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       const workspaceTabs = latest.current.filter(
         (tab) => tab.source.kind === "workspace",
       );
-      if (
-        workspaceTabs.some((tab) => tab.draft !== tab.content) &&
-        !(await confirmDiscard("workspace"))
-      )
+      if (workspaceTabs.some(isDirty) && !(await confirmDiscard("workspace")))
         return;
       if (await action()) {
         commitTabs((previous) =>
@@ -710,7 +806,13 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     setExitPending(false);
     void perform(async () => {
       if (!dirty || (await confirmDiscard("exit"))) {
-        await invokeWorkspace("editor_exit", undefined);
+        recovery.track(latest.current, [], workspacePath);
+        try {
+          await invokeWorkspace("editor_exit", undefined);
+        } catch (cause) {
+          recovery.track([], latest.current, workspacePath);
+          throw cause;
+        }
       }
     });
   });
@@ -742,27 +844,43 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const checkActive = useEffectEvent(async () => {
     const tab = active;
     if (!tab || tab.source.kind === "untitled" || pending.current) return;
-    let changed: boolean;
-    try {
-      const latest = await readFile(tab.source);
-      changed = latest.version !== tab.source.version;
-    } catch (cause) {
-      if (
-        ![
-          "FILE_CONFLICT",
-          "NOT_FOUND",
-          "NOT_FILE",
-          "OUTSIDE_WORKSPACE",
-          "INVALID_ENCODING",
-          "FILE_TOO_LARGE",
-        ].includes(String(cause))
-      )
-        return;
-      changed = true;
-    }
+    const changed = await diskChanged(tab.source);
+    if (changed === undefined) return;
     if (!pending.current && changed !== tab.changedOnDisk)
       update(tab, { changedOnDisk: changed });
   });
+
+  /**
+   * Revalidates every open tab of `id` that a watcher change set touches
+   * (all of them on rescan). Only the saved version is compared: drafts are
+   * never replaced, and a tab whose file was renamed or removed outside
+   * Turing is flagged instead of silently following the new name. Replies
+   * apply only to the revision they were issued for, so a concurrent save,
+   * reload or rename wins.
+   */
+  async function applyDiskChanges(id: string, changes: WorkspaceChanges) {
+    if (currentWorkspace.current !== id) return;
+    const affected = latest.current.filter(
+      (tab) =>
+        tab.source.kind === "workspace" &&
+        tab.source.workspaceId === id &&
+        touches(changes, tab.source.relativePath),
+    );
+    await Promise.all(
+      affected.map(async (tab) => {
+        if (tab.source.kind !== "workspace") return;
+        const changed = await diskChanged(tab.source);
+        const current = find(tab.key);
+        if (
+          changed === undefined ||
+          current?.revision !== tab.revision ||
+          current.changedOnDisk === changed
+        )
+          return;
+        update(tab, { changedOnDisk: changed });
+      }),
+    );
+  }
 
   useEffect(() => {
     if (!activeKey || !native) return;
@@ -782,6 +900,10 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     groups,
     active,
     reveal,
+    recoveryDrafts: recovery.available,
+    recoveryError: recovery.error,
+    restoreDraft,
+    discardDraft,
     busy,
     error: error ?? active?.saveError,
     readOnly: operation === "foreground",
@@ -808,5 +930,6 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     setLanguage,
     reload,
     changeWorkspace,
+    applyDiskChanges,
   };
 }

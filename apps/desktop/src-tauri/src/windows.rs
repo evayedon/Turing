@@ -40,6 +40,7 @@ impl Resources {
     fn reload(&self) {
         self.language.revoke(false);
         self.terminal.close_all();
+        self.workspace.stop_watch();
     }
 
     fn shutdown(&self) {
@@ -83,6 +84,18 @@ impl Windows {
 
     pub fn get(&self, label: &str) -> Option<Arc<Resources>> {
         self.0.lock().ok()?.get(label).cloned()
+    }
+
+    /// Registered window labels in sorted order, for lifecycle checks.
+    #[cfg(any(test, feature = "smoke"))]
+    pub fn labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = self
+            .0
+            .lock()
+            .map(|windows| windows.keys().cloned().collect())
+            .unwrap_or_default();
+        labels.sort();
+        labels
     }
 
     pub fn page_loading(&self, label: &str) {
@@ -131,7 +144,9 @@ pub fn workbench(window: &WebviewWindow) -> Result<Arc<Resources>, WorkspaceErro
     Ok(resources)
 }
 
-fn build(window: WebviewWindow, kind: Kind) -> Result<(), WorkspaceError> {
+/// Registers and creates a window on behalf of the workbench `window`,
+/// returning the new window's label.
+pub(crate) fn build(window: WebviewWindow, kind: Kind) -> Result<String, WorkspaceError> {
     workbench(&window)?;
     let manager = window.app_handle();
     let windows = manager.state::<Windows>();
@@ -140,34 +155,50 @@ fn build(window: WebviewWindow, kind: Kind) -> Result<(), WorkspaceError> {
         Kind::Workbench => ("Turing Core", 1280., 800., 680., 480.),
         Kind::Terminal => ("Turing Terminal", 850., 560., 440., 300.),
     };
-    if WebviewWindowBuilder::new(manager, &label, WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(manager, &label, WebviewUrl::App("index.html".into()))
         .title(title)
         .inner_size(width, height)
         .min_inner_size(min_width, min_height)
-        .theme(Some(tauri::Theme::Dark))
-        .build()
-        .is_err()
-    {
+        .theme(Some(tauri::Theme::Dark));
+    #[cfg(feature = "smoke")]
+    let builder = crate::smoke::instrument(manager, builder);
+    if builder.build().is_err() {
         windows.remove(&label);
         return Err(WorkspaceError::IoError);
     }
-    Ok(())
+    Ok(label)
 }
 
 // Async commands avoid the synchronous webview creation deadlock on Windows.
 #[tauri::command]
 pub async fn window_new_workbench(window: WebviewWindow) -> Result<(), WorkspaceError> {
-    build(window, Kind::Workbench)
+    build(window, Kind::Workbench).map(drop)
 }
 
 #[tauri::command]
 pub async fn window_new_terminal(window: WebviewWindow) -> Result<(), WorkspaceError> {
-    build(window, Kind::Terminal)
+    build(window, Kind::Terminal).map(drop)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_registry_lists_labels_and_empties_back_to_main() {
+        let windows = Windows::default();
+        assert_eq!(windows.labels(), ["main"]);
+        let workbench = windows.register(Kind::Workbench).unwrap();
+        let terminal = windows.register(Kind::Terminal).unwrap();
+        let mut expected = vec!["main".to_owned(), workbench.clone(), terminal.clone()];
+        expected.sort();
+        assert_eq!(windows.labels(), expected);
+        windows.remove(&workbench);
+        windows.remove(&terminal);
+        assert_eq!(windows.labels(), ["main"]);
+        windows.shutdown();
+        assert!(windows.labels().is_empty());
+    }
 
     #[test]
     fn window_registry_never_reuses_a_label_or_shares_workspace_grants() {
@@ -217,8 +248,11 @@ mod tests {
             .start(&terminal, portable_pty::PtySize::default(), None)
             .unwrap();
         assert_ne!(first_pty.id, terminal_pty.id);
+        assert_eq!(terminal_resources.terminal.live_sessions(), 1);
         windows.remove(&terminal);
         assert!(windows.get(&terminal).is_none());
+        assert_eq!(terminal_resources.terminal.live_sessions(), 0);
+        assert_eq!(first_resources.terminal.live_sessions(), 1);
         assert!(terminal_resources
             .terminal
             .start(&terminal, portable_pty::PtySize::default(), None)

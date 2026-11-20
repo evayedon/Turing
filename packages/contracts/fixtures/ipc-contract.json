@@ -135,6 +135,10 @@
         "version": "v1"
       }
     ],
+    "WorkspaceChanges": [
+      { "paths": ["src/main.rs", "docs/ünï"], "rescan": false },
+      { "paths": [], "rescan": true }
+    ],
     "SearchResponse": [
       {
         "files": [
