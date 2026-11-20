@@ -56,7 +56,10 @@ export function ProblemsPanel({
                         <span>{problem.message}</span>{" "}
                         <small>
                           {problem.filename}:{problem.start.line + 1}:
-                          {problem.start.character + 1} · {problem.source}
+                          {problem.start.character + 1} ·{" "}
+                          {problem.source === "monaco"
+                            ? "Monaco"
+                            : problem.source}
                         </small>
                       </button>
                     </li>

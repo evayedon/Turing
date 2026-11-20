@@ -2119,3 +2119,17 @@ svg {
   overflow-wrap: anywhere;
   background: var(--nebula-panel);
 }
+
+.monaco-editor.monaco-overflow-host {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: transparent;
+  pointer-events: none;
+}
+
+.monaco-overflow-host
+  :is(.overflowingContentWidgets, .overflowingOverlayWidgets)
+  > * {
+  pointer-events: auto;
+}

@@ -28,7 +28,7 @@ export function ExecutionOutput({
     return (
       <p className="panel-message">
         {native
-          ? "Run a Python or C++ file to see its output. Use Terminal for interactive input."
+          ? "Run a source file to see its output. Use Terminal for interactive input."
           : "Task output is unavailable in browser preview."}
       </p>
     );

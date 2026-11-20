@@ -1,10 +1,11 @@
+import type { ExecutionLanguage } from "@turing/contracts";
+
 type Language = {
   id: string;
   label: string;
   extensions?: readonly string[];
   filenames?: readonly string[];
   monaco?: string;
-  run?: "python" | "cpp";
 };
 
 // Filename metadata mirrors the bundled Monaco 0.57 contributions. Keep it
@@ -142,7 +143,6 @@ export const languages: readonly Language[] = definitions.map(
     filenames: filenames?.split(/ +/),
     monaco:
       id === "jsx" ? "javascript" : id === "tsx" ? "typescript" : undefined,
-    run: id === "python" || id === "cpp" ? id : undefined,
   }),
 );
 
@@ -212,15 +212,31 @@ export function documentLanguage(tab: {
   return languages.find(({ id }) => id === suggested) ?? plaintext;
 }
 
-export function executableLanguage(name: string) {
+const runnableExtensions: ReadonlyMap<string, ExecutionLanguage> = new Map([
+  ["py", "python"],
+  ["cpp", "cpp"],
+  ["cc", "cpp"],
+  ["cxx", "cpp"],
+  ["c", "c"],
+  ["rs", "rust"],
+  ["go", "go"],
+  ["java", "java"],
+  ["js", "javascript"],
+  ["mjs", "javascript"],
+  ["cjs", "javascript"],
+  ["ts", "typescript"],
+  ["mts", "typescript"],
+  ["cts", "typescript"],
+  ["cs", "csharp"],
+]);
+
+export function executableLanguage(
+  name: string,
+): ExecutionLanguage | undefined {
   const extension = extensionOf(name);
-  if (
-    extension === "py" ||
-    extension === "cpp" ||
-    extension === "cc" ||
-    extension === "cxx"
-  )
-    return languageFromName(name).run;
+  return extension === "c" && name.endsWith(".C")
+    ? "cpp"
+    : runnableExtensions.get(extension);
 }
 
 export function suggestedFilename(tab: Parameters<typeof documentLanguage>[0]) {

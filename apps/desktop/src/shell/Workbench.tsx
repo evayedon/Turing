@@ -66,7 +66,10 @@ import { MenuBar } from "./MenuBar";
 import { WorkbenchDialog } from "./WorkbenchDialog";
 import { ProblemsPanel } from "../language/ProblemsPanel";
 import { compilerBatches } from "../language/problems";
-import { currentProblems } from "../language/diagnostic-store";
+import {
+  currentProblems,
+  type DiagnosticBatch,
+} from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import { adjacentProblem, orderProblems } from "../language/problem-navigation";
 import { languagePath, useLanguage } from "../language/use-language";
@@ -144,12 +147,36 @@ export function Workbench() {
     () => compilerBatches(execution.run, compiledTab ? [compiledTab] : []),
     [execution.run, compiledTab],
   );
-  const problems = useMemo(
+  const [monacoBatches, setMonacoBatches] = useState<DiagnosticBatch[]>([]);
+  function publishMonacoDiagnostics(batches: DiagnosticBatch[]) {
+    const open = new Set(editor.tabs.map(({ key }) => key));
+    const updated = new Set(batches.map(({ stamp }) => stamp.key));
+    const nonempty = batches.filter(({ problems }) => problems.length);
+    setMonacoBatches((previous) => {
+      const retained = previous.filter(
+        ({ stamp }) => open.has(stamp.key) && !updated.has(stamp.key),
+      );
+      return !nonempty.length && retained.length === previous.length
+        ? previous
+        : [...retained, ...nonempty];
+    });
+  }
+  const nativeProblems = useMemo(
     () =>
       language.batches.length || compiler.length
         ? currentProblems([...language.batches, ...compiler], editor.tabs)
         : NO_PROBLEMS,
     [language.batches, compiler, editor.tabs],
+  );
+  const problems = useMemo(
+    () =>
+      monacoBatches.length
+        ? currentProblems(
+            [...language.batches, ...compiler, ...monacoBatches],
+            editor.tabs,
+          )
+        : nativeProblems,
+    [language.batches, compiler, monacoBatches, editor.tabs, nativeProblems],
   );
   const tabOrder = editor.tabs.map(({ key }) => key);
   const navigable = orderProblems(problems, tabOrder);
@@ -278,6 +305,11 @@ export function Workbench() {
   const active = editor.active;
   const runLanguage = active && executionLanguage(active.name);
   const cannotRun = active && runDisabledReason(active, explorer.native);
+  const runDescription =
+    cannotRun ||
+    (execution.run?.language === runLanguage
+      ? execution.run?.unavailableTool
+      : undefined);
   const openFolder = () => editor.changeWorkspace(explorer.open);
   const native = explorer.native;
   const workspaceBusy = !!explorer.busy || editor.busy;
@@ -557,7 +589,10 @@ export function Workbench() {
             </span>
             <span className="brand-name">Turing Core</span>
           </h1>
-          <MenuBar commands={commands} onRun={(id) => runCommand(id, "menu")} />
+          <MenuBar
+            commands={() => describeCommands(commandState)}
+            onRun={(id) => runCommand(id, "menu")}
+          />
         </div>
         <button
           type="button"
@@ -680,13 +715,17 @@ export function Workbench() {
               {...editor}
               sharedModels={models}
               language={language}
-              problems={problems}
+              problems={nativeProblems}
+              onMonacoDiagnostics={publishMonacoDiagnostics}
               workspaceId={explorer.workspace?.id}
               onCommandsReady={setEditorCommands}
               onSaveCommand={() => runCommand("save")}
               runControls={
                 active && (
-                  <div className="editor-run" title={cannotRun || undefined}>
+                  <div
+                    className="editor-run"
+                    title={runDescription || undefined}
+                  >
                     {runLanguage && <span>{languageLabels[runLanguage]}</span>}
                     {execution.busy ? (
                       <>
@@ -703,8 +742,8 @@ export function Workbench() {
                       <button
                         type="button"
                         aria-keyshortcuts="F5"
-                        aria-description={cannotRun || undefined}
-                        title={cannotRun || "Run File (F5)"}
+                        aria-description={runDescription || undefined}
+                        title={runDescription || "Run File (F5)"}
                         disabled={!commands.run.enabled}
                         onClick={() => runCommand("run")}
                       >
@@ -884,7 +923,15 @@ export function Workbench() {
             <LanguagePicker
               key={active.key}
               tab={active}
-              select={editor.setLanguage}
+              select={(mode) => {
+                if (active.languageOverride === mode) return;
+                setMonacoBatches((previous) =>
+                  previous.some(({ stamp }) => stamp.key === active.key)
+                    ? previous.filter(({ stamp }) => stamp.key !== active.key)
+                    : previous,
+                );
+                editor.setLanguage(mode);
+              }}
             />
           )}
         </div>
@@ -1066,7 +1113,7 @@ export function Workbench() {
           <p>Turing Core v0.1.0</p>
           <p>
             Desktop code editor with workspace search, an integrated terminal,
-            and Python and C++ Run &amp; Build.
+            and Run &amp; Build.
           </p>
         </WorkbenchDialog>
       )}

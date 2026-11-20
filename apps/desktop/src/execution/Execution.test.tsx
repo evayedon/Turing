@@ -15,6 +15,8 @@ import type { ExecutionUpdate } from "@turing/contracts";
 import type { EditorTab } from "../editor/use-editor";
 import { Workbench } from "../shell/Workbench";
 import { useLayout } from "../state/layout";
+import { executionErrorMessage } from "./execution-ipc";
+import { executionLanguage, runDisabledReason } from "./use-execution";
 
 const ipc = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({
@@ -174,7 +176,7 @@ describe("Run & Build", () => {
     const run = screen.getByRole("button", { name: "Run File" });
     expect(run.hasAttribute("disabled")).toBe(true);
     expect(run.getAttribute("aria-description")).toMatch(
-      /supports Python and C\+\+/,
+      /supports Python, C, C\+\+/,
     );
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Source text" }), {
       key: "F5",
@@ -208,5 +210,79 @@ describe("Run & Build", () => {
       finish({ ...completed, cancelled: true, exitCode: null }),
     );
     expect(within(output).getByText("Stopped")).toBeTruthy();
+  });
+});
+
+describe("single-file Run support", () => {
+  it.each([
+    ["hello.C", "cpp"],
+    ["hello.c", "c"],
+    ["hello.rs", "rust"],
+    ["hello.go", "go"],
+    ["Hello.java", "java"],
+    ["hello.js", "javascript"],
+    ["hello.mjs", "javascript"],
+    ["hello.cjs", "javascript"],
+    ["hello.ts", "typescript"],
+    ["hello.mts", "typescript"],
+    ["hello.cts", "typescript"],
+    ["hello.cs", "csharp"],
+  ])("allows a saved %s in the desktop workbench", (name, language) => {
+    const tab: EditorTab = {
+      key: name,
+      uri: "turing-workspace://w/" + name,
+      revision: 1,
+      name,
+      title: name,
+      source: {
+        kind: "workspace",
+        workspaceId: "w",
+        relativePath: name,
+        version: "v1",
+      },
+      content: "",
+      draft: "",
+      changedOnDisk: false,
+    };
+    expect(executionLanguage(name)).toBe(language);
+    expect(runDisabledReason(tab, true)).toBeUndefined();
+    expect(runDisabledReason(tab, false)).toBe("Run requires the desktop app.");
+  });
+
+  it.each([
+    ["C_COMPILER_UNAVAILABLE", /Clang or GCC/],
+    ["RUST_UNAVAILABLE", /rustc/],
+    ["GO_UNAVAILABLE", /Install Go/],
+    ["JAVA_UNAVAILABLE", /Install a JDK/],
+    ["NODE_UNAVAILABLE", /Install Node.js/],
+    ["TYPESCRIPT_UNAVAILABLE", /TypeScript runtime unavailable/],
+    ["DOTNET_UNAVAILABLE", /SDK.*dotnet/],
+  ])("gives installation guidance for %s", (error, guidance) => {
+    expect(executionErrorMessage(error)).toMatch(guidance);
+  });
+
+  it("reports a missing Go toolchain after discovery and allows retry", async () => {
+    registerFile("hello.go", {
+      execution_start: Promise.resolve({
+        id: "one",
+        name: "hello.go",
+        language: "go",
+      }),
+      execution_read: Promise.resolve({
+        ...completed,
+        phase: "failed",
+        error: "GO_UNAVAILABLE",
+        exitCode: null,
+        output: [],
+      }),
+    });
+    const user = await openFile("hello.go");
+    const run = screen.getByRole("button", { name: "Run File" });
+    expect(run.hasAttribute("disabled")).toBe(false);
+    await user.click(run);
+    expect(await screen.findByText(/Go toolchain unavailable/)).toBeTruthy();
+    const retry = screen.getByRole("button", { name: "Run File" });
+    expect(retry.getAttribute("aria-description")).toMatch(/Install Go/);
+    expect(retry.hasAttribute("disabled")).toBe(false);
   });
 });

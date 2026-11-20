@@ -11,18 +11,29 @@ import {
   readExecution,
   startExecution,
   stopExecution,
+  toolUnavailableMessage,
 } from "./execution-ipc";
 
-export const languageLabels = { python: "Python", cpp: "C++" };
+export const languageLabels = {
+  python: "Python",
+  cpp: "C++",
+  c: "C",
+  rust: "Rust",
+  go: "Go",
+  java: "Java",
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  csharp: "C#",
+} satisfies Record<ExecutionLanguage, string>;
 
 export { executableLanguage as executionLanguage } from "../editor/languages";
 
 export function runDisabledReason(tab: EditorTab, native: boolean) {
   if (!native) return "Run requires the desktop app.";
   if (tab.source.kind === "untitled")
-    return "Save this file as Python or C++ before running.";
+    return "Save this file with a supported source extension before running.";
   if (!executableLanguage(tab.name))
-    return "Run supports Python and C++ source files.";
+    return "Run supports Python, C, C++, Rust, Go, Java, JavaScript, TypeScript, and C# source files.";
   if (tab.changedOnDisk) return "Reload the file from disk before running.";
   if (tab.draft !== tab.content) return "Save your changes before running.";
 }
@@ -52,6 +63,7 @@ type Run = {
   truncated: boolean;
   output: Output[];
   error?: string;
+  unavailableTool?: string;
 };
 
 type Request = {
@@ -114,6 +126,7 @@ export function useExecution() {
             ...previous,
             phase: "failed",
             error: executionErrorMessage(error),
+            unavailableTool: toolUnavailableMessage(error),
           },
       );
       if (request.id) void stopExecution(request.id).catch(() => {});
@@ -163,6 +176,7 @@ export function useExecution() {
                 cancelled: update.cancelled,
                 truncated: update.truncated,
                 output: appendOutput(previous.output, output),
+                unavailableTool: toolUnavailableMessage(update.error),
                 error: update.error
                   ? executionErrorMessage(update.error)
                   : undefined,

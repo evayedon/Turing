@@ -7,6 +7,7 @@ export type DocumentStamp = {
   uri: string;
   revision: number;
   editRevision: number;
+  languageOverride?: string;
 };
 
 export const stampOf = (tab: EditorTab): DocumentStamp => ({
@@ -14,6 +15,7 @@ export const stampOf = (tab: EditorTab): DocumentStamp => ({
   uri: tab.uri,
   revision: tab.revision,
   editRevision: tab.editRevision ?? 0,
+  languageOverride: tab.languageOverride,
 });
 
 /**
@@ -53,7 +55,13 @@ export function currentProblems(
   const order = new Map(tabs.map((tab, index) => [tab.key, index]));
   const items = [...latest.values()].flatMap((batch) => {
     const tab = tabs.find(({ key }) => key === batch.stamp.key);
-    if (!tab || !matches(batch.stamp, tab)) return [];
+    if (
+      !tab ||
+      !matches(batch.stamp, tab) ||
+      (batch.producer === "monaco" &&
+        batch.stamp.languageOverride !== tab.languageOverride)
+    )
+      return [];
     return batch.problems.map((item, index) => ({
       item,
       index,
