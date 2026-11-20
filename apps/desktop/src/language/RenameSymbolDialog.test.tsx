@@ -30,6 +30,7 @@ import type { EditorCommands } from "../shell/commands";
 import { RenameSymbolDialog } from "./RenameSymbolDialog";
 import type { RenameOrigin } from "./RenameSymbolDialog";
 import type { LanguageController } from "./use-language";
+import { expectAccessible } from "../test/axe";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -207,11 +208,13 @@ it("previews each change, excludes files, and applies a shared undoable draft an
   const ui = within(dialog);
   const name = ui.getByRole("textbox", { name: "New name" });
   await waitFor(() => expect(name).toHaveProperty("value", "old"));
+  await expectAccessible(dialog);
   fireEvent.change(name, { target: { value: "renamed" } });
   fireEvent.click(ui.getByRole("button", { name: "Preview" }));
   expect(
     await ui.findByRole("heading", { name: "Changes to 4 files" }),
   ).toBeDefined();
+  await expectAccessible(dialog);
   expect(
     ui.getAllByLabelText("Before").map((item) => item.textContent),
   ).toEqual(Array(4).fill("old"));
