@@ -1,10 +1,36 @@
-# Turing Core v0.1
+# Turing IDE
 
-Turing Core is a cross-platform IDE foundation built with Tauri 2, Rust, React,
-TypeScript, Vite, and Zustand. The Turing Nebula workbench includes a native
-workspace Explorer, Monaco editing with versioned saves, and placeholders for
-Git, Terminal, and AI. Use the File menu to open a standalone file or folder,
-create an untitled document, or choose a Save As destination.
+Turing IDE is a modern, cross-platform development environment built with Rust,
+Tauri 2, React, TypeScript, and Monaco Editor. Its Nebula workbench brings code
+editing, integrated terminals, and local Git workflows together. The current
+release is **v0.1 — Turing Core**. AI-native development is the product direction.
+
+### Implemented in v0.1
+
+- **Workspace and editing.** Open a workspace folder or standalone file from the
+  File menu. Use the Explorer, workspace search, editor tabs and splits, versioned
+  saves, Save As, external-change detection, and unsaved-draft recovery.
+- **Integrated terminal and Git.** Open, resize, and split native shell sessions.
+  Inspect Git status and diffs, stage and unstage changes, make local commits,
+  switch branches, and view history.
+- **Run & Build.** Run supported saved source files with locally installed
+  toolchains and see build and program output in the workbench. F5 runs the
+  active file without debugging.
+
+### Opt-in and limited in v0.1
+
+The desktop workbench can use locally installed clangd, TypeScript Language
+Server, Pyright, and rust-analyzer with workspace approval. Diagnostics and
+navigation depend on the installed server and its advertised capabilities.
+See [Architecture](docs/architecture.md#managed-language-intelligence-and-problems)
+for setup and access details.
+
+### Planned for v0.2 — Professional Development and AI Foundation
+
+The next milestone focuses on professional development workflows and a read-only,
+project-aware Ask Mode. Planned AI capabilities include workspace indexing,
+traceable file context, and support for local and cloud models. Full debugger
+support and supervised AI agents remain future work.
 
 ## Development
 
