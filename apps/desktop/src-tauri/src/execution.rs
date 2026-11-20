@@ -654,7 +654,9 @@ mod tests {
     fn run_installed(language: Language, content: &str, unavailable: ExecutionError) {
         let (_workspace, service, started) = run_job(language, content);
         let (result, chunks) = wait(&service, &started.id, |update| update.phase.finished());
-        if result.error == Some(unavailable) {
+        let required = matches!(language, Language::Rust | Language::CSharp)
+            && std::env::var("TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS").as_deref() == Ok("1");
+        if result.error == Some(unavailable) && !required {
             eprintln!("skipping {language:?}: {unavailable:?} (no usable installed toolchain)");
             return;
         }

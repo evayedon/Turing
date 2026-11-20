@@ -404,9 +404,14 @@ continue.
 Run discovers tools in inherited PATH order, ignoring relative directories and
 WindowsApps aliases. Within a directory it tries the names in the order shown
 below (with `.exe` on Windows). Bounded tool probes check that the selected
-installation can start. Install the toolchain on the host and expose it on
-Turing’s PATH. Missing or unusable installations return language-specific
-errors with installation guidance. Run remains available for a retry.
+installation can start. C and C++ discovery try the next allowed driver if
+a candidate cannot start or rejects the probe. Keep the executable name
+when launching a symlink so drivers such as `clang++` retain their mode.
+Install the toolchain on the host and expose it on Turing’s PATH. Missing
+installations return language-specific errors with installation guidance.
+Process launch errors and probe timeouts can be reported separately.
+For Rust's MSVC targets, Turing passes the absolute linker path and library
+search paths from a registered Visual Studio and Windows SDK installation.
 
 | Source                             | Tool and execution                                                                                                                                                                                                                                              |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -766,15 +771,13 @@ action. Requests that are cancelled, or that expire after 10 seconds, send
 `$/cancelRequest`; late replies are dropped. Server messages pass through a
 bounded queue with backpressure, so a burst slows the server instead of
 ending the session. Explicit Stop sends `shutdown` and waits up to 750 ms for
-the reply, then sends `exit` and waits up to 3 s for the server to close its
-output. The result is reported as graceful, already exited, no reply or no
-exit, and anything but graceful falls through to forced cleanup. Workspace
-replacement, workspace close and window destruction revoke the session and
-force process cleanup. Unix uses a process group, signalled before the
-child is reaped so the group ID cannot be reused; Windows uses a
-kill-on-close Job Object. A desktop crash can leave temporary files behind. Ubuntu's clangd 18 replies to `shutdown`
-but in CI does not always close its output within that budget after `exit`;
-Turing then force-stops it, so Stop never hangs.
+a successful reply, then sends `exit`, closes the server's input, and waits
+up to 3 s for the process to terminate. Failed or unresponsive shutdowns
+fall back to forced cleanup. Workspace replacement, workspace close and
+window destruction revoke the session and force process cleanup. Unix uses
+a process group, signalled before the child is reaped so the group ID cannot
+be reused. Windows uses a kill-on-close Job Object. A desktop crash can leave
+temporary files behind.
 
 ### Rename Symbol and workspace edits
 

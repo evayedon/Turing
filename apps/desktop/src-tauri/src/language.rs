@@ -1129,21 +1129,10 @@ mod tests {
         });
         let bad = json!({"uri":"file:///outside.hpp","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}});
         assert_eq!(session.definitions(&bad, &registry, "owner"), json!([]));
-        let outcome = session.process.shutdown();
-        // Ubuntu's clangd 18 answers `shutdown` but in CI does not always
-        // close its output after `exit` within the budget; Turing then
-        // force-stops it on drop. The protocol exchange must still succeed.
-        if cfg!(target_os = "linux") {
-            assert!(
-                matches!(
-                    outcome,
-                    super::process::Shutdown::Graceful | super::process::Shutdown::NoExit
-                ),
-                "{outcome:?}"
-            );
-        } else {
-            assert_eq!(outcome, super::process::Shutdown::Graceful);
-        }
+        assert_eq!(
+            session.process.shutdown(),
+            super::process::Shutdown::Graceful
+        );
     }
 }
 
@@ -1167,6 +1156,8 @@ mod lifecycle_tests {
         hold_hover: bool,
         flood: usize,
         ignore_shutdown: bool,
+        shutdown_delay: Duration,
+        reject_shutdown: bool,
         linger_after_exit: bool,
         crash_on_open: bool,
         rename: bool,
@@ -1277,9 +1268,19 @@ mod lifecycle_tests {
                     send(reply(&params["id"], json!({"contents": "too late"})));
                 }
                 Some("shutdown") if !script.ignore_shutdown => {
-                    send(reply(&id, Value::Null));
+                    thread::sleep(script.shutdown_delay);
+                    if script.reject_shutdown {
+                        send(
+                            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"failed"}}),
+                        );
+                    } else {
+                        send(reply(&id, Value::Null));
+                    }
                 }
-                Some("exit") if !script.linger_after_exit => return,
+                Some("exit") if script.linger_after_exit => {
+                    thread::sleep(Duration::from_secs(4));
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1686,6 +1687,35 @@ mod lifecycle_tests {
                 "exit",
             ]
         );
+    }
+
+    #[test]
+    fn shutdown_drains_document_activity_and_waits_for_a_delayed_reply() {
+        let mut test = fixture(Script {
+            shutdown_delay: Duration::from_millis(100),
+            ..Script::default()
+        });
+        test.ready();
+        for version in 1..=7 {
+            test.sync(version, false).unwrap();
+        }
+        assert_eq!(test.session.process.shutdown(), Shutdown::Graceful);
+        let methods = test.methods();
+        assert_eq!(
+            &methods[methods.len() - 3..],
+            ["textDocument/didChange", "shutdown", "exit"]
+        );
+    }
+
+    #[test]
+    fn shutdown_rejects_an_error_response_without_sending_exit() {
+        let mut test = fixture(Script {
+            reject_shutdown: true,
+            ..Script::default()
+        });
+        test.ready();
+        assert_eq!(test.session.process.shutdown(), Shutdown::Rejected);
+        assert_eq!(test.methods().last().map(String::as_str), Some("shutdown"));
     }
 
     #[test]

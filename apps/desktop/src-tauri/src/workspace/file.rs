@@ -398,7 +398,12 @@ mod tests {
                     fs::create_dir(path.join("parent")).unwrap();
                 }
                 #[cfg(windows)]
-                assert!(fs::rename(path.join("parent"), path.join("moved")).is_err());
+                assert_eq!(
+                    fs::rename(path.join("parent"), path.join("moved"))
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+                );
             }
             true
         });

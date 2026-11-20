@@ -55,7 +55,18 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:desktop --no-bundle -- --locked
 
+      - name: Report installed Windows execution toolchains
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Command python.exe, clang++.exe, g++.exe, rustc.exe, dotnet.exe -All -ErrorAction SilentlyContinue |
+            Select-Object Name, Source | Format-Table
+          rustc -vV
+          dotnet --list-sdks
+
       - name: Test native workspace authorization
+        env:
+          TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS: ${{ runner.os == 'Windows' && '1' || '' }}
         run: cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
       # The managed clangd pilot against a real server (opt-in elsewhere
