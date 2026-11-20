@@ -123,7 +123,8 @@ be missed. The index works independently of the managed clangd session.
 
 The worker reuses Search's directory walker, exclusions, entry and depth limits,
 and handle-relative snapshots. Each pass can read up to 12,000 source files,
-2 MiB per file and 128 MiB total. The index stores at most 256 declarations per
+256 KiB per file and 128 MiB total. It stops parsing a file at any source line
+larger than 16 KiB. The index stores at most 256 declarations per
 file and 30,000 overall. It checks for cancellation between entries and source
 lines, with a cooperative 10-second budget per pass. A filesystem call in
 progress can delay cancellation. Closing or replacing a workspace, reloading
@@ -227,8 +228,11 @@ follow the active group.
 ### Draft recovery
 
 The desktop workbench journals unsaved text in its local WebView storage,
-with separate records for each dirty buffer. Snapshots are written at most
-once per 400 ms during editing and flushed when the page is hidden or unloaded.
+with separate records for each dirty buffer. For eligible drafts, the journal coalesces edits into one snapshot
+per buffer per 400 ms during editing and flushes when the page is hidden or
+unloaded. At 131,072 UTF-16 code units, it stops writing snapshots for that
+buffer, including on hide. It keeps any previously persisted snapshot until
+save or discard, so recovery can offer an earlier version.
 A hard crash can lose edits made since the last snapshot. Storage failures are
 shown in the editor. Browser previews still keep drafts in memory.
 
@@ -567,7 +571,7 @@ pointer interaction, editor behaviour, shell output, workspace access, or
 dirty-document prompts. A passing run does not show that installers or signed
 bundles launch.
 
-### Startup and interaction baseline
+### Performance baseline
 
 The non-default `perf` cargo feature implies `smoke`. The Node driver enables
 both harness modes (`TURING_SMOKE=1` and `TURING_PERF=1`) and launches the binary
@@ -597,7 +601,9 @@ and percentage changes relative to the old baseline.
   second window of each kind.
 - **Memory.** RSS is sampled after main load and mount, after two workbenches
   and two terminal windows have opened and the latter have started PTYs,
-  and after the workloads and auxiliary window teardown. macOS uses
+  after the workloads immediately before auxiliary window teardown, and
+  after teardown. The lifecycle check also waits for the last native
+  strong reference to each closed window's resource owner to drop. macOS uses
   `proc_pidinfo(PROC_PIDTASKINFO)` and Linux uses `/proc/self/statm`. Windows
   RSS is unavailable because the existing `windows-sys` features omit
   ProcessStatus. Only the Turing app process is sampled. WebView processes
@@ -606,9 +612,14 @@ and percentage changes relative to the old baseline.
   workspace registration path in one harness-owned workbench. An
   initialization script opens a 1,320,000-byte, 40,000-line text file through
   Explorer and times the first rendered Monaco view. It then sends 159
-  characters through Monaco's platform input element and waits for a paint.
-  The harness checks the rendered text and verifies the saved bytes before
-  closing the workbench. Results return through a document-title sentinel.
+  characters through Monaco's platform input element in an empty text file.
+  It repeats the burst in the large document after the symbol picker confirms
+  indexing has started on a 2,048-source-file fixture. The picker closes and
+  releases focus while the native worker continues the scan. The harness
+  reports dispatch time and elapsed time through the next frame separately for
+  both bursts. A 250 ms frame deadline records a timeout if the WebView stops
+  delivering frames. The harness checks the rendered text and verifies the
+  saved bytes in both files. Results return through a document-title sentinel.
 - **PTY.** A dedicated session in an auxiliary terminal window uses the
   production start, input and read handlers. The start clock ends when the
   first command's readiness marker arrives from the shell. The throughput
@@ -622,6 +633,52 @@ The **CI** workflow's manual dispatch runs the capture on macOS and Windows
 directly and on Linux under Xvfb. Each successful capture uploads its JSON
 as a platform-specific artifact. The capture and upload steps are optional
 and use no performance thresholds.
+
+#### Budgets and macOS findings
+
+- At **131,072 UTF-16 code units** (128 KiB for ASCII on disk), the workbench
+  uses Monaco's plain text mode, disables folding, word-based suggestions
+  and validation decorations, and skips clangd sync, compiler Problems
+  conversion, and draft snapshots. Minimap and word wrap are off throughout
+  the workbench. The active file's status bar shows **Large file: some
+  features off**. Explicit save and Auto Save remain available.
+- Regular Monaco edits update the shared draft from edit ranges. Whole-model
+  reads occur when a model is initialized, externally replaced, or emits a
+  flush or EOL change. Shared groups apply each model version once. Compiler
+  Problems reuse their conversion while the compiled tab and run are
+  unchanged. When there are no diagnostic batches, typing reuses the empty
+  Problems list and avoids reapplying Monaco markers. Clangd waits for
+  **250 ms** without edits, checks every **120 ms**, and attempts at most
+  **three** document syncs per poll. Recovery
+  coalesces eligible edits over **400 ms**.
+- The symbol worker walks and parses outside the registry lock. It pauses for
+  **2 ms** at a safe checkpoint after **32 entries**, **256 KiB of reads**,
+  or **4 ms of work**, whichever budget it hits first. Extraction checks
+  time and cancellation between lines. A filesystem operation or single
+  source line may run past a checkpoint. Existing per-pass and per-file caps
+  still apply. The capture target for the 159-character loaded burst is
+  **100 ms p95 dispatch**, **150 ms p95 through the next frame**, and zero
+  frame timeouts. These are review targets for a focused GUI capture.
+- The checked-in Apple M4 capture recorded 66 ms p50 and 14,198 ms p95. The
+  outlier occurred in the short empty-file burst and included a wait for
+  `requestAnimationFrame`. It contained no large draft, compiler run, or
+  active symbol scan. The old measurement cannot distinguish synchronous
+  editor work from delayed frame delivery. Source inspection found a full
+  model read on every edit and another on React reconciliation. The updated
+  harness separates the phases so the next capture can identify which one
+  stalls. A frame timeout in the new capture makes that burst's elapsed time
+  a deadline measurement rather than a measured paint.
+- App-process RSS was 115 MiB after opening windows and 129 MiB after both
+  the workloads and window close. The old sampling points cannot distinguish
+  allocations from the editor/PTY exercise, allocator or framework retention,
+  or a leak. Existing destruction removes the native resource registration,
+  revokes language and workspace access, closes PTY sessions, and cancels
+  symbol workers. A picker that was already in flight could register a
+  new workspace on an owner retained past destruction. Closing the registry
+  now blocks late grants and watcher attachment. The React registry disposes
+  models when their last tab closes or the editor unmounts. The audit did not connect the late-picker
+  race to the checked-in RSS sample. Native re-capture is still required to measure the
+  before/after teardown delta and verify typing under load.
 
 ## Code navigation and debugging status
 

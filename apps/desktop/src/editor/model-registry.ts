@@ -17,6 +17,10 @@ export interface ModelViewer<M> {
  */
 export class ModelRegistry<M extends DisposableModel> {
   private readonly models = new Map<string, M>();
+  private readonly snapshots = new Map<
+    string,
+    { draft: string; text: string; bom: number }
+  >();
   private readonly viewers = new Set<ModelViewer<M>>();
   private readonly reported = new Map<string, number>();
   private syncDepth = 0;
@@ -43,6 +47,14 @@ export class ModelRegistry<M extends DisposableModel> {
     return model;
   }
 
+  snapshot(key: string) {
+    return this.snapshots.get(key);
+  }
+
+  remember(key: string, draft: string, text: string, bom: number) {
+    this.snapshots.set(key, { draft, text, bom });
+  }
+
   /**
    * Disposes every model whose document is no longer open in any group.
    * Returns the keys that were disposed.
@@ -53,6 +65,7 @@ export class ModelRegistry<M extends DisposableModel> {
       if (open.has(key)) continue;
       this.models.delete(key);
       this.reported.delete(key);
+      this.snapshots.delete(key);
       model.dispose();
       disposed.push(key);
     }

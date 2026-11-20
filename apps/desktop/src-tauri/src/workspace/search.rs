@@ -255,14 +255,20 @@ impl Scan<'_> {
         {
             return Ok(());
         }
-        let snapshot =
-            match read_reachable(&self.task.root, directory, parents, name, &mut self.bytes) {
-                Ok(snapshot) => snapshot,
-                Err(_) => {
-                    self.response.skipped_files += 1;
-                    return Ok(());
-                }
-            };
+        let snapshot = match read_reachable(
+            &self.task.root,
+            directory,
+            parents,
+            name,
+            MAX_TEXT_BYTES,
+            &mut self.bytes,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                self.response.skipped_files += 1;
+                return Ok(());
+            }
+        };
         let content = snapshot
             .content
             .strip_prefix('\u{feff}')
@@ -414,6 +420,7 @@ pub(super) fn read_reachable(
     directory: &Dir,
     parents: &[String],
     name: &str,
+    max_bytes: u64,
     bytes: &mut u64,
 ) -> Result<file::Snapshot> {
     let components = parents.iter().map(String::as_str).collect::<Vec<_>>();
@@ -427,7 +434,7 @@ pub(super) fn read_reachable(
     if !reachable()? || super::is_workspace_link(&directory.symlink_metadata(name)?) {
         return Err(WorkspaceError::OutsideWorkspace);
     }
-    let snapshot = file::read_snapshot_metered(directory, name, false, bytes)?;
+    let snapshot = file::read_snapshot_metered(directory, name, false, max_bytes, bytes)?;
     if !reachable()? {
         return Err(WorkspaceError::OutsideWorkspace);
     }

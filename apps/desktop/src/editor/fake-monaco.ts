@@ -6,6 +6,11 @@
  */
 
 type Position = { lineNumber: number; column: number };
+type ContentEvent = {
+  changes: { rangeOffset: number; rangeLength: number; text: string }[];
+  isFlush: boolean;
+  isEolChange: boolean;
+};
 type ViewState = { position: Position; scrollTop: number };
 
 const editors: FakeEditor[] = [];
@@ -56,14 +61,18 @@ export class FakeModel {
     this.value = value;
     this.undoStack = [];
     this.redoStack = [];
-    this.changed();
+    this.changed(0, 0, "", true);
   }
   /** A user edit made through any view of this model. */
   type(value: string) {
+    this.replace(0, this.value.length, value);
+  }
+  replace(offset: number, length: number, text: string) {
     this.undoStack.push(this.value);
     this.redoStack = [];
-    this.value = value;
-    this.changed();
+    this.value =
+      this.value.slice(0, offset) + text + this.value.slice(offset + length);
+    this.changed(offset, length, text);
   }
   canUndo() {
     return this.undoStack.length > 0;
@@ -75,8 +84,9 @@ export class FakeModel {
     const previous = this.undoStack.pop();
     if (previous === undefined) return;
     this.redoStack.push(this.value);
+    const length = this.value.length;
     this.value = previous;
-    this.changed();
+    this.changed(0, length, previous);
   }
   validatePosition(position: Position) {
     return position;
@@ -89,16 +99,26 @@ export class FakeModel {
     for (const editor of editors)
       if (editor.model === this) editor.model = null;
   }
-  private changed() {
+  private changed(
+    rangeOffset: number,
+    rangeLength: number,
+    text: string,
+    isFlush = false,
+  ) {
     this.version += 1;
     for (const editor of editors)
-      if (editor.model === this) editor.notifyContent();
+      if (editor.model === this)
+        editor.notifyContent({
+          changes: [{ rangeOffset, rangeLength, text }],
+          isFlush,
+          isEolChange: false,
+        });
   }
 }
 
 type Listener = () => void;
 
-function subscribe(listeners: Set<Listener>, listener: Listener) {
+function subscribe<T>(listeners: Set<T>, listener: T) {
   listeners.add(listener);
   return { dispose: () => listeners.delete(listener) };
 }
@@ -110,7 +130,7 @@ export class FakeEditor {
   disposed = false;
   readonly input: HTMLTextAreaElement;
   readonly options: Record<string, unknown> = {};
-  private content = new Set<Listener>();
+  private content = new Set<(event: ContentEvent) => void>();
   private cursor = new Set<Listener>();
 
   constructor(readonly container: HTMLElement) {
@@ -145,15 +165,15 @@ export class FakeEditor {
   revealPositionInCenter(position: Position) {
     this.scrollTop = position.lineNumber * 10;
   }
-  onDidChangeModelContent(listener: Listener) {
+  onDidChangeModelContent(listener: (event: ContentEvent) => void) {
     return subscribe(this.content, listener);
   }
   onDidChangeCursorPosition(listener: Listener) {
     return subscribe(this.cursor, listener);
   }
-  notifyContent() {
+  notifyContent(event: ContentEvent) {
     this.input.value = this.model?.value ?? "";
-    for (const listener of this.content) listener();
+    for (const listener of this.content) listener(event);
   }
   getAction() {
     return undefined;

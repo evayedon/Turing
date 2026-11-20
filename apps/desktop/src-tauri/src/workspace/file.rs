@@ -62,13 +62,14 @@ pub(super) fn validate_content(bytes: &[u8]) -> Result<()> {
 }
 
 fn read_snapshot(directory: &Dir, name: &str, writable: bool) -> Result<Snapshot> {
-    read_snapshot_metered(directory, name, writable, &mut 0)
+    read_snapshot_metered(directory, name, writable, MAX_TEXT_BYTES, &mut 0)
 }
 
 pub(super) fn read_snapshot_metered(
     directory: &Dir,
     name: &str,
     writable: bool,
+    max_bytes: u64,
     bytes_read: &mut u64,
 ) -> Result<Snapshot> {
     let mut file = open_text(directory, name, writable)?;
@@ -76,14 +77,17 @@ pub(super) fn read_snapshot_metered(
     if !before.is_file() {
         return Err(WorkspaceError::NotFile);
     }
-    if before.len() > MAX_TEXT_BYTES {
+    if before.len() > max_bytes {
         return Err(WorkspaceError::FileTooLarge);
     }
 
     let mut bytes = Vec::new();
-    let read = (&mut file).take(MAX_TEXT_BYTES + 1).read_to_end(&mut bytes);
+    let read = (&mut file).take(max_bytes + 1).read_to_end(&mut bytes);
     *bytes_read += bytes.len() as u64;
     read?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(WorkspaceError::FileTooLarge);
+    }
     validate_content(&bytes)?;
     let metadata = file.metadata()?;
     if before.len() != metadata.len()

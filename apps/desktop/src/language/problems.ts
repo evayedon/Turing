@@ -1,3 +1,4 @@
+import { isLargeDocument } from "../editor/performance-budget";
 import type { LanguagePosition } from "@turing/contracts";
 import type { EditorTab } from "../editor/use-editor";
 import type { useExecution } from "../execution/use-execution";
@@ -129,6 +130,7 @@ export function compilerProblems(
     (tab) =>
       tab.key === run.document.key &&
       tab.title === run.name &&
+      !isLargeDocument(tab.draft) &&
       tab.draft === tab.content &&
       !tab.changedOnDisk &&
       tab.source.kind !== "untitled" &&

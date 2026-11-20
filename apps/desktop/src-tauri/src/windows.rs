@@ -260,11 +260,26 @@ mod tests {
         windows.remove(&first);
         assert!(windows.get(&first).is_none());
         assert!(windows.get(&second).is_some());
-        assert!(first_resources
-            .workspace
-            .registry()
-            .unwrap()
-            .list(&first, &first_grant.id, "")
-            .is_err());
+        assert!(matches!(
+            first_resources.workspace.registry(),
+            Err(WorkspaceError::PermissionDenied)
+        ));
+    }
+
+    #[test]
+    fn closed_window_rejects_workspace_registration_from_an_inflight_picker() {
+        let windows = Windows::default();
+        let label = windows.register(Kind::Workbench).unwrap();
+        let resources = windows.get(&label).unwrap();
+        let weak = Arc::downgrade(&resources);
+        let picker = resources.workspace.begin_picker().unwrap();
+        windows.remove(&label);
+        assert!(matches!(
+            resources.workspace.registry(),
+            Err(WorkspaceError::PermissionDenied)
+        ));
+        drop(picker);
+        drop(resources);
+        assert!(weak.upgrade().is_none());
     }
 }

@@ -13,6 +13,7 @@ import {
   type LanguageController,
 } from "../language/use-language";
 import type { Problem } from "../language/problems";
+import { applyTextChanges, isLargeDocument } from "./performance-budget";
 import { documentLanguage } from "./languages";
 import { monacoActions } from "../shell/commands";
 import type { EditorCommands } from "../shell/commands";
@@ -49,6 +50,7 @@ const theme = "turing-nebula";
 export type TextModels = ModelRegistry<monaco.editor.ITextModel>;
 
 function modeOf(tab: EditorTab) {
+  if (isLargeDocument(tab.draft)) return "plaintext";
   const language = documentLanguage(tab);
   return language.monaco ?? language.id;
 }
@@ -107,12 +109,30 @@ export default function MonacoHost({
       language?.request(...args) ?? Promise.resolve(undefined),
   );
   const lastReveal = useRef<typeof reveal>(undefined);
-  const change = useEffectEvent((model: monaco.editor.ITextModel) => {
-    // Every view of a shared model hears the edit; only one reports it.
-    if (models.get(active.key) !== model) return;
-    if (!models.claimChange(active.key, model.getVersionId())) return;
-    onChange(active, model.getValue(undefined, true));
-  });
+  const change = useEffectEvent(
+    (
+      model: monaco.editor.ITextModel,
+      event: monaco.editor.IModelContentChangedEvent,
+    ) => {
+      // Every view of a shared model hears the edit; only one reports it.
+      if (models.get(active.key) !== model) return;
+      if (!models.claimChange(active.key, model.getVersionId())) return;
+      const snapshot = models.snapshot(active.key);
+      const value =
+        snapshot && !event.isFlush && !event.isEolChange
+          ? applyTextChanges(snapshot.text, snapshot.bom, event.changes)
+          : model.getValue(undefined, true);
+      models.remember(
+        active.key,
+        value,
+        value,
+        event.isFlush
+          ? Number(value.charCodeAt(0) === 0xfeff)
+          : (snapshot?.bom ?? 0),
+      );
+      onChange(active, value);
+    },
+  );
   const isFocused = useEffectEvent(() => focused);
 
   const report = useEffectEvent(
@@ -301,9 +321,9 @@ export default function MonacoHost({
     lastReveal.current = undefined;
     shownKey.current = undefined;
     const states = viewStates.current;
-    const subscription = instance.onDidChangeModelContent(() => {
+    const subscription = instance.onDidChangeModelContent((event) => {
       const model = instance.getModel();
-      if (!models.syncing && model) change(model);
+      if (!models.syncing && model) change(model, event);
     });
     const cursor = instance.onDidChangeCursorPosition(() => {
       if (!models.syncing) report(instance);
@@ -337,7 +357,14 @@ export default function MonacoHost({
           : { scheme: "turing-document", path: `/${activeKey}/${active.name}` },
       );
       if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: activeKey });
-      return monaco.editor.createModel(active.draft, mode, uri);
+      const created = monaco.editor.createModel(active.draft, mode, uri);
+      models.remember(
+        activeKey,
+        active.draft,
+        created.getValue(undefined, true),
+        Number(active.draft.charCodeAt(0) === 0xfeff),
+      );
+      return created;
     });
 
     models.sync(() => {
@@ -355,8 +382,20 @@ export default function MonacoHost({
           instance.focus();
       }
       shownKey.current = activeKey;
-      if (model.getValue(undefined, true) !== active.draft)
-        model.setValue(active.draft);
+      const snapshot = models.snapshot(activeKey);
+      if (snapshot?.draft !== active.draft) {
+        if (snapshot?.text === active.draft) {
+          models.remember(activeKey, active.draft, active.draft, snapshot.bom);
+        } else {
+          model.setValue(active.draft);
+          models.remember(
+            activeKey,
+            active.draft,
+            model.getValue(undefined, true),
+            Number(active.draft.charCodeAt(0) === 0xfeff),
+          );
+        }
+      }
       const open = new Set(tabs.map(({ key }) => key));
       for (const key of viewStates.current.keys())
         if (!open.has(key)) viewStates.current.delete(key);
@@ -448,6 +487,16 @@ export default function MonacoHost({
       }
     }
   }, [problems, active.key, models]);
+
+  const large = isLargeDocument(active.draft);
+  useLayoutEffect(() => {
+    editor.current?.updateOptions({
+      folding: !large,
+      wordWrap: "off",
+      wordBasedSuggestions: large ? "off" : "matchingDocuments",
+      renderValidationDecorations: large ? "off" : "editable",
+    });
+  }, [large]);
 
   useLayoutEffect(
     () => editor.current?.updateOptions({ readOnly }),

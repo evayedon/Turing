@@ -3,6 +3,8 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { LARGE_DOCUMENT_LENGTH } from "./performance-budget";
+
 import { DRAFT_SNAPSHOT_INTERVAL_MS, isDirty } from "./use-draft-recovery";
 import { AUTO_SAVE_DELAY_MS, autoSaveKey, useEditor } from "./use-editor";
 
@@ -192,4 +194,33 @@ it("restores an empty draft into the active group and journals it until its last
   expect(result.current.tabs).not.toContain(restored);
   const afterDiscard = renderHook(() => useEditor(undefined, true));
   expect(afterDiscard.result.current.recoveryDrafts).toEqual([]);
+});
+
+it("throttles small edits and skips large edits even when the page is hidden", async () => {
+  const { result } = renderHook(() => useEditor("original", true, "/project"));
+  await act(async () => result.current.open("main.ts"));
+  const write = vi.spyOn(Storage.prototype, "setItem");
+  try {
+    act(() => result.current.edit(result.current.active!, "one"));
+    act(() => vi.advanceTimersByTime(DRAFT_SNAPSHOT_INTERVAL_MS - 1));
+    act(() => result.current.edit(result.current.active!, "two"));
+    expect(write).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][1]).toContain('"draft":"two"');
+
+    for (const suffix of ["a", "ab", "abc"]) {
+      act(() =>
+        result.current.edit(
+          result.current.active!,
+          "x".repeat(LARGE_DOCUMENT_LENGTH) + suffix,
+        ),
+      );
+    }
+    act(() => vi.advanceTimersByTime(DRAFT_SNAPSHOT_INTERVAL_MS));
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(write).toHaveBeenCalledTimes(1);
+  } finally {
+    write.mockRestore();
+  }
 });

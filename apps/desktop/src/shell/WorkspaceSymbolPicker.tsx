@@ -75,11 +75,13 @@ export function WorkspaceSymbolPicker({
       actionLabel="Go to Symbol"
       notice={
         result?.error ??
-        (!result?.response?.complete
-          ? "Indexing workspace symbols…"
-          : result.response.truncated
-            ? "Symbol results are limited."
-            : undefined)
+        (!result?.response
+          ? "Starting workspace symbol index…"
+          : !result.response.complete
+            ? "Indexing workspace symbols…"
+            : result.response.truncated
+              ? "Symbol results are limited."
+              : undefined)
       }
       onQueryChange={(value) => {
         if (value === query.text) return;

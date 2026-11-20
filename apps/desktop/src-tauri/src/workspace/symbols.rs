@@ -3,7 +3,7 @@ mod extract;
 use super::{
     directory_at, relative_parts,
     search::{self, Walk},
-    watch, Registry, Result, WorkspaceError, MAX_TEXT_BYTES,
+    watch, Registry, Result, WorkspaceError,
 };
 use cap_std::fs::Dir;
 use serde::Serialize;
@@ -22,6 +22,11 @@ const MAX_SYMBOLS: usize = 30_000;
 const MAX_PER_FILE: usize = 256;
 const MAX_RESULTS: usize = 100;
 const MAX_PATH_BYTES: usize = 4096;
+const SLICE_ENTRIES: usize = 32;
+const SLICE_BYTES: u64 = 256 * 1024;
+const MAX_SOURCE_BYTES: u64 = SLICE_BYTES;
+const SLICE_TIME: Duration = Duration::from_millis(4);
+const SLICE_PAUSE: Duration = Duration::from_millis(2);
 const FALLBACK_RESCAN: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -271,10 +276,25 @@ fn maintain(root: &Dir, hints: Option<&watch::SymbolHints>, state: &State) {
     }
 }
 
+struct Slice {
+    entries: usize,
+    bytes: u64,
+    started: Instant,
+}
+
+impl Slice {
+    fn exhausted(&self, entries: usize, bytes: u64, now: Instant) -> bool {
+        entries - self.entries >= SLICE_ENTRIES
+            || bytes - self.bytes >= SLICE_BYTES
+            || now.duration_since(self.started) >= SLICE_TIME
+    }
+}
+
 struct Batch<'a> {
     files: &'a mut Files,
     cancelled: &'a AtomicBool,
     deadline: Instant,
+    slice: Slice,
     entries: usize,
     reads: usize,
     bytes: u64,
@@ -286,6 +306,11 @@ impl<'a> Batch<'a> {
             files,
             cancelled,
             deadline: Instant::now() + search::MAX_DURATION,
+            slice: Slice {
+                entries: 0,
+                bytes: 0,
+                started: Instant::now(),
+            },
             entries: 0,
             reads: 0,
             bytes: 0,
@@ -294,12 +319,15 @@ impl<'a> Batch<'a> {
 
     fn update(&mut self, root: &Dir, paths: &[String]) -> Result<()> {
         for path in paths {
+            self.pause_if_needed()?;
+            self.entries += 1;
             self.files.remove(path);
         }
         for path in paths {
             if self.stop()? {
                 break;
             }
+            self.entries += 1;
             let Ok(parts) = relative_parts(path) else {
                 continue;
             };
@@ -339,18 +367,34 @@ impl<'a> Batch<'a> {
         }
         Ok(())
     }
+    fn pause_if_needed(&mut self) -> Result<()> {
+        if !self.cancelled.load(Ordering::Relaxed)
+            && self
+                .slice
+                .exhausted(self.entries, self.bytes, Instant::now())
+        {
+            thread::park_timeout(SLICE_PAUSE);
+            self.slice = Slice {
+                entries: self.entries,
+                bytes: self.bytes,
+                started: Instant::now(),
+            };
+        }
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Err(WorkspaceError::SearchCancelled);
+        }
+        Ok(())
+    }
 }
 
 impl Walk for Batch<'_> {
     fn stop(&mut self) -> Result<bool> {
-        if self.cancelled.load(Ordering::Relaxed) {
-            return Err(WorkspaceError::SearchCancelled);
-        }
+        self.pause_if_needed()?;
         let stop = self.entries >= search::MAX_ENTRIES
             || self.reads >= MAX_FILES
             || self.files.by_path.len() >= MAX_FILES
             || self.files.symbols >= MAX_SYMBOLS
-            || self.bytes > search::MAX_SCAN_BYTES - MAX_TEXT_BYTES - 1
+            || self.bytes > search::MAX_SCAN_BYTES - MAX_SOURCE_BYTES - 1
             || Instant::now() >= self.deadline;
         if stop {
             self.truncate();
@@ -384,7 +428,14 @@ impl Walk for Batch<'_> {
             return Ok(());
         }
         self.reads += 1;
-        let file = match search::read_reachable(root, directory, parents, name, &mut self.bytes) {
+        let file = match search::read_reachable(
+            root,
+            directory,
+            parents,
+            name,
+            MAX_SOURCE_BYTES,
+            &mut self.bytes,
+        ) {
             Ok(snapshot) => extract::declarations(
                 language,
                 &snapshot.content,
@@ -415,6 +466,24 @@ impl Walk for Batch<'_> {
 mod tests {
     use super::*;
     use std::{fs, sync::mpsc};
+
+    #[test]
+    fn symbol_slice_yields_at_each_budget_boundary() {
+        let now = Instant::now();
+        let slice = Slice {
+            entries: 1,
+            bytes: 42,
+            started: now,
+        };
+        assert!(!slice.exhausted(SLICE_ENTRIES, SLICE_BYTES + 41, now));
+        assert!(slice.exhausted(SLICE_ENTRIES + 1, 42, now));
+        assert!(slice.exhausted(1, SLICE_BYTES + 42, now));
+        assert!(slice.exhausted(1, 42, now + SLICE_TIME));
+        let cancelled = AtomicBool::new(true);
+        let mut files = Files::default();
+        let mut batch = Batch::new(&mut files, &cancelled);
+        assert!(matches!(batch.stop(), Err(WorkspaceError::SearchCancelled)));
+    }
 
     fn query_until(
         registry: &mut Registry,
@@ -697,7 +766,15 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         fs::write(
             folder.path().join("huge.py"),
-            vec![b' '; MAX_TEXT_BYTES as usize + 1],
+            vec![b' '; MAX_SOURCE_BYTES as usize + 1],
+        )
+        .unwrap();
+        fs::write(
+            folder.path().join("long.rs"),
+            format!(
+                "{}\nfn missed() {{}}",
+                " ".repeat(extract::MAX_LINE_BYTES + 1)
+            ),
         )
         .unwrap();
         let crowded = (0..MAX_PER_FILE + 1)
@@ -711,6 +788,7 @@ mod tests {
             .unwrap();
         assert_eq!(files.symbols, MAX_PER_FILE);
         assert!(files.by_path["huge.py"].truncated);
+        assert!(files.by_path["long.rs"].truncated);
         assert!(files.by_path["crowded.rs"].truncated);
         assert!(files.query(1, "name_0", 10).truncated);
     }

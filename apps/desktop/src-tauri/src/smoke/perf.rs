@@ -30,6 +30,10 @@ struct EditorRun {
 struct EditorTiming {
     large_file_open_ms: f64,
     typing_burst_ms: f64,
+    typing_dispatch_ms: f64,
+    typing_under_load_ms: f64,
+    typing_under_load_dispatch_ms: f64,
+    typing_frame_timeouts: u8,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +58,7 @@ pub struct Capture {
     main_ready_ms: f64,
     startup_rss_bytes: Option<u64>,
     pub after_open_rss_bytes: Option<u64>,
+    pub before_close_rss_bytes: Option<u64>,
     pub after_close_rss_bytes: Option<u64>,
     editor: Option<EditorTiming>,
     terminal: Option<TerminalTiming>,
@@ -65,6 +70,7 @@ impl Capture {
             main_ready_ms,
             startup_rss_bytes: memory::resident(),
             after_open_rss_bytes: None,
+            before_close_rss_bytes: None,
             after_close_rss_bytes: None,
             editor: None,
             terminal: None,
@@ -160,11 +166,20 @@ impl Probe {
         let fixture = tempfile::tempdir().map_err(|error| error.to_string())?;
         let typing_path = fixture.path().join("typing.txt");
         std::fs::write(&typing_path, "").map_err(|error| error.to_string())?;
-        std::fs::write(
-            fixture.path().join("large.txt"),
-            "Turing large document 0123456789\n".repeat(40_000),
-        )
-        .map_err(|error| error.to_string())?;
+        let large_path = fixture.path().join("large.txt");
+        let large_text = "Turing large document 0123456789\n".repeat(40_000);
+        std::fs::write(&large_path, &large_text).map_err(|error| error.to_string())?;
+        for shard in 0..8 {
+            let directory = fixture.path().join(format!("symbols-{shard}"));
+            std::fs::create_dir(&directory).map_err(|error| error.to_string())?;
+            for i in 0..256 {
+                std::fs::write(
+                    directory.join(format!("source-{i}.ts")),
+                    format!("export function symbol_{shard}_{i}() {{}}\n"),
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
         let mut run = self.editor.lock().map_err(|_| "editor lock poisoned")?;
         *run = Some(EditorRun {
             label: editor_label.to_owned(),
@@ -193,8 +208,13 @@ impl Probe {
                 .ok_or("missing editor result")??,
         );
         let actual = std::fs::read_to_string(typing_path).map_err(|error| error.to_string())?;
-        if actual != [TYPING_TEXT; 4].join(" ") {
+        let typed = [TYPING_TEXT; 4].join(" ");
+        if actual != typed {
             return Err("saved typing fixture differs from the scripted burst".into());
+        }
+        let actual = std::fs::read_to_string(large_path).map_err(|error| error.to_string())?;
+        if actual != typed + &large_text {
+            return Err("saved large fixture differs from the scripted burst".into());
         }
         Ok(())
     }
@@ -370,7 +390,7 @@ mod tests {
             fixture: tempfile::tempdir().unwrap(),
             result: None,
         });
-        let title = r#"__turing_perf__{"result":{"largeFileOpenMs":42,"typingBurstMs":5}}"#;
+        let title = r#"__turing_perf__{"result":{"largeFileOpenMs":42,"typingBurstMs":5,"typingDispatchMs":3,"typingUnderLoadMs":8,"typingUnderLoadDispatchMs":4,"typingFrameTimeouts":0}}"#;
         probe.record("main", title);
         probe.record("workbench-fixture", "Turing Core");
         assert!(probe
