@@ -772,7 +772,9 @@ exit, and anything but graceful falls through to forced cleanup. Workspace
 replacement, workspace close and window destruction revoke the session and
 force process cleanup. Unix uses a process group, signalled before the
 child is reaped so the group ID cannot be reused; Windows uses a
-kill-on-close Job Object. A desktop crash can leave temporary files behind.
+kill-on-close Job Object. A desktop crash can leave temporary files behind. Ubuntu's clangd 18 replies to `shutdown`
+but in CI does not always close its output within that budget after `exit`;
+Turing then force-stops it, so Stop never hangs.
 
 ### Rename Symbol and workspace edits
 

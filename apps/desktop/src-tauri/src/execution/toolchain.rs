@@ -88,6 +88,23 @@ impl Job<'_> {
             "DOTNET_ROOT",
             "DOTNET_ROOT_X64",
             "DOTNET_ROOT_ARM64",
+            // Windows toolchains (rustc/MSVC, vswhere, the Windows SDK)
+            // locate their installations through these; without them rustc
+            // falls back to whatever `link.exe` is first on PATH.
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+            "CommonProgramFiles",
+            "CommonProgramFiles(x86)",
+            "PROCESSOR_ARCHITECTURE",
+            "NUMBER_OF_PROCESSORS",
+            "ComSpec",
+            "VSINSTALLDIR",
+            "VCINSTALLDIR",
+            "VCToolsInstallDir",
+            "WindowsSdkDir",
+            "WindowsSDKVersion",
         ] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
