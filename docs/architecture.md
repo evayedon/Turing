@@ -156,6 +156,32 @@ writes back a stale snapshot. A file read or creation that finishes after its
 workspace was closed or replaced is discarded instead of opening a tab, and a
 revoked grant surfaces as a save error that keeps the draft.
 
+### Editor groups
+
+The editor area starts with one group. Split Editor Right opens the current
+document in a new group beside the source. Explorer and navigation open
+documents in the active group. Move Editor into Next Group moves the active
+tab to the group on its right, creating one when the source has other tabs
+and is already at the right edge. View → Editor Layout and the command
+palette expose the split, move, close and focus commands.
+
+`editor-groups.ts` tracks each group's ordered document keys and selected tab,
+plus the active group. `use-editor.ts` owns one document record per key,
+including its URI, revision, draft, dirty state and save lifecycle. Closing a
+tab or group prompts for unsaved changes only for documents that would lose
+their last tab. Workspace changes remove the departing workspace's documents
+from every group.
+
+The editor workspace owns a Monaco model registry keyed by document key.
+Each group has its own editor instance and saves its own cursor, selection
+and scroll for each document. Views share model content, undo history and
+Problems markers. A shared edit updates the document record once per model
+version. The registry retains models for open tabs, including inactive tabs,
+and disposes them after the last group drops the tab and the views have
+detached. The primary group registers language providers for all visible
+models. Editor commands, status and Problems navigation (including F8)
+follow the active group.
+
 ## Workbench layout
 
 Nebula styling uses the shared design tokens. The File menu and command palette

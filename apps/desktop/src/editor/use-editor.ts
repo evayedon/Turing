@@ -1,4 +1,19 @@
 import type { NavigationTarget } from "./navigation";
+import {
+  activeDocument,
+  closeDocumentInGroup,
+  closeGroup as closeGroupView,
+  createGroups,
+  documentsOnlyIn,
+  focusAdjacentGroup,
+  focusGroup as focusGroupView,
+  moveDocumentToNextGroup,
+  openDocument,
+  removeDocuments,
+  splitGroup,
+  viewCount,
+} from "./editor-groups";
+import type { EditorGroups, GroupId } from "./editor-groups";
 import { rememberRecent } from "../shell/recent";
 import { suggestedFilename } from "./languages";
 import {
@@ -22,6 +37,9 @@ export interface EditorLocation {
   line: number;
   column: number;
 }
+
+/** A location to reveal in one document, in one editor group. */
+export type EditorReveal = EditorLocation & { key: string; group: GroupId };
 
 type SavedSource = (
   | { kind: "workspace"; workspaceId: string; relativePath: string }
@@ -136,8 +154,12 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const currentWorkspace = useRef(workspaceId);
   const revisions = useRef(0);
   const inflight = useRef<Promise<unknown> | null>(null);
-  const [activeKey, setActiveKey] = useState<string>();
-  const [reveal, setReveal] = useState<EditorLocation & { key: string }>();
+  // Groups are views of the documents in `tabs`. Like tabs, every change
+  // goes through `commitGroups` so resumed work reads the latest layout.
+  const [groups, setGroups] = useState<EditorGroups>(createGroups);
+  const latestGroups = useRef<EditorGroups>(groups);
+  const activeKey = activeDocument(groups);
+  const [reveal, setReveal] = useState<EditorReveal>();
   const [operation, setOperation] = useState<Operation | null>(null);
   const [autoSavePreference, setAutoSave] = useState(loadAutoSave);
   const autoSave = native && autoSavePreference;
@@ -161,6 +183,25 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   function commitTabs(next: (previous: EditorTab[]) => EditorTab[]) {
     latest.current = next(latest.current);
     setTabs(latest.current);
+  }
+
+  function commitGroups(next: (previous: EditorGroups) => EditorGroups) {
+    latestGroups.current = next(latestGroups.current);
+    setGroups(latestGroups.current);
+  }
+
+  function showDocument(key: string, group?: GroupId) {
+    commitGroups((previous) => openDocument(previous, key, group));
+  }
+
+  function forgetDocuments(keys: Iterable<string>) {
+    const closing = new Set(keys);
+    if (closing.size)
+      commitGroups((previous) => removeDocuments(previous, closing));
+  }
+
+  function revealIn(key: string, location: EditorLocation) {
+    setReveal({ key, group: latestGroups.current.activeGroup, ...location });
   }
 
   const find = (key: string) => latest.current.find((tab) => tab.key === key);
@@ -224,17 +265,41 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     return invokeWorkspace("editor_confirm_discard", { action });
   }
 
-  function select(key: string) {
+  /** Shows a document in a group, the active group by default. */
+  function select(key: string, group?: GroupId) {
     if (pending.current) return;
-    setActiveKey(key);
+    showDocument(key, group);
     setError(undefined);
+  }
+
+  function focusGroup(group: GroupId) {
+    commitGroups((previous) => focusGroupView(previous, group));
+  }
+
+  function focusNextGroup(direction: 1 | -1) {
+    commitGroups((previous) => focusAdjacentGroup(previous, direction));
+  }
+
+  /** Opens a group's shown document in a new group to its right. */
+  function splitEditor(group?: GroupId) {
+    if (pending.current) return;
+    commitGroups((previous) => splitGroup(previous, group));
+  }
+
+  /** Moves the active document into the next group to the right. */
+  function moveEditorToNextGroup() {
+    if (pending.current) return;
+    commitGroups((previous) => {
+      const key = activeDocument(previous);
+      return key ? moveDocumentToNextGroup(previous, key) : previous;
+    });
   }
 
   function navigate(target: NavigationTarget, location: EditorLocation) {
     if (pending.current) return;
     if ("tab" in target) {
       select(target.tab.key);
-      setReveal({ key: target.tab.key, ...location });
+      revealIn(target.tab.key, location);
     } else {
       void open(target.relativePath, location);
     }
@@ -251,7 +316,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         revision: ++revisions.current,
       },
     ]);
-    setActiveKey(key);
+    showDocument(key);
     return key;
   }
 
@@ -265,7 +330,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     );
     if (existing) {
       select(existing.key);
-      if (location) setReveal({ key: existing.key, ...location });
+      if (location) revealIn(existing.key, location);
       return;
     }
     return perform(async () => {
@@ -276,7 +341,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       // The workspace was closed or replaced while reading: drop the reply.
       if (currentWorkspace.current !== workspaceId) return;
       const key = addTab(workspaceTab(file));
-      if (location) setReveal({ key, ...location });
+      if (location) revealIn(key, location);
     });
   }
 
@@ -294,7 +359,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
           tab.source.kind === "selected" && tab.source.fileId === file.fileId,
       );
       if (existing) {
-        setActiveKey(existing.key);
+        showDocument(existing.key);
       } else {
         addTab(selectedTab(file));
       }
@@ -406,20 +471,61 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     await invokeWorkspace("file_close", { fileId });
   }
 
-  function close({ key }: EditorTab) {
+  /**
+   * Closes a document's tab in one group (the active one by default). The
+   * document itself closes only with its last view.
+   */
+  function close({ key }: EditorTab, group?: GroupId) {
     return perform(async () => {
       const tab = find(key);
       if (!tab) return;
+      const from = group ?? latestGroups.current.activeGroup;
+      const shown = latestGroups.current.groups.some(
+        ({ id, keys }) => id === from && keys.includes(key),
+      );
+      if (shown && viewCount(latestGroups.current, key) > 1) {
+        commitGroups((previous) => closeDocumentInGroup(previous, key, from));
+        return;
+      }
       if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
       await releaseFile(tab, latest.current);
-      const index = latest.current.findIndex((item) => item.key === key);
       commitTabs((previous) => previous.filter((item) => item.key !== key));
-      const remaining = latest.current;
-      setActiveKey((current) =>
-        current === key
-          ? remaining[Math.min(index, remaining.length - 1)]?.key
-          : current,
+      forgetDocuments([key]);
+    });
+  }
+
+  /**
+   * Closes a group. Documents only it was showing close with it, after a
+   * discard confirmation for each unsaved one.
+   */
+  function closeGroup(group?: GroupId) {
+    return perform(async () => {
+      const id = group ?? latestGroups.current.activeGroup;
+      if (latestGroups.current.groups.length < 2) return;
+      const closing = documentsOnlyIn(latestGroups.current, id).flatMap(
+        (key) => find(key) ?? [],
       );
+      for (const tab of closing)
+        if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
+      const remaining = [...closing];
+      try {
+        while (remaining.length) {
+          await releaseFile(remaining[0], latest.current);
+          remaining.shift();
+        }
+      } finally {
+        // A failed grant release keeps the group and its unreleased tabs.
+        const kept = new Set(remaining.map(({ key }) => key));
+        const closed = closing.flatMap(({ key }) =>
+          kept.has(key) ? [] : [key],
+        );
+        commitTabs((previous) =>
+          previous.filter(({ key }) => !closed.includes(key)),
+        );
+        if (!kept.size)
+          commitGroups((previous) => closeGroupView(previous, id));
+        forgetDocuments(closed);
+      }
     });
   }
 
@@ -438,11 +544,11 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         }
       } finally {
         const kept = new Set(remaining.map(({ key }) => key));
-        commitTabs((previous) => previous.filter(({ key }) => kept.has(key)));
-        const left = latest.current;
-        setActiveKey((current) =>
-          left.some(({ key }) => key === current) ? current : left[0]?.key,
+        const closed = latest.current.flatMap(({ key }) =>
+          kept.has(key) ? [] : [key],
         );
+        commitTabs((previous) => previous.filter(({ key }) => kept.has(key)));
+        forgetDocuments(closed);
       }
     });
   }
@@ -588,14 +694,10 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       )
         return;
       if (await action()) {
-        const closing = new Set(workspaceTabs.map(({ key }) => key));
         commitTabs((previous) =>
           previous.filter((tab) => tab.source.kind !== "workspace"),
         );
-        const remaining = latest.current;
-        setActiveKey((current) =>
-          current && closing.has(current) ? remaining.at(-1)?.key : current,
-        );
+        forgetDocuments(workspaceTabs.map(({ key }) => key));
       }
     });
   }
@@ -677,6 +779,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   return {
     tabs,
+    groups,
     active,
     reveal,
     busy,
@@ -694,6 +797,11 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     renameWorkspaceEntry,
     close,
     closeAll,
+    closeGroup,
+    focusGroup,
+    focusNextGroup,
+    splitEditor,
+    moveEditorToNextGroup,
     edit,
     save,
     saveAs,

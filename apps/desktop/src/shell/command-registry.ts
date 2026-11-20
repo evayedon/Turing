@@ -24,6 +24,9 @@ export type CommandState = {
   canSave: boolean;
   autoSave: boolean;
   tabCount: number;
+  /** Side-by-side editor groups; there is always at least one. */
+  groupCount: number;
+  canMoveEditorToNextGroup: boolean;
   hasWorkspace: boolean;
   workspaceBusy: boolean;
   recentCount: number;
@@ -64,6 +67,10 @@ export type CommandActions = {
   renameSelection: () => void;
   closeActiveEditor: () => void;
   closeAllEditors: () => void;
+  splitEditor: () => void;
+  moveEditorToNextGroup: () => void;
+  focusEditorGroup: (direction: 1 | -1) => void;
+  closeEditorGroup: () => void;
   selectSidebar: (view: SidebarView) => void;
   toggleSidebar: () => void;
   toggleSourceControl: () => void;
@@ -235,6 +242,35 @@ export const commandRegistry: Record<CommandId, CommandDeclaration> = {
     label: "Close All Editors",
     enabled: (state) => state.tabCount > 0 && !state.editorBusy,
     run: (actions) => actions.closeAllEditors(),
+  },
+  splitEditor: {
+    label: "Split Editor Right",
+    shortcut: { key: "\\", primary: true },
+    enabled: (state) => state.editorOpen && !state.editorBusy,
+    run: (actions) => actions.splitEditor(),
+  },
+  moveEditorToNextGroup: {
+    label: "Move Editor into Next Group",
+    enabled: (state) =>
+      state.editorOpen && !state.editorBusy && state.canMoveEditorToNextGroup,
+    run: (actions) => actions.moveEditorToNextGroup(),
+  },
+  focusNextGroup: {
+    label: "Focus Next Editor Group",
+    shortcut: { key: "F6", ctrl: true },
+    enabled: (state) => state.groupCount > 1,
+    run: (actions) => actions.focusEditorGroup(1),
+  },
+  focusPreviousGroup: {
+    label: "Focus Previous Editor Group",
+    shortcut: { key: "F6", ctrl: true, shift: true },
+    enabled: (state) => state.groupCount > 1,
+    run: (actions) => actions.focusEditorGroup(-1),
+  },
+  closeGroup: {
+    label: "Close Editor Group",
+    enabled: (state) => state.groupCount > 1 && !state.editorBusy,
+    run: (actions) => actions.closeEditorGroup(),
   },
   explorer: {
     label: "Show Explorer",
