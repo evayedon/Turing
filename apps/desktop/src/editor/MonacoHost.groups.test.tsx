@@ -3,12 +3,25 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { EditorCommands } from "../shell/commands";
+import {
+  currentProblems,
+  stampOf,
+  type DiagnosticBatch,
+} from "../language/diagnostic-store";
+import { MONACO_MARKER_INTERVAL_MS } from "../language/monaco-markers";
+import { adjacentProblem } from "../language/problem-navigation";
 import type { LanguageController } from "../language/use-language";
 import { attachLanguage } from "../language/monaco-language";
 import MonacoHost from "./MonacoHost";
 import type { TextModels } from "./MonacoHost";
 import { applyModelEdit } from "./apply-model-edit";
-import { created, resetFakeMonaco } from "./fake-monaco";
+import {
+  created,
+  editor,
+  MarkerSeverity,
+  providers,
+  resetFakeMonaco,
+} from "./fake-monaco";
 import { LARGE_DOCUMENT_LENGTH } from "./performance-budget";
 import { ModelRegistry } from "./model-registry";
 import type { EditorReveal, EditorTab } from "./use-editor";
@@ -19,7 +32,11 @@ vi.mock("../language/monaco-language", () => ({
 }));
 
 beforeEach(resetFakeMonaco);
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 const tab: EditorTab = {
   key: "doc",
@@ -216,4 +233,233 @@ it("keeps a hidden open document's model and draft in sync through rename, undo 
   rerender(view(hidden));
   expect(created.editors[0].input.value).toBe(renamed);
   expect(model.canUndo()).toBe(true);
+});
+
+it("mounts separate fixed, themed widget hosts above both split panes and removes them with the views", () => {
+  const models: TextModels = new ModelRegistry();
+  const { container, unmount } = render(
+    <main className="workbench">
+      {["1", "2"].map((group) => (
+        <section
+          key={group}
+          data-editor-group={group}
+          style={{ overflow: "hidden" }}
+        >
+          <MonacoHost
+            active={tab}
+            tabs={[tab]}
+            models={models}
+            group={group}
+            primary={group === "1"}
+            focused={group === "1"}
+            readOnly={false}
+            onChange={vi.fn()}
+            onInfo={vi.fn()}
+          />
+        </section>
+      ))}
+    </main>,
+  );
+  const workbench = container.querySelector(".workbench");
+  const hosts = [...container.querySelectorAll(".monaco-overflow-host")];
+  expect(hosts).toHaveLength(2);
+  for (const [index, view] of created.editors.entries()) {
+    expect(view.options).toMatchObject({
+      fixedOverflowWidgets: true,
+      overflowWidgetsDomNode: hosts[index],
+      hover: { above: false },
+    });
+    expect(hosts[index].parentElement).toBe(workbench);
+    expect(hosts[index].classList.contains("monaco-editor")).toBe(true);
+  }
+  unmount();
+  expect(hosts.every((host) => !host.isConnected)).toBe(true);
+});
+
+it("uses the active model's provider preconditions for global navigation commands", () => {
+  const models: TextModels = new ModelRegistry();
+  const ready = vi.fn<(commands: EditorCommands | undefined) => void>();
+  const view = (active: EditorTab, controller?: LanguageController) => (
+    <MonacoHost
+      active={active}
+      tabs={[active]}
+      models={models}
+      group="1"
+      workspaceId="project"
+      language={controller}
+      readOnly={false}
+      onChange={vi.fn()}
+      onInfo={vi.fn()}
+      onCommandsReady={ready}
+    />
+  );
+  const ts = { ...tab, name: "main.ts", languageOverride: "typescript" };
+  const { rerender } = render(view(ts));
+  const commands = () => ready.mock.lastCall?.[0];
+  const available = () =>
+    (
+      ["definition", "declaration", "implementation", "references"] as const
+    ).filter((id) => commands()?.supports(id));
+
+  expect(available()).toEqual([]);
+  providers.set(
+    "typescript",
+    new Set(["editorHasDefinitionProvider", "editorHasReferenceProvider"]),
+  );
+  expect(available()).toEqual(["definition", "references"]);
+  commands()?.run("definition");
+  commands()?.run("references");
+  commands()?.run("implementation");
+  expect(created.editors[0].triggered).toEqual([
+    "editor.action.revealDefinition",
+    "editor.action.goToReferences",
+  ]);
+
+  rerender(view({ ...ts, languageOverride: "plaintext" }));
+  expect(available()).toEqual([]);
+  rerender(view({ ...ts, languageOverride: "python" }));
+  expect(available()).toEqual([]);
+  providers.set("cpp", new Set(["editorHasDefinitionProvider"]));
+  rerender(view(tab));
+  expect(available()).toEqual([]);
+  rerender(view(tab, language));
+  expect(available()).toEqual(["definition"]);
+  rerender(
+    view({ ...tab, draft: "x".repeat(LARGE_DOCUMENT_LENGTH) }, language),
+  );
+  expect(available()).toEqual([]);
+  rerender(view(tab, language));
+  expect(available()).toEqual(["definition"]);
+  rerender(view({ ...tab, source: { kind: "untitled" } }, language));
+  expect(available()).toEqual([]);
+});
+
+function markerFixture() {
+  vi.useFakeTimers();
+  const models: TextModels = new ModelRegistry();
+  const publish = vi.fn<(batches: DiagnosticBatch[]) => void>();
+  const ts = { ...tab, name: "main.ts", languageOverride: "typescript" };
+  const view = (active: EditorTab) => (
+    <MonacoHost
+      active={active}
+      tabs={[active]}
+      models={models}
+      group="1"
+      readOnly={false}
+      onChange={vi.fn()}
+      onInfo={vi.fn()}
+      onMonacoDiagnostics={publish}
+    />
+  );
+  const { rerender, unmount } = render(view(ts));
+  const model = created.models[0];
+  const error = {
+    severity: MarkerSeverity.Error,
+    message: "Type mismatch",
+    startLineNumber: 2,
+    startColumn: 3,
+    endLineNumber: 2,
+    endColumn: 4,
+  };
+  const advance = () => vi.advanceTimersByTime(MONACO_MARKER_INTERVAL_MS);
+  const batches = () => publish.mock.lastCall?.[0] ?? [];
+  return {
+    ts,
+    model,
+    error,
+    advance,
+    batches,
+    publish,
+    unmount,
+    update: (next: EditorTab) => rerender(view(next)),
+  };
+}
+
+it("coalesces Monaco diagnostics, ignores native owners and includes the result in both navigation directions", () => {
+  const { ts, model, error, advance, batches, publish } = markerFixture();
+  const read = vi.spyOn(editor, "getModelMarkers");
+  editor.setModelMarkers(model, "typescript", [error]);
+  editor.setModelMarkers(model, "clangd", [
+    { ...error, message: "clangd copy" },
+  ]);
+  editor.setModelMarkers(model, "compiler", [
+    { ...error, message: "compiler copy" },
+  ]);
+  editor.setModelMarkers(model, "typescript", [
+    error,
+    {
+      ...error,
+      severity: MarkerSeverity.Warning,
+      message: "Warning",
+      startLineNumber: 1,
+      endLineNumber: 1,
+    },
+    { ...error, severity: MarkerSeverity.Hint, message: "Hint" },
+  ]);
+  expect(read).not.toHaveBeenCalled();
+  advance();
+  expect(read).toHaveBeenCalledExactlyOnceWith({
+    resource: model.uri,
+    owner: "typescript",
+    take: 200,
+  });
+  expect(publish).toHaveBeenCalledOnce();
+  expect(batches()).toMatchObject([{ producer: "monaco", stamp: stampOf(ts) }]);
+  const problems = currentProblems(batches(), [ts]);
+  expect(problems.map(({ severity, source }) => [severity, source])).toEqual([
+    ["warning", "monaco"],
+    ["error", "monaco"],
+    ["info", "monaco"],
+  ]);
+  expect(problems[1].start).toEqual({ line: 1, character: 2 });
+  expect(adjacentProblem(problems, [ts.key], undefined, 1)).toEqual(
+    problems[0],
+  );
+  expect(adjacentProblem(problems, [ts.key], undefined, -1)).toEqual(
+    problems[2],
+  );
+  editor.setModelMarkers(model, "typescript", []);
+  advance();
+  expect(currentProblems(batches(), [ts])).toEqual([]);
+});
+
+it("drops queued stale markers, refuses to restamp old ones, and skips large documents", () => {
+  const { ts, model, error, advance, batches, publish, update, unmount } =
+    markerFixture();
+  editor.setModelMarkers(model, "typescript", [error]);
+  const edited = { ...ts, editRevision: 1, draft: ts.draft + " " };
+  update(edited);
+  advance();
+  expect(publish).not.toHaveBeenCalled();
+  editor.setModelMarkers(model, "clangd", [error]);
+  advance();
+  expect(currentProblems(batches(), [edited])).toEqual([]);
+
+  editor.setModelMarkers(model, "typescript", [error]);
+  advance();
+  expect(currentProblems(batches(), [edited])).toHaveLength(1);
+  for (const stale of [
+    { ...edited, revision: 2 },
+    { ...edited, uri: "untitled:renamed.ts" },
+    { ...edited, languageOverride: "python" },
+    { ...edited, changedOnDisk: true },
+  ])
+    expect(currentProblems(batches(), [stale])).toEqual([]);
+  expect(currentProblems(batches(), [])).toEqual([]);
+
+  const read = vi.spyOn(editor, "getModelMarkers");
+  editor.setModelMarkers(model, "typescript", [error]);
+  update({
+    ...edited,
+    editRevision: 2,
+    draft: "x".repeat(LARGE_DOCUMENT_LENGTH),
+  });
+  advance();
+  expect(read).not.toHaveBeenCalled();
+
+  update(edited);
+  editor.setModelMarkers(model, "typescript", [error]);
+  unmount();
+  advance();
+  expect(read).not.toHaveBeenCalled();
 });

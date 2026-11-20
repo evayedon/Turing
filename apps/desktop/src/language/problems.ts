@@ -18,7 +18,7 @@ export type Problem = {
   tabKey: string;
   filename: string;
   severity: Severity;
-  source: "clangd" | "compiler";
+  source: "clangd" | "compiler" | "monaco";
   message: string;
   start: LanguagePosition;
   end: LanguagePosition;

@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { EditorCommands } from "../shell/commands";
 import type { LanguageController } from "../language/use-language";
+import type { DiagnosticBatch } from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import type { EditorInfo } from "./editor-info";
 import { openDocuments } from "./editor-groups";
@@ -69,11 +70,13 @@ export function EditorWorkspace({
   emptyContent,
   language,
   problems,
+  onMonacoDiagnostics,
 }: EditorState & {
   runControls?: ReactNode;
   sharedModels?: TextModels;
   language?: LanguageController;
   problems?: Problem[];
+  onMonacoDiagnostics?: (batches: DiagnosticBatch[]) => void;
   workspaceId?: string;
   onCommandsReady?: (commands: EditorCommands | undefined) => void;
   onSaveCommand?: () => void;
@@ -233,6 +236,7 @@ export function EditorWorkspace({
                 onNavigate={navigate}
                 language={language}
                 problems={problems}
+                onMonacoDiagnostics={onMonacoDiagnostics}
               />
             </Suspense>
           </div>

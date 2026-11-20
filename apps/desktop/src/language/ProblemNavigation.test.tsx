@@ -10,11 +10,12 @@ import {
 } from "@testing-library/react";
 import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
-import { useEffect } from "react";
+import { useEffect, useEffectEvent } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ExecutionUpdate } from "@turing/contracts";
 import type { EditorCommands } from "../shell/commands";
 import type { EditorLocation, EditorTab } from "../editor/use-editor";
+import { stampOf, type DiagnosticBatch } from "./diagnostic-store";
 import { Workbench } from "../shell/Workbench";
 import { useLayout } from "../state/layout";
 
@@ -22,6 +23,7 @@ const ipc = vi.hoisted(() => vi.fn());
 const editor = vi.hoisted(() => ({
   cursor: { line: 1, column: 1 },
   reveals: [] as { line: number; column: number }[],
+  markerProblems: [] as DiagnosticBatch["problems"],
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -40,10 +42,12 @@ vi.mock("../editor/MonacoHost", () => ({
     active,
     reveal,
     onCommandsReady,
+    onMonacoDiagnostics,
   }: {
     active: EditorTab;
     reveal?: EditorLocation & { key: string };
     onCommandsReady?: (commands: EditorCommands | undefined) => void;
+    onMonacoDiagnostics?: (batches: DiagnosticBatch[]) => void;
   }) {
     useEffect(() => {
       onCommandsReady?.({
@@ -54,6 +58,19 @@ vi.mock("../editor/MonacoHost", () => ({
       });
       return () => onCommandsReady?.(undefined);
     }, [onCommandsReady]);
+    const publish = useEffectEvent(() => {
+      if (editor.markerProblems.length)
+        onMonacoDiagnostics?.([
+          {
+            producer: "monaco",
+            stamp: stampOf(active),
+            problems: editor.markerProblems,
+          },
+        ]);
+    });
+    useEffect(() => {
+      publish();
+    }, []);
     useEffect(() => {
       if (!reveal) return;
       editor.cursor = { line: reveal.line, column: reveal.column };
@@ -68,6 +85,7 @@ afterEach(() => {
   ipc.mockReset();
   editor.cursor = { line: 1, column: 1 };
   editor.reveals = [];
+  editor.markerProblems = [];
   useLayout.setState(useLayout.getInitialState(), true);
 });
 
@@ -94,18 +112,18 @@ const failedBuild: ExecutionUpdate = {
   ],
 };
 
-async function openAndBuild() {
+async function openDocument(filename = "main.cpp") {
   ipc.mockImplementation((command: string) => {
     if (command === "workspace_open")
       return Promise.resolve({ id: "w", name: "fixture" });
     if (command === "fs_list_directory")
       return Promise.resolve([
-        { name: "main.cpp", relativePath: "main.cpp", kind: "file" },
+        { name: filename, relativePath: filename, kind: "file" },
       ]);
     if (command === "fs_read_file")
       return Promise.resolve({
         workspaceId: "w",
-        relativePath: "main.cpp",
+        relativePath: filename,
         content,
         encoding: "utf-8",
         version: "v1",
@@ -122,13 +140,13 @@ async function openAndBuild() {
     within(explorer).getByRole("button", { name: "Open folder" }),
   );
   await user.click(
-    await within(explorer).findByRole("button", { name: "main.cpp" }),
+    await within(explorer).findByRole("button", { name: filename }),
   );
   return screen.findByRole("textbox", { name: "Source text" });
 }
 
 it("moves between problems with F8 and Shift+F8 and announces each one", async () => {
-  const input = await openAndBuild();
+  const input = await openDocument();
 
   // Nothing to visit before the build has failed.
   fireEvent.keyDown(input, { key: "F8" });
@@ -162,4 +180,35 @@ it("moves between problems with F8 and Shift+F8 and announces each one", async (
   fireEvent.keyDown(input, { key: "F8", shiftKey: true });
   await waitFor(() => expect(editor.reveals).toHaveLength(3));
   expect(editor.reveals[2]).toEqual({ line: 1, column: 1 });
+});
+
+it("shows Monaco markers in Problems and enables both Go commands without a compiler run", async () => {
+  editor.markerProblems = [
+    {
+      severity: "error",
+      message: "Type mismatch",
+      start: { line: 2, character: 3 },
+      end: { line: 2, character: 4 },
+    },
+  ];
+  const input = await openDocument("main.ts");
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("menuitem", { name: "Go" }));
+  for (const name of ["Next Problem", "Previous Problem"]) {
+    const command = screen.getByRole("menuitem", { name });
+    expect(command.hasAttribute("aria-disabled")).toBe(false);
+  }
+  await user.keyboard("{Escape}");
+  fireEvent.keyDown(input, { key: "F8", shiftKey: true });
+  await waitFor(() => expect(editor.reveals).toEqual([{ line: 3, column: 4 }]));
+  expect(
+    screen.getByRole("status", { name: "Problem navigation" }).textContent,
+  ).toBe("Error 1 of 1: Type mismatch (main.ts:3:4)");
+  await user.click(screen.getByRole("menuitem", { name: "View" }));
+  await user.click(screen.getByRole("menuitem", { name: "Dock Panels" }));
+  await user.click(screen.getByRole("menuitem", { name: "Show Problems" }));
+  expect(
+    (await screen.findByRole("button", { name: /Type mismatch/ })).textContent,
+  ).toContain("Monaco");
+  expect(ipc).not.toHaveBeenCalledWith("execution_start", expect.anything());
 });
