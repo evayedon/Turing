@@ -389,14 +389,39 @@ mod tests {
         let validated = std::cell::Cell::new(false);
         let result = recreate(&root, "parent/new", "draft", || {
             if validated.replace(true) {
-                fs::rename(path.join("parent"), path.join("moved")).unwrap();
-                fs::create_dir(path.join("parent")).unwrap();
+                // Unix lets a directory be swapped while it is open; the
+                // swap must be detected. Windows refuses it outright: open
+                // workspace directories are held without FILE_SHARE_DELETE.
+                #[cfg(unix)]
+                {
+                    fs::rename(path.join("parent"), path.join("moved")).unwrap();
+                    fs::create_dir(path.join("parent")).unwrap();
+                }
+                #[cfg(windows)]
+                assert_eq!(
+                    fs::rename(path.join("parent"), path.join("moved"))
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+                );
             }
             true
         });
-        assert_eq!(result, Err(WorkspaceError::FileConflict));
-        assert!(fs::read_dir(path.join("parent")).unwrap().next().is_none());
-        assert!(fs::read_dir(path.join("moved")).unwrap().next().is_none());
+        #[cfg(unix)]
+        {
+            assert_eq!(result, Err(WorkspaceError::FileConflict));
+            assert!(fs::read_dir(path.join("parent")).unwrap().next().is_none());
+            assert!(fs::read_dir(path.join("moved")).unwrap().next().is_none());
+        }
+        #[cfg(windows)]
+        {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                fs::read_to_string(path.join("parent/new")).unwrap(),
+                "draft"
+            );
+            assert!(!path.join("moved").exists());
+        }
     }
 
     #[test]

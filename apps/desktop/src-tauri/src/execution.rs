@@ -88,7 +88,7 @@ pub enum Language {
     CSharp,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     Preparing,
@@ -654,15 +654,20 @@ mod tests {
     fn run_installed(language: Language, content: &str, unavailable: ExecutionError) {
         let (_workspace, service, started) = run_job(language, content);
         let (result, chunks) = wait(&service, &started.id, |update| update.phase.finished());
-        if result.error == Some(unavailable) {
+        let required = matches!(language, Language::Rust | Language::CSharp)
+            && std::env::var("TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS").as_deref() == Ok("1");
+        if result.error == Some(unavailable) && !required {
             eprintln!("skipping {language:?}: {unavailable:?} (no usable installed toolchain)");
             return;
         }
+        let progress = service.progress("main", &started.id).unwrap();
+        let phase = progress.state().phase_before_exit;
         assert_eq!(
             result.exit_code,
             Some(0),
-            "{language:?}: {:?}\n{}\n{}\n{}",
+            "{language:?}: {:?} in {phase:?} after {} ms\n{}\n{}\n{}",
             result.error,
+            result.elapsed_ms,
             stream(&chunks, Stream::BuildStdout),
             stream(&chunks, Stream::BuildStderr),
             stream(&chunks, Stream::Stderr)

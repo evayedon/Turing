@@ -38,6 +38,18 @@ fn directories(path: Option<&OsStr>) -> impl Iterator<Item = PathBuf> + '_ {
 }
 
 fn find(names: &[&str], path: Option<&OsStr>) -> Option<PathBuf> {
+    executable_candidates(names, path).next()
+}
+
+pub(super) fn tool(language: Language, path: Option<&OsStr>) -> Result<PathBuf> {
+    let (names, error) = candidates(language);
+    find(names, path).ok_or(error)
+}
+
+fn executable_candidates<'a>(
+    names: &'a [&'a str],
+    path: Option<&'a OsStr>,
+) -> impl Iterator<Item = PathBuf> + 'a {
     directories(path)
         .flat_map(|dir| {
             names.iter().map(move |name| {
@@ -48,12 +60,7 @@ fn find(names: &[&str], path: Option<&OsStr>) -> Option<PathBuf> {
                 })
             })
         })
-        .find(|candidate| is_executable(candidate))
-}
-
-pub(super) fn tool(language: Language, path: Option<&OsStr>) -> Result<PathBuf> {
-    let (names, error) = candidates(language);
-    find(names, path).ok_or(error)
+        .filter(|candidate| is_executable(candidate))
 }
 
 struct Job<'a> {
@@ -128,8 +135,7 @@ impl Job<'_> {
     }
 
     fn probe(&self, command: &mut Command, unavailable: ExecutionError) -> Result<String> {
-        let output = process::probe(command, &self.scratch, self.staging, self.progress);
-        output.ok_or(unavailable)
+        process::probe(command, &self.scratch, self.staging, self.progress)?.ok_or(unavailable)
     }
 
     fn build(&self, command: &mut Command) -> Result<Option<Outcome>> {
@@ -257,16 +263,102 @@ fn native_args(
 
 fn compile_native(job: &Job<'_>, language: Language, mut command: Command) -> Result<Outcome> {
     let unavailable = candidates(language).1;
-    let version = job.probe(
-        job.command(command.get_program()).arg("--version"),
-        unavailable,
-    )?;
+    let version = if language == Language::Rust {
+        job.probe(job.command(command.get_program()).arg("-vV"), unavailable)?
+    } else {
+        let mut selected = None;
+        let mut process_error = None;
+        for candidate in executable_candidates(candidates(language).0, Some(&job.path)) {
+            match job.probe(job.command(&candidate).arg("--version"), unavailable) {
+                Ok(version) => {
+                    selected = Some((candidate, version));
+                    break;
+                }
+                Err(error) if error == unavailable => {}
+                Err(error @ ExecutionError::ProcessUnavailable) => {
+                    process_error.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+            if job.progress.stopped.load(Relaxed) {
+                break;
+            }
+        }
+        let (candidate, version) = selected.ok_or(process_error.unwrap_or(unavailable))?;
+        command = job.command(candidate);
+        version
+    };
+    #[cfg(windows)]
+    if language == Language::Rust {
+        configure_rust_linker(&mut command, &version)?;
+    }
     let output = binary(job.staging);
     native_args(&mut command, language, job.source, &output, &version);
     if let Some(outcome) = job.build(&mut command)? {
         return Ok(outcome);
     }
     job.run(&mut job.command(output), false)
+}
+
+#[cfg(windows)]
+struct MsvcDiscovery;
+
+#[cfg(windows)]
+impl find_msvc_tools::EnvGetter for MsvcDiscovery {
+    fn get_env(&self, name: &'static str) -> Option<find_msvc_tools::Env> {
+        use std::{os::windows::ffi::OsStringExt, ptr::null_mut};
+        use windows_sys::Win32::{
+            Foundation::MAX_PATH,
+            UI::Shell::{SHGetFolderPathW, CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILESX86},
+        };
+
+        // Keep developer-shell PATH and SDK overrides out of discovery.
+        // The installer fallback uses only the OS's Program Files folders.
+        let folder = match name {
+            "ProgramFiles(x86)" => CSIDL_PROGRAM_FILESX86,
+            "ProgramFiles" => CSIDL_PROGRAM_FILES,
+            _ => return None,
+        };
+        let mut path = [0_u16; MAX_PATH as usize];
+        let result = unsafe {
+            SHGetFolderPathW(null_mut(), folder as i32, null_mut(), 0, path.as_mut_ptr())
+        };
+        if result != 0 {
+            return None;
+        }
+        let end = path.iter().position(|&unit| unit == 0)?;
+        let path = OsString::from_wide(&path[..end]);
+        Path::new(&path)
+            .is_absolute()
+            .then_some(find_msvc_tools::Env::Owned(path))
+    }
+}
+
+#[cfg(windows)]
+fn configure_rust_linker(command: &mut Command, version: &str) -> Result<()> {
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .ok_or(ExecutionError::RustUnavailable)?;
+    let Some(arch) = host.strip_suffix("-pc-windows-msvc") else {
+        return Ok(());
+    };
+    let linker = find_msvc_tools::find_tool_with_env(arch, "link.exe", &MsvcDiscovery)
+        .filter(|tool| tool.path().is_absolute() && is_executable(tool.path()))
+        .ok_or(ExecutionError::RustUnavailable)?;
+    let mut argument = OsString::from("linker=");
+    argument.push(linker.path());
+    command.arg("-C").arg(argument);
+    // The linker was selected by absolute path. Use only the library search
+    // paths from the discovered Visual Studio and Windows SDK installation.
+    for (key, value) in linker
+        .env()
+        .into_iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("LIB"))
+    {
+        command.env(key, value);
+    }
+    Ok(())
 }
 
 fn go_command(job: &Job<'_>, executable: &OsStr) -> Command {
@@ -457,20 +549,23 @@ fn dotnet(job: &Job<'_>, executable: &Path) -> Result<Outcome> {
         ),
     )
     .map_err(|_| ExecutionError::Internal)?;
+    let config = job.staging.join("NuGet.Config");
     fs::write(
-        job.staging.join("NuGet.Config"),
-        "<configuration><packageSources><clear /></packageSources></configuration>",
+        &config,
+        "<configuration><packageSources><clear /></packageSources><fallbackPackageFolders><clear /></fallbackPackageFolders></configuration>",
     )
     .map_err(|_| ExecutionError::Internal)?;
+    let mut restore_config = OsString::from("-p:RestoreConfigFile=");
+    restore_config.push(config);
     if let Some(outcome) = job.build(
         dotnet_command(job, executable)
             .arg("build")
             .arg(project)
+            .arg(restore_config)
             .args([
                 "--nologo",
                 "--verbosity",
                 "quiet",
-                "-p:RestoreConfigFile=NuGet.Config",
                 "-p:UseSharedCompilation=false",
                 "-p:ImportDirectoryBuildProps=false",
                 "-p:ImportDirectoryBuildTargets=false",
@@ -527,6 +622,66 @@ mod tests {
             directories(Some(&path)).collect::<Vec<_>>(),
             [scratch.path()]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_discovery_keeps_the_driver_name_through_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("clang-18");
+        let driver = scratch.path().join("clang++");
+        symlink(&target, &driver).unwrap();
+        let path = Some(scratch.path().as_os_str());
+        assert_eq!(
+            tool(Language::Cpp, path),
+            Err(ExecutionError::CompilerUnavailable)
+        );
+        fs::write(&target, []).unwrap();
+        assert_eq!(
+            tool(Language::Cpp, path),
+            Err(ExecutionError::CompilerUnavailable)
+        );
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(tool(Language::Cpp, path), Ok(driver));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rust_uses_msvc_when_another_link_exe_is_first_on_path() {
+        let host_path = std::env::var_os("PATH");
+        let Ok(rustc) = tool(Language::Rust, host_path.as_deref()) else {
+            assert!(std::env::var("TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS").as_deref() != Ok("1"));
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let staging = scratch.path();
+        let conflict = staging.join("other-toolchain");
+        fs::create_dir(&conflict).unwrap();
+        fs::write(conflict.join("link.exe"), b"not the Microsoft linker").unwrap();
+        let source = staging.join("test.rs");
+        fs::write(&source, "fn main() {}").unwrap();
+        let cwd = Dir::open_ambient_dir(staging, ambient_authority()).unwrap();
+        let progress = Progress::new(None);
+        let job = Job {
+            source: &source,
+            staging,
+            scratch: cwd.try_clone().unwrap(),
+            cwd: &cwd,
+            path: std::env::join_paths(
+                std::iter::once(conflict).chain(directories(host_path.as_deref())),
+            )
+            .unwrap(),
+            progress: &progress,
+        };
+        let result = compile_native(&job, Language::Rust, job.command(rustc));
+        if result == Err(ExecutionError::RustUnavailable)
+            && std::env::var("TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS").as_deref() != Ok("1")
+        {
+            return;
+        }
+        assert_eq!(result, Ok(Outcome::Ran(Some(0))));
     }
 
     #[test]

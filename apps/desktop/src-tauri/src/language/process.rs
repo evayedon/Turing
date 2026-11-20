@@ -27,20 +27,24 @@ const SHUTDOWN_ID: u64 = 2;
 /// forced cleanup in `Drop`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shutdown {
-    /// The server answered `shutdown` and closed its output after `exit`.
+    /// The server accepted `shutdown` and exited successfully after `exit`.
     Graceful,
     /// The server had already exited or could not accept `shutdown`.
     AlreadyExited,
     /// No `shutdown` reply arrived within the budget.
     NoReply,
+    /// The server returned an error or an invalid shutdown result.
+    Rejected,
     /// The server replied but did not exit within the budget.
     NoExit,
+    /// The server exited with a failure status.
+    FailedExit,
 }
 
 pub struct Process {
     child: Option<Child>,
     stderr: Arc<Mutex<VecDeque<String>>>,
-    send: SyncSender<Vec<Value>>,
+    send: Option<SyncSender<Vec<Value>>>,
     pub receive: Receiver<Value>,
     #[cfg(windows)]
     _job: Option<crate::terminal::platform::ProcessGuard>,
@@ -253,7 +257,7 @@ impl Process {
         Ok(Self {
             child: None,
             stderr: Arc::default(),
-            send,
+            send: Some(send),
             receive,
             #[cfg(windows)]
             _job: None,
@@ -281,10 +285,14 @@ impl Process {
     }
 
     pub fn batch(&self, messages: Vec<Value>) -> Result<()> {
-        self.send.try_send(messages).map_err(|error| match error {
-            mpsc::TrySendError::Full(_) => Error::Busy,
-            mpsc::TrySendError::Disconnected(_) => Error::ServerExited,
-        })
+        self.send
+            .as_ref()
+            .ok_or(Error::ServerExited)?
+            .try_send(messages)
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => Error::Busy,
+                mpsc::TrySendError::Disconnected(_) => Error::ServerExited,
+            })
     }
 
     pub fn next(&self) -> Result<Option<Value>> {
@@ -295,17 +303,22 @@ impl Process {
         }
     }
 
-    /// Requests `shutdown`, then `exit`, within bounded budgets. The child
-    /// is never reaped here, so the Unix process group cannot be recycled
-    /// before `Drop` signals it.
+    /// Requests `shutdown`, then sends `exit` and closes the input pipe.
     pub fn shutdown(&mut self) -> Shutdown {
-        if self
-            .send(json!({"jsonrpc":"2.0","id":SHUTDOWN_ID,"method":"shutdown"}))
-            .is_err()
-        {
-            return Shutdown::AlreadyExited;
-        }
         let deadline = Instant::now() + SHUTDOWN_REPLY;
+        let request = json!({"jsonrpc":"2.0","id":SHUTDOWN_ID,"method":"shutdown"});
+        loop {
+            match self.send(request.clone()) {
+                Ok(()) => break,
+                Err(Error::Busy) if Instant::now() < deadline => {
+                    // A full inbound queue can block the server while the
+                    // writer is still flushing queued document changes.
+                    let _ = self.receive.recv_timeout(Duration::from_millis(5));
+                }
+                Err(Error::Busy) => return Shutdown::NoReply,
+                Err(_) => return Shutdown::AlreadyExited,
+            }
+        }
         loop {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Shutdown::NoReply;
@@ -315,7 +328,11 @@ impl Process {
                     if message.get("id").and_then(Value::as_u64) == Some(SHUTDOWN_ID)
                         && message.get("method").is_none() =>
                 {
-                    break
+                    if message.get("result") != Some(&Value::Null) || message.get("error").is_some()
+                    {
+                        return Shutdown::Rejected;
+                    }
+                    break;
                 }
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => return Shutdown::NoReply,
@@ -323,19 +340,34 @@ impl Process {
             }
         }
         if self.send(json!({"jsonrpc":"2.0","method":"exit"})).is_err() {
-            return Shutdown::Graceful;
+            return Shutdown::AlreadyExited;
         }
-        // The server closing its output is the exit signal; draining keeps
-        // a blocked output thread from holding the pipe open.
+        // The writer drains the queued exit frame before dropping stdin.
+        self.send.take();
         let deadline = Instant::now() + SHUTDOWN_EXIT;
         loop {
+            if let Some(mut child) = self.child.take_if(has_exited) {
+                // Clean up remaining descendants before reaping the exited
+                // Unix group leader and releasing its group ID.
+                kill_group(&child);
+                return match child.wait() {
+                    Ok(status) if status.success() => Shutdown::Graceful,
+                    _ => Shutdown::FailedExit,
+                };
+            }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Shutdown::NoExit;
             };
-            match self.receive.recv_timeout(remaining) {
-                Ok(_) => {}
-                Err(RecvTimeoutError::Timeout) => return Shutdown::NoExit,
-                Err(RecvTimeoutError::Disconnected) => return Shutdown::Graceful,
+            // Drain output to avoid backpressure, but require actual child
+            // termination even if the reader has already stopped.
+            if let Err(RecvTimeoutError::Disconnected) = self
+                .receive
+                .recv_timeout(remaining.min(Duration::from_millis(10)))
+            {
+                if self.child.is_none() {
+                    return Shutdown::Graceful;
+                }
+                thread::sleep(remaining.min(Duration::from_millis(10)));
             }
         }
     }
@@ -411,6 +443,32 @@ fn capture_stderr(mut stderr: impl Read, logs: &Mutex<VecDeque<String>>) {
     }
 }
 
+#[cfg(unix)]
+fn has_exited(child: &mut Child) -> bool {
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+    unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        ) == 0
+            && info.si_pid() != 0
+    }
+}
+
+#[cfg(windows)]
+fn has_exited(child: &mut Child) -> bool {
+    matches!(child.try_wait(), Ok(Some(_)))
+}
+
+fn kill_group(_child: &Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(_child.id() as libc::pid_t), libc::SIGKILL);
+    }
+}
+
 impl Drop for Process {
     fn drop(&mut self) {
         let Some(child) = self.child.as_mut() else {
@@ -422,10 +480,7 @@ impl Drop for Process {
 
 fn terminate(child: &mut Child) -> Error {
     // The unreaped leader keeps the group ID reserved.
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-    }
+    kill_group(child);
     let _ = child.kill();
     let _ = child.wait();
     Error::StartFailed
@@ -460,6 +515,56 @@ mod stderr_tests {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn shutdown_flushes_exit_closes_stdin_and_reaps_the_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        let script = fixture.path().join("server");
+        // The fixture exits successfully only if it receives both requests
+        // in order and stdin then reaches EOF. Close stdout before the last
+        // step so EOF on that pipe alone cannot count as graceful shutdown.
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+ready='{"jsonrpc":"2.0","method":"ready"}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#ready}" "$ready"
+read_frame() {
+    IFS= read -r header && IFS= read -r separator || exit 2
+    length=${header#Content-Length: }
+    length=${length%?}
+    IFS= read -r -n "$length" body || exit 2
+    printf '%s' "$body"
+}
+case "$(read_frame)" in *'"method":"shutdown"'*) ;; *) exit 3 ;; esac
+reply='{"jsonrpc":"2.0","id":2,"result":null}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#reply}" "$reply"
+case "$(read_frame)" in *'"method":"exit"'*) ;; *) exit 4 ;; esac
+exec 1>&-
+if IFS= read -r unexpected; then exit 5; fi
+exit 0
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut process = Process::start(
+            &Executable::new(&script, Kind::Clangd).unwrap(),
+            fixture.path(),
+            Kind::Clangd,
+        )
+        .unwrap();
+        assert_eq!(
+            process
+                .receive
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()["method"],
+            "ready"
+        );
+        assert_eq!(process.shutdown(), Shutdown::Graceful);
+        assert!(
+            process.child.is_none(),
+            "graceful shutdown must reap the child"
+        );
+    }
 
     #[test]
     fn malformed_server_output_is_reported_and_drop_reaps_the_child() {

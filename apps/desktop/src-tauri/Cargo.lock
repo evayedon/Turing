@@ -4144,6 +4144,7 @@ version = "0.1.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
+ "find-msvc-tools",
  "libc",
  "notify",
  "portable-pty",
