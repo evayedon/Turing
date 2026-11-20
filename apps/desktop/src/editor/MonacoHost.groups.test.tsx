@@ -39,11 +39,18 @@ const tab: EditorTab = {
 const language: LanguageController = {
   status: "ready",
   message: undefined,
-  capabilities: { hover: true, completion: true, definition: true },
+  capabilities: {
+    hover: true,
+    completion: true,
+    definition: true,
+    prepareRename: false,
+    rename: false,
+  },
   batches: [],
   start: async () => {},
   stop: () => {},
   request: async () => undefined,
+  rename: async () => ({ value: undefined, documents: new Map() }),
 };
 
 it("gives two groups one model while reveal, info and commands follow the active group", () => {

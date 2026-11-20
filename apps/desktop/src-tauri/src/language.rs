@@ -1,5 +1,6 @@
 mod framing;
 mod process;
+mod workspace_edit;
 
 use crate::{
     windows::workbench,
@@ -31,17 +32,20 @@ pub enum Error {
     ServerExited,
     Busy,
     InvalidDocument,
+    InvalidWorkspaceEdit,
     NotReady,
     Internal,
 }
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Feature {
     Hover,
     Completion,
     Definition,
+    PrepareRename,
+    Rename,
 }
 
 impl Feature {
@@ -50,15 +54,20 @@ impl Feature {
             Self::Hover => "textDocument/hover",
             Self::Completion => "textDocument/completion",
             Self::Definition => "textDocument/definition",
+            Self::PrepareRename => "textDocument/prepareRename",
+            Self::Rename => "textDocument/rename",
         }
     }
 }
 
 #[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     hover: bool,
     completion: bool,
     definition: bool,
+    prepare_rename: bool,
+    rename: bool,
 }
 
 impl Capabilities {
@@ -67,6 +76,8 @@ impl Capabilities {
             Feature::Hover => self.hover,
             Feature::Completion => self.completion,
             Feature::Definition => self.definition,
+            Feature::PrepareRename => self.prepare_rename,
+            Feature::Rename => self.rename,
         }
     }
 }
@@ -77,7 +88,7 @@ pub struct Position {
     character: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -98,6 +109,8 @@ pub enum Action {
         version: u32,
         position: Position,
         feature: Feature,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_name: Option<String>,
         request_id: u32,
     },
     Cancel {
@@ -132,6 +145,8 @@ pub struct Update {
 
 struct Document {
     uri: String,
+    base_version: String,
+    text: String,
     version: u32,
 }
 
@@ -140,6 +155,7 @@ struct Request {
     version: u32,
     feature: Feature,
     started: Instant,
+    position: Position,
     revision: u64,
 }
 
@@ -149,6 +165,7 @@ struct Session {
     process: Process,
     staging: tempfile::TempDir,
     documents: HashMap<String, Document>,
+    neighbors: HashMap<String, workspace_edit::Snapshot>,
     pending: HashMap<u32, Request>,
     capabilities: Option<Capabilities>,
     last_version: u32,
@@ -232,6 +249,28 @@ fn notify(method: &str, params: Value) -> Value {
     json!({"jsonrpc":"2.0", "method":method, "params":params})
 }
 
+fn did_open(path: &str, uri: &str, version: u32, text: &str) -> Value {
+    notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument":{"uri":uri,"version":version,"languageId":if path.to_ascii_lowercase().ends_with(".c") {"c"} else {"cpp"},"text":text}
+        }),
+    )
+}
+
+fn did_change(uri: &str, version: u32, text: &str) -> Value {
+    notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument":{"uri":uri,"version":version},"contentChanges":[{"text":text}]
+        }),
+    )
+}
+
+fn did_close(uri: &str) -> Value {
+    notify("textDocument/didClose", json!({"textDocument":{"uri":uri}}))
+}
+
 impl Session {
     fn start(workspace_id: String, executable: &Path) -> Result<Self> {
         let staging = Self::staging()?;
@@ -264,8 +303,10 @@ impl Session {
                 "processId":std::process::id(), "rootUri":root_uri.as_str(),
                 "capabilities":{
                     "general":{"positionEncodings":["utf-16"]},
+                    "workspace":{"workspaceEdit":{"documentChanges":true,"resourceOperations":[]}},
                     "textDocument":{
                         "publishDiagnostics":{"versionSupport":true},
+                        "rename":{"prepareSupport":true},
                         "hover":{"contentFormat":["plaintext"]},
                         "completion":{"completionItem":{"snippetSupport":false}}
                     }
@@ -278,6 +319,7 @@ impl Session {
             process,
             staging,
             documents: HashMap::new(),
+            neighbors: HashMap::new(),
             pending: HashMap::new(),
             capabilities: None,
             last_version: 0,
@@ -319,39 +361,37 @@ impl Session {
                     && self
                         .documents
                         .keys()
-                        .any(|existing| existing.to_lowercase() == path.to_lowercase())
+                        .chain(self.neighbors.keys())
+                        .any(|existing| {
+                            existing != &path && existing.to_lowercase() == path.to_lowercase()
+                        })
                 {
                     return Err(Error::InvalidDocument);
                 }
                 let opened = self.documents.contains_key(&path);
-                if !opened || saved {
-                    let (disk, _, _) = registry
-                        .execution_snapshot(owner, &self.workspace_id, &path)
+                let base_version = if !opened || saved {
+                    let disk = registry
+                        .read(owner, &self.workspace_id, &path)
                         .map_err(|_| Error::InvalidDocument)?;
                     std::fs::create_dir_all(file.parent().ok_or(Error::InvalidDocument)?)
                         .map_err(|_| Error::Internal)?;
-                    std::fs::write(file, disk).map_err(|_| Error::Internal)?;
+                    std::fs::write(file, &disk.content).map_err(|_| Error::Internal)?;
+                    Some(disk.version)
                 } else {
                     registry
                         .language_file(owner, &self.workspace_id, &path)
                         .map_err(|_| Error::InvalidDocument)?;
-                }
-                let change = if opened {
-                    notify(
-                        "textDocument/didChange",
-                        json!({
-                            "textDocument":{"uri":uri,"version":version},"contentChanges":[{"text":text}]
-                        }),
-                    )
-                } else {
-                    notify(
-                        "textDocument/didOpen",
-                        json!({
-                            "textDocument":{"uri":uri,"version":version,"languageId":if path.to_ascii_lowercase().ends_with(".c") {"c"} else {"cpp"},"text":text}
-                        }),
-                    )
+                    None
                 };
-                let mut messages = vec![change];
+                let mut messages = Vec::new();
+                if opened {
+                    messages.push(did_change(&uri, version, &text));
+                } else {
+                    if self.neighbors.contains_key(&path) {
+                        messages.push(did_close(&uri));
+                    }
+                    messages.push(did_open(&path, &uri, version, &text));
+                }
                 if saved {
                     messages.push(notify(
                         "textDocument/didSave",
@@ -359,16 +399,25 @@ impl Session {
                     ));
                 }
                 self.process.batch(messages)?;
-                self.documents.insert(path, Document { uri, version });
+                self.neighbors.remove(&path);
+                let base_version = base_version
+                    .or_else(|| self.documents.remove(&path).map(|doc| doc.base_version))
+                    .ok_or(Error::Internal)?;
+                self.documents.insert(
+                    path,
+                    Document {
+                        uri,
+                        base_version,
+                        version,
+                        text,
+                    },
+                );
                 self.last_version = version;
                 self.revision += 1;
             }
             Action::Close { path } => {
                 if let Some(doc) = self.documents.get(&path) {
-                    self.process.send(notify(
-                        "textDocument/didClose",
-                        json!({"textDocument":{"uri":doc.uri}}),
-                    ))?;
+                    self.process.send(did_close(&doc.uri))?;
                     self.documents.remove(&path);
                     self.revision += 1;
                     self.pending.retain(|_, req| req.path != path);
@@ -380,6 +429,7 @@ impl Session {
                 version,
                 position,
                 feature,
+                new_name,
                 request_id,
             } => {
                 if request_id <= self.last_request
@@ -399,9 +449,24 @@ impl Session {
                 if !capabilities.supports(feature) {
                     return Err(Error::NotReady);
                 }
+                let mut params = json!({"textDocument":{"uri":doc.uri},"position":position});
+                match (feature, new_name) {
+                    (Feature::Rename, Some(name))
+                        if !name.is_empty()
+                            && name.len() <= 256
+                            && !name.chars().any(|ch| ch.is_control() || ch.is_whitespace()) =>
+                    {
+                        params["newName"] = json!(name);
+                        self.stage_rename_neighbors(registry, owner, &path)?;
+                    }
+                    (Feature::Rename, _) | (_, Some(_)) => return Err(Error::InvalidDocument),
+                    (Feature::PrepareRename, None) => {
+                        self.stage_rename_neighbors(registry, owner, &path)?
+                    }
+                    _ => {}
+                }
                 self.process.send(json!({
-                    "jsonrpc":"2.0","id":request_id,"method":feature.method(),
-                    "params":{"textDocument":{"uri":doc.uri},"position":position}
+                    "jsonrpc":"2.0","id":request_id,"method":feature.method(),"params":params
                 }))?;
                 self.last_request = request_id;
                 self.pending.insert(
@@ -410,6 +475,7 @@ impl Session {
                         path,
                         version,
                         feature,
+                        position,
                         started: Instant::now(),
                         revision: self.revision,
                     },
@@ -461,6 +527,9 @@ impl Session {
                     hover: supports("hoverProvider"),
                     completion: supports("completionProvider"),
                     definition: supports("definitionProvider"),
+                    rename: supports("renameProvider"),
+                    prepare_rename: result.pointer("/renameProvider/prepareProvider")
+                        == Some(&Value::Bool(true)),
                 });
             } else if method == Some("textDocument/publishDiagnostics") {
                 if let Some((event, path)) = self.diagnostics(&message["params"]) {
@@ -489,6 +558,25 @@ impl Session {
                         Value::Null
                     } else if matches!(req.feature, Feature::Definition) {
                         self.definitions(&message["result"], registry, owner)
+                    } else if matches!(req.feature, Feature::Rename | Feature::PrepareRename) {
+                        let result = &message["result"];
+                        if result.is_null() {
+                            Value::Null
+                        } else if matches!(req.feature, Feature::Rename) {
+                            match self.workspace_edit(result, registry, owner) {
+                                Ok(files) => json!(workspace_edit::Preview { files }),
+                                Err(error) => json!(workspace_edit::Failure { error }),
+                            }
+                        } else {
+                            match workspace_edit::prepare(
+                                result,
+                                &self.documents[&req.path].text,
+                                req.position,
+                            ) {
+                                Ok(placeholder) => json!(workspace_edit::Prepared { placeholder }),
+                                Err(error) => json!(workspace_edit::Failure { error }),
+                            }
+                        }
                     } else {
                         message.get("result").cloned().unwrap_or(Value::Null)
                     };
@@ -607,7 +695,7 @@ pub async fn language_start(window: WebviewWindow, workspace_id: String) -> Resu
         let path = executable()?;
         let identity = fingerprint(&path)?;
         let approved = window.dialog().message(format!(
-            "Start clangd for this workspace? The tool runs with your OS privileges and receives the contents of supported files you open.\n\n{}",
+            "Start clangd for this workspace? The tool runs with your OS privileges and receives the contents of supported files you open and may read copies of nearby C/C++ files when you use Rename Symbol.\n\n{}",
             path.display()
         )).title("Enable C/C++ Language Intelligence")
             .parent(&window)
@@ -740,6 +828,95 @@ mod tests {
 
     #[test]
     #[ignore = "requires a trusted installed clangd selected via TURING_TEST_CLANGD"]
+    fn installed_clangd_renames_across_an_open_source_and_unopened_header() {
+        let executable =
+            PathBuf::from(std::env::var_os("TURING_TEST_CLANGD").expect("clangd path"));
+        let root = tempfile::tempdir().unwrap();
+        let source = "#include \"helper.hpp\"\nint main() { return item; }\n";
+        std::fs::write(root.path().join("hello.cpp"), source).unwrap();
+        std::fs::write(root.path().join("helper.hpp"), "inline int item = 4;\n").unwrap();
+        let mut registry = Registry::default();
+        let workspace = registry.register("owner", root.path()).unwrap();
+        let mut session = Session::start(workspace.id, &executable).unwrap();
+        wait(&mut session, &registry, |update| {
+            update.capabilities.is_some()
+        });
+        session
+            .apply(
+                &registry,
+                "owner",
+                Action::Sync {
+                    path: "hello.cpp".into(),
+                    version: 1,
+                    text: source.into(),
+                    saved: false,
+                },
+            )
+            .unwrap();
+        wait(&mut session, &registry, |update| {
+            update
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Diagnostics { version: 1, .. }))
+        });
+        for (request_id, feature, new_name) in [
+            (3, Feature::PrepareRename, None),
+            (4, Feature::Rename, Some("renamed".into())),
+        ] {
+            session
+                .apply(
+                    &registry,
+                    "owner",
+                    Action::Request {
+                        path: "hello.cpp".into(),
+                        version: 1,
+                        position: Position {
+                            line: 1,
+                            character: 20,
+                        },
+                        feature,
+                        new_name,
+                        request_id,
+                    },
+                )
+                .unwrap();
+            let update = wait(&mut session, &registry, |update| {
+                update.events.iter().any(|event| matches!(event, Event::Response { request_id: id, .. } if *id == request_id))
+            });
+            let value = update
+                .events
+                .into_iter()
+                .find_map(|event| match event {
+                    Event::Response {
+                        request_id: id,
+                        value,
+                    } if id == request_id => Some(value),
+                    _ => None,
+                })
+                .unwrap();
+            if request_id == 3 {
+                assert_eq!(value, json!({"placeholder":"item"}));
+            } else {
+                assert_eq!(
+                    value.pointer("/files/0/path"),
+                    Some(&json!("hello.cpp")),
+                    "{value}"
+                );
+                assert_eq!(
+                    value.pointer("/files/1/path"),
+                    Some(&json!("helper.hpp")),
+                    "{value}"
+                );
+                assert_eq!(
+                    value.pointer("/files/1/documentVersion"),
+                    Some(&Value::Null)
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a trusted installed clangd selected via TURING_TEST_CLANGD"]
     fn installed_clangd_syncs_diagnostics_and_answers_a_definition() {
         let executable =
             PathBuf::from(std::env::var_os("TURING_TEST_CLANGD").expect("clangd path"));
@@ -860,6 +1037,7 @@ mod tests {
                         version: 2,
                         position,
                         feature,
+                        new_name: None,
                         request_id,
                     },
                 )
@@ -883,6 +1061,7 @@ mod tests {
                         character: 21,
                     },
                     feature: Feature::Hover,
+                    new_name: None,
                     request_id: 6,
                 },
             )
@@ -938,6 +1117,7 @@ mod tests {
                         character: 24,
                     },
                     feature: Feature::Definition,
+                    new_name: None,
                     request_id: 7,
                 },
             )
@@ -978,6 +1158,8 @@ mod lifecycle_tests {
         ignore_shutdown: bool,
         linger_after_exit: bool,
         crash_on_open: bool,
+        rename: bool,
+        rename_without_prepare: bool,
     }
 
     type Log = Arc<StdMutex<Vec<Value>>>;
@@ -1005,13 +1187,20 @@ mod lifecycle_tests {
                         "completionProvider": {},
                         "definitionProvider": true,
                     });
+                    if script.rename {
+                        capabilities["renameProvider"] = if script.rename_without_prepare {
+                            json!(true)
+                        } else {
+                            json!({"prepareProvider": true})
+                        };
+                    }
                     if let Some(encoding) = script.encoding {
                         capabilities["positionEncoding"] = json!(encoding);
                     }
                     send(reply(&id, json!({ "capabilities": capabilities })));
                     if script.server_request {
                         send(
-                            json!({"jsonrpc":"2.0","id":"s1","method":"window/workDoneProgress/create","params":{"token":"t"}}),
+                            json!({"jsonrpc":"2.0","id":"s1","method":"workspace/applyEdit","params":{"edit":{"changes":{}}}}),
                         );
                     }
                     for index in 0..script.flood {
@@ -1026,7 +1215,7 @@ mod lifecycle_tests {
                     }
                     let document = &params["textDocument"];
                     let version = document["version"].as_u64().unwrap();
-                    for stale in [version - 1, version] {
+                    for stale in [version.saturating_sub(1), version] {
                         send(
                             json!({"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{
                                 "uri": document["uri"], "version": stale,
@@ -1043,6 +1232,30 @@ mod lifecycle_tests {
                     send(reply(
                         &id,
                         json!([{"uri": params["textDocument"]["uri"], "range": {"start":{"line":0,"character":4},"end":{"line":0,"character":10}}}]),
+                    ));
+                }
+                Some("textDocument/prepareRename") => {
+                    send(reply(
+                        &id,
+                        json!({
+                            "range":{"start":{"line":0,"character":4},"end":{"line":0,"character":8}},
+                            "placeholder": "main"
+                        }),
+                    ));
+                }
+                Some("textDocument/rename") => {
+                    let uri = params["textDocument"]["uri"].as_str().unwrap();
+                    let neighbor = uri.replace("hello.cpp", "helper.hpp");
+                    let edit = json!({
+                        "range":{"start":{"line":0,"character":4},"end":{"line":0,"character":8}},
+                        "newText": params["newName"]
+                    });
+                    send(reply(
+                        &id,
+                        json!({"documentChanges":[
+                            {"textDocument":{"uri":uri,"version":1},"edits":[edit]},
+                            {"textDocument":{"uri":neighbor,"version":null},"edits":[edit]}
+                        ]}),
                     ));
                 }
                 Some("$/cancelRequest") => {
@@ -1138,6 +1351,7 @@ mod lifecycle_tests {
                     character: 4,
                 },
                 feature,
+                new_name: None,
                 request_id,
             })
         }
@@ -1183,6 +1397,184 @@ mod lifecycle_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn prepares_and_renames_open_and_neighboring_files_without_writing_them() {
+        let mut test = fixture(Script {
+            rename: true,
+            ..Script::default()
+        });
+        std::fs::write(test._root.path().join("helper.hpp"), "int main();\n").unwrap();
+        let caps = test.ready();
+        assert!(caps.rename && caps.prepare_rename);
+        assert!(test.received(|message| {
+            message.pointer("/params/capabilities/workspace/workspaceEdit")
+                == Some(&json!({"documentChanges":true,"resourceOperations":[]}))
+                && message.pointer("/params/capabilities/textDocument/rename/prepareSupport")
+                    == Some(&json!(true))
+        }));
+        test.sync(1, false).unwrap();
+        test.request(3, 1, Feature::PrepareRename).unwrap();
+        let prepared = test.until(|update| response(update, 3).is_some());
+        assert!(test.received(|message| {
+            message["method"] == "textDocument/didOpen"
+                && message["params"]["textDocument"]["uri"]
+                    .as_str()
+                    .is_some_and(|uri| uri.ends_with("/helper.hpp"))
+        }));
+        assert_eq!(response(&prepared, 3), Some(&json!({"placeholder":"main"})));
+
+        // If a neighboring file changes after staging, the original version
+        // still accompanies the edit and the renderer can report the conflict.
+        let base = test
+            .registry
+            .read("owner", &test.session.workspace_id, "helper.hpp")
+            .unwrap()
+            .version;
+        test.apply(Action::Request {
+            path: "hello.cpp".into(),
+            version: 1,
+            position: Position {
+                line: 0,
+                character: 4,
+            },
+            feature: Feature::Rename,
+            new_name: Some("other".into()),
+            request_id: 4,
+        })
+        .unwrap();
+        std::fs::write(test._root.path().join("helper.hpp"), "int changed();\n").unwrap();
+        let renamed = test.until(|update| response(update, 4).is_some());
+        let files = response(&renamed, 4).unwrap()["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["path"], "hello.cpp");
+        assert_eq!(files[0]["documentVersion"], 1);
+        assert_eq!(files[1]["path"], "helper.hpp");
+        assert_eq!(files[1]["documentVersion"], Value::Null);
+        assert_eq!(files[1]["baseVersion"], base);
+        assert_eq!(files[1]["edits"][0]["before"], "main");
+        assert_eq!(files[1]["edits"][0]["after"], "other");
+        assert_eq!(
+            std::fs::read_to_string(test._root.path().join("helper.hpp")).unwrap(),
+            "int changed();\n"
+        );
+    }
+
+    #[test]
+    fn rename_does_not_imply_prepare_support() {
+        let mut test = fixture(Script {
+            rename: true,
+            rename_without_prepare: true,
+            ..Script::default()
+        });
+        let caps = test.ready();
+        assert!(caps.rename && !caps.prepare_rename);
+        test.sync(1, false).unwrap();
+        assert_eq!(
+            test.request(3, 1, Feature::PrepareRename),
+            Err(Error::NotReady)
+        );
+    }
+
+    #[test]
+    fn rejects_unmapped_traversal_unauthorized_and_resource_edit_targets() {
+        let mut test = fixture(Script::default());
+        test.ready();
+        test.sync(1, false).unwrap();
+        let uri = &test.session.documents["hello.cpp"].uri;
+        let edit = test_edit(0, 4, 8, "name");
+        let validate = |value: &Value, owner| {
+            test.session
+                .workspace_edit(value, &test.registry, owner)
+                .is_ok()
+        };
+        for target in [
+            "file:///elsewhere/hello.cpp".into(),
+            uri.replace("hello.cpp", "unknown.cpp"),
+            uri.replace("hello.cpp", "../hello.cpp"),
+            uri.replace("hello.cpp", "%2e%2e/hello.cpp"),
+            format!("{uri}?alternate"),
+            "https://localhost/hello.cpp".into(),
+        ] {
+            assert!(
+                !validate(&json!({"changes":{(target.as_str()):[edit]}}), "owner"),
+                "{target}"
+            );
+        }
+        let changes = json!({"changes":{uri:[edit]}});
+        assert!(validate(&changes, "owner"));
+        assert!(!validate(&changes, "other"));
+        assert!(!validate(
+            &json!({"documentChanges":[{"kind":"delete","uri":uri}]}),
+            "owner"
+        ));
+        assert!(!validate(
+            &json!({"documentChanges":[{"textDocument":{"uri":uri,"version":2},"edits":[edit]}]}),
+            "owner"
+        ));
+        assert!(!validate(
+            &json!({"documentChanges":[
+                {"textDocument":{"uri":uri,"version":1},"edits":[edit]},
+                {"textDocument":{"uri":uri,"version":null},"edits":[edit]}
+            ]}),
+            "owner"
+        ));
+        std::fs::remove_file(test._root.path().join("hello.cpp")).unwrap();
+        assert!(!validate(&changes, "owner"));
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            let outside_file = outside.path().join("hello.cpp");
+            std::fs::write(&outside_file, "int outside;").unwrap();
+            std::os::unix::fs::symlink(outside_file, test._root.path().join("hello.cpp")).unwrap();
+            assert!(!validate(&changes, "owner"));
+        }
+    }
+
+    fn test_edit(line: u32, start: u32, end: u32, new_text: &str) -> Value {
+        json!({
+            "range": {
+                "start":{"line":line,"character":start},
+                "end":{"line":line,"character":end}
+            },
+            "newText":new_text
+        })
+    }
+
+    #[test]
+    fn validates_utf16_ranges_overlap_and_edit_budgets() {
+        let mut test = fixture(Script::default());
+        test.ready();
+        test.apply(Action::Sync {
+            path: "hello.cpp".into(),
+            version: 1,
+            text: "a💡 b\r\nend\rnext\n".into(),
+            saved: false,
+        })
+        .unwrap();
+        let uri = &test.session.documents["hello.cpp"].uri;
+        let validate = |value: &Value| test.session.workspace_edit(value, &test.registry, "owner");
+        let edit = test_edit(0, 1, 3, "z");
+        let result =
+            json!(validate(&json!({"changes":{uri:[test_edit(1,0,3,"fin"),edit]}})).unwrap());
+        assert_eq!(result.pointer("/0/edits/0/before"), Some(&json!("💡")));
+        assert_eq!(result.pointer("/0/edits/1/start"), Some(&json!(7)));
+        for edits in [
+            vec![test_edit(0, 2, 3, "split surrogate")],
+            vec![test_edit(0, 1, 6, "past line")],
+            vec![test_edit(4, 0, 0, "past file")],
+            vec![test_edit(0, 3, 1, "reversed")],
+            vec![edit.clone(), test_edit(0, 1, 4, "overlap")],
+            vec![edit.clone(); 513],
+            vec![test_edit(0, 0, 1, &"x".repeat(256 * 1024))],
+        ] {
+            assert!(validate(&json!({"changes":{uri:edits}})).is_err());
+        }
+        let too_many_files: serde_json::Map<String, Value> = (0..25)
+            .map(|i| (format!("{uri}{i}"), json!([edit])))
+            .collect();
+        assert!(validate(&json!({"changes":too_many_files})).is_err());
     }
 
     #[test]
@@ -1424,16 +1816,60 @@ mod contract_tests {
             ServerExited,
             Busy,
             InvalidDocument,
+            InvalidWorkspaceEdit,
             NotReady,
             Internal,
         ];
         for error in &all {
             match error {
                 Denied | Unavailable | StartFailed | ServerExited | Busy | InvalidDocument
-                | NotReady | Internal => {}
+                | InvalidWorkspaceEdit | NotReady | Internal => {}
             }
         }
         fixture::assert_error_codes("language", &all);
+    }
+
+    #[test]
+    fn rename_matches_contract() {
+        for (index, (feature, new_name)) in [
+            (Feature::PrepareRename, None),
+            (Feature::Rename, Some("renamed".to_owned())),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let action = Action::Request {
+                path: "src/main.cpp".into(),
+                version: 4,
+                position: Position {
+                    line: 0,
+                    character: 4,
+                },
+                feature,
+                new_name,
+                request_id: 7,
+            };
+            fixture::assert_payload("RenameAction", index, &action);
+            assert!(serde_json::from_value::<Action>(json!(action)).is_ok());
+        }
+        fixture::assert_case_count("RenameAction", 2);
+        fixture::assert_payload(
+            "PrepareRename",
+            0,
+            &workspace_edit::Prepared {
+                placeholder: "item".into(),
+            },
+        );
+        fixture::assert_case_count("PrepareRename", 1);
+        fixture::assert_payload(
+            "WorkspaceEditFailure",
+            0,
+            &workspace_edit::Failure {
+                error: Error::InvalidWorkspaceEdit,
+            },
+        );
+        fixture::assert_case_count("WorkspaceEditFailure", 1);
+        workspace_edit::assert_preview_contract();
     }
 
     #[test]
@@ -1446,6 +1882,8 @@ mod contract_tests {
                     hover: true,
                     completion: true,
                     definition: false,
+                    rename: true,
+                    prepare_rename: true,
                 }),
                 events: vec![
                     Event::Diagnostics {

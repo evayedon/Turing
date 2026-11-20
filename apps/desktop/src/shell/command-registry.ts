@@ -33,6 +33,7 @@ export type CommandState = {
   sidebar: SidebarView | null;
   /** The Explorer selection has an identity that can be renamed. */
   renameTarget: boolean;
+  canRenameSymbol: boolean;
   bottomPanel: boolean;
   dockView: DockView;
   assistant: boolean;
@@ -65,6 +66,7 @@ export type CommandActions = {
   saveAs: () => void;
   toggleAutoSave: () => void;
   renameSelection: () => void;
+  renameSymbol: () => void;
   closeActiveEditor: () => void;
   closeAllEditors: () => void;
   splitEditor: () => void;
@@ -93,6 +95,7 @@ export type KeyboardPolicy = {
   inTerminal?: boolean;
   /** The browser preview leaves this key to the browser (F5 reloads). */
   nativeOnly?: boolean;
+  editorFocus?: boolean;
   /** Swallow the key even when the command is unavailable. */
   reserved?: boolean;
 };
@@ -110,7 +113,7 @@ export type CommandDeclaration = {
 
 export type Invocation =
   | { source: "menu" | "palette" | "control" }
-  | { source: "shortcut"; inTerminal: boolean };
+  | { source: "shortcut"; inTerminal: boolean; inEditor?: boolean };
 
 export type DispatchResult = "ran" | "claimed" | "ignored";
 
@@ -232,6 +235,13 @@ export const commandRegistry: Record<CommandId, CommandDeclaration> = {
       !state.workspaceBusy,
     hint: "F2",
     run: (actions) => actions.renameSelection(),
+  },
+  renameSymbol: {
+    label: "Rename Symbol",
+    shortcut: { key: "F2" },
+    keyboard: { editorFocus: true },
+    enabled: (state) => state.canRenameSymbol && !state.editorBusy,
+    run: (actions) => actions.renameSymbol(),
   },
   closeEditor: {
     label: "Close Editor",
@@ -462,6 +472,7 @@ export function resolveInvocation(
   const keyboard = declaration.keyboard ?? {};
   if (state.modalOpen) return "ignored";
   if (invocation.inTerminal && !keyboard.inTerminal) return "ignored";
+  if (keyboard.editorFocus && !invocation.inEditor) return "ignored";
   if (keyboard.nativeOnly && !state.native) return "ignored";
   if (available) return "ran";
   return keyboard.reserved ? "claimed" : "ignored";
@@ -514,6 +525,8 @@ export function handleShortcut(
   if (!id) return "ignored";
   const invocation: Invocation = {
     source: "shortcut",
+    inEditor:
+      event.target instanceof Element && !!event.target.closest(".monaco-host"),
     inTerminal:
       event.target instanceof Element &&
       !!event.target.closest(".terminal-screen"),

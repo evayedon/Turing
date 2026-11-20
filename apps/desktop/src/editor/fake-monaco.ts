@@ -51,6 +51,44 @@ export class FakeModel {
   getEOL() {
     return "\n";
   }
+  getPositionAt(offset: number) {
+    const lines = this.value.slice(0, offset).split("\n");
+    return {
+      lineNumber: lines.length,
+      column: (lines.at(-1)?.length ?? 0) + 1,
+    };
+  }
+  pushStackElement() {}
+  pushEditOperations(
+    _selection: null,
+    operations: {
+      range: {
+        startLineNumber: number;
+        startColumn: number;
+        endLineNumber: number;
+        endColumn: number;
+      };
+      text: string;
+    }[],
+  ) {
+    const offset = (line: number, column: number) => {
+      const lines = this.value.split("\n");
+      return (
+        lines
+          .slice(0, line - 1)
+          .reduce((sum, text) => sum + text.length + 1, 0) +
+        column -
+        1
+      );
+    };
+    let text = this.value;
+    for (const { range, text: replacement } of [...operations].reverse()) {
+      const start = offset(range.startLineNumber, range.startColumn);
+      const end = offset(range.endLineNumber, range.endColumn);
+      text = text.slice(0, start) + replacement + text.slice(end);
+    }
+    this.type(text);
+  }
   /** Programmatic replacement, which resets the undo stack like Monaco. */
   setValue(value: string) {
     this.value = value;

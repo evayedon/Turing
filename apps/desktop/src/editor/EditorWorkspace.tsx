@@ -39,6 +39,7 @@ function Breadcrumbs({ tab, label }: { tab: EditorTab; label: string }) {
  */
 export function EditorWorkspace({
   runControls,
+  sharedModels,
   onCommandsReady,
   workspaceId,
   navigate,
@@ -70,6 +71,7 @@ export function EditorWorkspace({
   problems,
 }: EditorState & {
   runControls?: ReactNode;
+  sharedModels?: TextModels;
   language?: LanguageController;
   problems?: Problem[];
   workspaceId?: string;
@@ -78,7 +80,9 @@ export function EditorWorkspace({
   onInfo: (info: EditorInfo) => void;
   emptyContent: ReactNode;
 }) {
-  const [models] = useState<TextModels>(() => new ModelRegistry());
+  const [models] = useState<TextModels>(
+    () => sharedModels ?? new ModelRegistry(),
+  );
   // Runs after every group's view has switched models, so a model is
   // disposed only once no group lists its document.
   useLayoutEffect(() => {

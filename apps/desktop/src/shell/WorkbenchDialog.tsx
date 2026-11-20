@@ -5,10 +5,14 @@ export function WorkbenchDialog({
   title,
   close,
   children,
+  className,
+  busy,
 }: {
   title: string;
   close: () => void;
   children: ReactNode;
+  className?: string;
+  busy?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
@@ -28,16 +32,20 @@ export function WorkbenchDialog({
   return (
     <dialog
       ref={dialog}
-      className="workbench-dialog"
+      className={
+        className ? `workbench-dialog ${className}` : "workbench-dialog"
+      }
       aria-label={title}
       onCancel={(event) => {
         event.preventDefault();
+        if (busy) return;
         dialog.current?.close?.();
         close();
       }}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
+          if (busy) return;
           dialog.current?.close?.();
           close();
         }
@@ -48,7 +56,9 @@ export function WorkbenchDialog({
       <button
         type="button"
         className="quiet-button"
+        disabled={busy}
         onClick={() => {
+          if (busy) return;
           dialog.current?.close?.();
           close();
         }}

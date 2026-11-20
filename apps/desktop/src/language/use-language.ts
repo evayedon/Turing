@@ -64,6 +64,7 @@ export function languagePath(tab: EditorTab, workspaceId?: string) {
 function unchanged(previous: EditorTab, next: EditorTab) {
   return (
     previous.key === next.key &&
+    previous.revision === next.revision &&
     previous.draft === next.draft &&
     previous.editRevision === next.editRevision &&
     previous.source.kind === "workspace" &&
@@ -236,8 +237,7 @@ export function useLanguage(
             const saved =
               previous?.tab.source.kind === "workspace" &&
               tab.source.kind === "workspace" &&
-              previous.tab.source.version !== tab.source.version &&
-              tab.savedVersion === tab.source.version;
+              previous.tab.source.version !== tab.source.version;
             try {
               await ipc("language_apply", {
                 ...address,
@@ -292,6 +292,8 @@ export function useLanguage(
     feature: LanguageFeature,
     position: LanguagePosition,
     signal: AbortSignal,
+    newName?: string,
+    onTargets?: (targets: ReadonlyMap<string, Tracked>) => void,
   ): Promise<unknown> {
     const active = current.current;
     const path = languagePath(tab, workspaceId);
@@ -332,7 +334,10 @@ export function useLanguage(
       workspaceId: active.workspaceId,
       sessionId: active.sessionId,
     };
-    const targets = feature === "definition" ? new Map(active.docs) : undefined;
+    const targets =
+      feature === "definition" || feature === "rename"
+        ? new Map(active.docs)
+        : undefined;
     return new Promise((resolve) => {
       function finish(value?: unknown, tabs?: EditorTab[]) {
         active?.requests.delete(requestId);
@@ -345,7 +350,12 @@ export function useLanguage(
           resolve(undefined);
           return;
         }
-        if (targets && Array.isArray(value) && tabs) {
+        if (
+          feature === "definition" &&
+          targets &&
+          Array.isArray(value) &&
+          tabs
+        ) {
           value = value.filter((entry: unknown) => {
             const path = record(entry)?.path;
             if (typeof path !== "string") return false;
@@ -361,6 +371,7 @@ export function useLanguage(
             );
           });
         }
+        if (feature === "rename" && targets) onTargets?.(targets);
         resolve(value);
       }
       function cancel() {
@@ -386,10 +397,31 @@ export function useLanguage(
           position,
           requestId,
           version,
+          newName,
         },
       });
       void submitted.catch(() => finish());
     });
+  }
+
+  async function rename(
+    tab: EditorTab,
+    position: LanguagePosition,
+    newName: string,
+    signal: AbortSignal,
+  ) {
+    let documents: ReadonlyMap<string, Tracked> = new Map();
+    const value = await request(
+      tab,
+      "rename",
+      position,
+      signal,
+      newName,
+      (targets) => {
+        documents = targets;
+      },
+    );
+    return { value, documents };
   }
 
   // Each clangd result is stamped with the document state it was synced at;
@@ -419,6 +451,7 @@ export function useLanguage(
     start,
     stop,
     request,
+    rename,
   };
 }
 

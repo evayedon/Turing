@@ -325,20 +325,23 @@ export default function MonacoHost({
     const instance = editor.current;
     if (!instance) return;
     const activeKey = active.key;
-    const mode = modeOf(active);
-    const model = models.acquire(activeKey, () => {
-      let uri = monaco.Uri.from(
-        active.source.kind === "workspace"
-          ? {
-              scheme: "turing-workspace",
-              authority: active.source.workspaceId,
-              path: `/${active.source.relativePath}`,
-            }
-          : { scheme: "turing-document", path: `/${activeKey}/${active.name}` },
-      );
-      if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: activeKey });
-      return monaco.editor.createModel(active.draft, mode, uri);
-    });
+    const acquire = (tab: EditorTab) =>
+      models.acquire(tab.key, () => {
+        let uri = monaco.Uri.from(
+          tab.source.kind === "workspace"
+            ? {
+                scheme: "turing-workspace",
+                authority: tab.source.workspaceId,
+                path: `/${tab.source.relativePath}`,
+              }
+            : { scheme: "turing-document", path: `/${tab.key}/${tab.name}` },
+        );
+        if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: tab.key });
+        return monaco.editor.createModel(tab.draft, modeOf(tab), uri);
+      });
+
+    if (primary) tabs.forEach(acquire);
+    const model = acquire(active);
 
     models.sync(() => {
       if (instance.getModel() !== model) {
@@ -368,7 +371,7 @@ export default function MonacoHost({
       }
     });
     report(instance);
-  }, [active, tabs, models]);
+  }, [active, tabs, models, primary]);
 
   useLayoutEffect(() => {
     const instance = editor.current;

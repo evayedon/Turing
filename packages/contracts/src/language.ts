@@ -5,9 +5,11 @@ export type LanguageError =
   | "SERVER_EXITED"
   | "BUSY"
   | "INVALID_DOCUMENT"
+  | "INVALID_WORKSPACE_EDIT"
   | "NOT_READY"
   | "INTERNAL";
-export type LanguageFeature = "hover" | "completion" | "definition";
+export type LanguageFeature =
+  "hover" | "completion" | "definition" | "prepareRename" | "rename";
 export type LanguageCapabilities = Record<LanguageFeature, boolean>;
 export type LanguagePosition = { line: number; character: number };
 export type LanguageAction =
@@ -26,6 +28,7 @@ export type LanguageAction =
       position: LanguagePosition;
       feature: LanguageFeature;
       requestId: number;
+      newName?: string;
     }
   | { kind: "cancel"; requestId: number };
 export type LanguageEvent =
@@ -48,3 +51,21 @@ export type LanguageCommands = {
   language_poll: [Session, LanguageUpdate];
   language_stop: [Session, void];
 };
+
+/** Offsets are zero-based UTF-16 code units into the exact source snapshot. */
+export type WorkspaceTextEdit = {
+  start: number;
+  end: number;
+  position: LanguagePosition;
+  before: string;
+  after: string;
+};
+export type WorkspaceFileEdit = {
+  path: string;
+  baseVersion: string;
+  documentVersion: number | null;
+  edits: WorkspaceTextEdit[];
+};
+export type RenamePreview = { files: WorkspaceFileEdit[] };
+export type PrepareRename = { placeholder: string };
+export type WorkspaceEditFailure = { error: "INVALID_WORKSPACE_EDIT" };

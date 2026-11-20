@@ -651,7 +651,8 @@ language IPC permissions.
 
 Rust owns one session per workbench with a live workspace grant and opaque
 session ID. It reuses handle-relative file checks, and publishes a limited
-temporary mirror of open C/C++ sources and headers to clangd. Saved file copies
+temporary mirror of open C/C++ sources and headers to clangd. Rename can
+also stage authorized neighboring C/C++ files as described below. Saved file copies
 are obtained through the authorized file API. Unsaved drafts are sent over
 stdio. The mirror is owner-only on Unix and inherits the user temp directory's ACL on
 Windows. The server runs with the user's OS privileges and can read include
@@ -663,9 +664,9 @@ indexing are disabled. There is no recursive workspace discovery.
 
 The client negotiates UTF-16 positions and tracks monotonic document versions
 separately from saved file versions. Opening, editing, saving, renaming and
-closing tabs drive LSP document notifications. A rename closes the old URI
+closing tabs drive LSP document notifications. Renaming an Explorer item closes the old URI
 and opens the new path without replacing the Monaco model. The bridge accepts
-hover, completion, definition and cancellation. It rejects stale or
+hover, completion, definition, rename and cancellation. It rejects stale or
 unversioned diagnostics, ignores stale responses, rejects server-initiated
 requests, and bounds frame size, queues and pending requests. Renderer results
 are checked against the current editor revision before they reach Monaco.
@@ -682,6 +683,44 @@ replacement, workspace close and window destruction revoke the session and
 force process cleanup. Unix uses a process group, signalled before the
 child is reaped so the group ID cannot be reused; Windows uses a
 kill-on-close Job Object. A desktop crash can leave temporary files behind.
+
+### Rename Symbol and workspace edits
+
+With managed clangd enabled, **Edit → Rename Symbol** opens a rename dialog.
+**F2** invokes it from Monaco. Explorer and terminal session names retain their
+own F2 handlers. The dialog asks clangd to prepare the rename when supported
+and uses the returned source range to prefill the name. It then shows every
+returned file and replacement, with a line and column for each change and a
+checkbox to exclude a file before applying.
+
+Rename works with the open C/C++ documents known to clangd and a bounded set
+of supported siblings in the source directory. Rust authorizes and loads
+these neighbors through the workspace file API, stages their saved text for
+clangd's open-file index, and retains up to 24 neighbors and 4 MiB per session.
+Discovery stays within this mirror and clangd's available index. It can omit
+references elsewhere in the project, so the dialog describes the set that
+clangd found.
+
+The client advertises document changes with an empty resource-operation list.
+Rust accepts text edits in either WorkspaceEdit representation. It maps URI
+strings back to registered mirror entries, revalidates each path against the
+live workspace grant, checks document versions and UTF-16 boundaries, rejects
+overlapping or duplicate edits, and limits a result to 24 files, 512 edits and
+256 KiB of replacement and original snippet text. Every target carries the
+disk version of its mirror snapshot. Open targets also carry the LSP version
+of the draft used for the edit. Server-initiated workspace edits remain
+rejected.
+
+Apply uses the editor's current document identity and revision stamps and
+checks each selected file's disk version. Changed editor documents,
+watcher-flagged files, recovered drafts and disk conflicts are skipped.
+Open targets are edited through their shared Monaco models, as one undo
+step per file. Their drafts enter the normal recovery journal and wait for
+explicit Save even when Auto Save is on. Unopened files use the same
+version-checked write as Save, with the preview's base version as the
+expected version. The results show drafts, saves, exclusions and skipped
+files with their reasons. Successful changes remain applied when another
+file conflicts.
 
 Every problem flows through one diagnostic store
 (`language/diagnostic-store.ts`). A producer (`clangd` or `compiler`)

@@ -56,4 +56,9 @@ export type {
   LanguageFeature,
   LanguagePosition,
   LanguageUpdate,
+  WorkspaceTextEdit,
+  WorkspaceFileEdit,
+  RenamePreview,
+  PrepareRename,
+  WorkspaceEditFailure,
 } from "./language";
