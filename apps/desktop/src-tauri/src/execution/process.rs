@@ -149,7 +149,9 @@ pub(super) fn probe(
         &captured,
         &progress.stopped,
         false,
-        Duration::from_secs(5),
+        // Cold compiler starts on a busy machine (CI runners, antivirus scans)
+        // can exceed 5 s; Stop still interrupts the probe immediately.
+        Duration::from_secs(20),
     )?;
     if !status.is_some_and(|status| status.success()) {
         return Ok(None);
