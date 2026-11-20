@@ -16,7 +16,7 @@ import type { EditorTab } from "../editor/use-editor";
 import { ProblemsPanel } from "./ProblemsPanel";
 import { clangdProblems, compilerProblems } from "./problems";
 import { currentProblems } from "./diagnostic-store";
-import { useLanguage } from "./use-language";
+import { useLanguage, useManagedLanguage } from "./use-language";
 
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => bridge);
@@ -301,4 +301,104 @@ it("coalesces typing before sending text to clangd and closes large documents", 
     unmount();
     vi.useRealTimers();
   }
+});
+
+it("routes each workspace document to its server and exposes readiness and missing tools in Problems", async () => {
+  const document = (name: string): EditorTab => ({
+    ...tab,
+    name,
+    title: name,
+    key: name,
+    uri: `turing-workspace://one/${name}`,
+    source: { ...source, relativePath: name },
+  });
+  const ts = document("main.tsx");
+  const js = document("view.jsx");
+  const python = document("main.py");
+  const rust = document("main.rs");
+  const { result } = renderHook(() =>
+    useManagedLanguage("one", true, [tab, ts, js, python, rust]),
+  );
+  bridge.invoke.mockImplementation(async (command, args) => {
+    if (command === "language_start") {
+      if (args.server === "rust-analyzer") throw "UNAVAILABLE";
+      return args.server;
+    }
+    if (command === "language_poll") return { capabilities: caps, events: [] };
+  });
+  await act(async () => {
+    await result.current.servers?.typescript.start();
+  });
+  await act(async () => {
+    await result.current.servers?.pyright.start();
+  });
+  await act(async () => {
+    await result.current.servers?.["rust-analyzer"].start();
+  });
+  await waitFor(() =>
+    expect(result.current.forTab?.(python)?.status).toBe("ready"),
+  );
+  expect(result.current.forTab?.(tab)?.status).toBe("idle");
+  expect(result.current.forTab?.(ts)?.status).toBe("ready");
+  expect(result.current.forTab?.(rust)?.status).toBe("unavailable");
+  const sync = bridge.invoke.mock.calls
+    .filter(
+      ([command, args]) =>
+        command === "language_apply" && args.action.kind === "sync",
+    )
+    .map(([, args]) => [args.sessionId, args.action.path]);
+  expect(sync.sort()).toEqual([
+    ["pyright", "main.py"],
+    ["typescript", "main.tsx"],
+    ["typescript", "view.jsx"],
+  ]);
+  render(
+    <ProblemsPanel
+      problems={[]}
+      filter="all"
+      open={() => {}}
+      servers={result.current.servers}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Stop typescript" })).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Retry rust-analyzer" }),
+  ).toBeTruthy();
+  expect(screen.getByText(/rust-analyzer was not found/)).toBeTruthy();
+});
+
+it("restarts a crashed managed server once its backoff expires", async () => {
+  let crashed = false;
+  bridge.invoke.mockImplementation(async (command) => {
+    if (command === "language_start") return "pyright-session";
+    if (command === "language_poll") {
+      if (!crashed) {
+        crashed = true;
+        return {
+          capabilities: null,
+          events: [],
+          stderr: ["startup error"],
+          error: "SERVER_EXITED",
+        };
+      }
+      return { capabilities: caps, events: [] };
+    }
+  });
+  const { result } = renderHook(() => useLanguage("one", true, [], "pyright"));
+  await act(() => result.current.start());
+  await waitFor(() => expect(result.current.status).toBe("failed"));
+  expect(result.current.logs).toEqual(["startup error"]);
+  expect(
+    bridge.invoke.mock.calls.filter(
+      ([command]) => command === "language_start",
+    ),
+  ).toHaveLength(1);
+  await waitFor(() => expect(result.current.status).toBe("ready"), {
+    timeout: 2000,
+  });
+  expect(
+    bridge.invoke.mock.calls.filter(
+      ([command]) => command === "language_start",
+    ),
+  ).toHaveLength(2);
 });

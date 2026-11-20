@@ -4,7 +4,7 @@ use super::{
 use crate::workspace::{EntryKind, Registry, MAX_TEXT_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 const MAX_FILES: usize = 24;
 const MAX_EDITS: usize = 512;
@@ -275,11 +275,80 @@ impl Session {
         Ok(())
     }
 
+    /// Capture bounded closed-file snapshots before sending rename. A reply
+    /// cannot introduce a disk revision that the user did not request.
+    pub(super) fn snapshot_project(
+        &self,
+        registry: &Registry,
+        owner: &str,
+        source: &str,
+    ) -> Result<HashMap<String, Snapshot>> {
+        let parent = source.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let mut directories = VecDeque::from([parent.to_owned()]);
+        if !parent.is_empty() {
+            directories.push_back(String::new());
+        }
+        let mut visited = HashSet::new();
+        let mut files = HashMap::new();
+        let mut bytes = 0;
+        while let Some(directory) = directories.pop_front() {
+            if !visited.insert(directory.clone()) {
+                continue;
+            }
+            if visited.len() > 32 || files.len() >= MAX_FILES {
+                break;
+            }
+            let entries = registry
+                .list(owner, &self.workspace_id, &directory)
+                .map_err(|_| Error::InvalidDocument)?;
+            for entry in entries.into_iter().take(512) {
+                let path = entry.relative_path;
+                if entry.kind == EntryKind::Directory {
+                    let name = path.rsplit('/').next().unwrap_or_default();
+                    if directories.len() < 32
+                        && !name.starts_with('.')
+                        && !matches!(name, "node_modules" | "target" | "venv" | "__pycache__")
+                    {
+                        directories.push_back(path);
+                    }
+                    continue;
+                }
+                if files.len() >= MAX_FILES
+                    || self.documents.contains_key(&path)
+                    || files.contains_key(&path)
+                {
+                    continue;
+                }
+                let Ok((_, uri)) = self.mirror(&path) else {
+                    continue;
+                };
+                let Ok(snapshot) = registry.read(owner, &self.workspace_id, &path) else {
+                    continue;
+                };
+                if bytes + snapshot.content.len() > MAX_MIRROR_BYTES {
+                    continue;
+                }
+                bytes += snapshot.content.len();
+                files.insert(
+                    path,
+                    Snapshot {
+                        uri,
+                        text: snapshot.content,
+                        version: snapshot.version,
+                        lsp_version: 0,
+                    },
+                );
+            }
+        }
+        Ok(files)
+    }
+
     pub(super) fn workspace_edit(
         &self,
         value: &Value,
         registry: &Registry,
         owner: &str,
+        snapshots: &HashMap<String, Snapshot>,
     ) -> Result<Vec<FileEdit>> {
         let invalid = Error::InvalidWorkspaceEdit;
         let object = value.as_object().ok_or(invalid)?;
@@ -340,6 +409,7 @@ impl Session {
                 .or_else(|| {
                     self.neighbors
                         .iter()
+                        .chain(snapshots)
                         .find(|(_, file)| same_uri(&file.uri, uri))
                         .map(|(path, file)| {
                             (
@@ -360,6 +430,15 @@ impl Session {
             registry
                 .language_file(owner, &self.workspace_id, path)
                 .map_err(|_| invalid)?;
+            if snapshots.contains_key(path)
+                && registry
+                    .read(owner, &self.workspace_id, path)
+                    .map_err(|_| invalid)?
+                    .version
+                    != *base_version
+            {
+                return Err(invalid);
+            }
             let edits = edits
                 .as_array()
                 .filter(|edits| !edits.is_empty() && edits.len() <= remaining_count)

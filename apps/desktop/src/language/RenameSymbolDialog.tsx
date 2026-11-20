@@ -7,7 +7,7 @@ import type {
   WorkspaceEditTarget,
 } from "../editor/workspace-edit";
 import { WorkbenchDialog } from "../shell/WorkbenchDialog";
-import type { LanguageController } from "./use-language";
+import { serverFor, type LanguageController } from "./use-language";
 import { record } from "./problems";
 
 export type RenameOrigin = {
@@ -60,6 +60,7 @@ export function RenameSymbolDialog({
     included: Parameters<Apply>[2],
   ) => ReturnType<Apply>;
 }) {
+  const server = serverFor(origin.tab, origin.workspaceId) ?? "clangd";
   const [name, setName] = useState("");
   const [working, setWorking] = useState(origin.prepare);
   const [applying, setApplying] = useState(false);
@@ -86,12 +87,12 @@ export function RenameSymbolDialog({
           setName(placeholder);
           setCanRename(true);
         } else {
-          setError("clangd could not prepare a rename at this position.");
+          setError(`${server} could not prepare a rename at this position.`);
         }
         setWorking(false);
       });
     return () => controller.abort();
-  }, [origin]);
+  }, [origin, server]);
 
   useEffect(() => {
     if (files) previewHeading.current?.focus();
@@ -122,8 +123,8 @@ export function RenameSymbolDialog({
     if (!isRenamePreview(value) || !value.files.length) {
       setError(
         record(value)?.error === "INVALID_WORKSPACE_EDIT"
-          ? "clangd returned edits that Turing could not validate."
-          : "clangd found no applicable changes. The editor or language session may have changed.",
+          ? `${server} returned edits that Turing could not validate.`
+          : `${server} found no applicable changes. The editor or language session may have changed.`,
       );
       return;
     }
@@ -194,7 +195,13 @@ export function RenameSymbolDialog({
           </button>
         </form>
       )}
-      {!files && <p>clangd searches open files and nearby C/C++ files.</p>}
+      {!files && (
+        <p>
+          {server === "clangd"
+            ? "clangd searches open files and nearby C/C++ files."
+            : `${server} searches the approved workspace.`}
+        </p>
+      )}
       {working && (
         <p role="status">
           {canRename ? "Finding changes…" : "Checking the symbol…"}

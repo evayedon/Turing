@@ -262,6 +262,20 @@ impl Registry {
             .ok_or(WorkspaceError::PermissionDenied)
     }
 
+    /// Path-based server access requires the approved root to still name
+    /// the directory held by this registration.
+    pub(crate) fn language_root(&self, owner: &str, id: &str) -> Result<&Path> {
+        self.active
+            .as_ref()
+            .filter(|workspace| {
+                workspace.owner == owner
+                    && workspace.descriptor.id == id
+                    && !workspace.root_replaced()
+            })
+            .map(|workspace| workspace.canonical_path.as_path())
+            .ok_or(WorkspaceError::PermissionDenied)
+    }
+
     pub fn terminal_directory(&self, owner: &str, id: &str) -> Result<Dir> {
         Ok(self.authorize(owner, id)?.try_clone()?)
     }

@@ -255,6 +255,7 @@ export function resetFakeMonaco() {
   models.length = 0;
   created.editors.length = 0;
   created.models.length = 0;
+  modes.length = 0;
 }
 
 export const MarkerSeverity = { Error: 8, Warning: 4, Info: 2 };
@@ -299,4 +300,14 @@ export const editor = {
   registerEditorOpener() {
     return { dispose() {} };
   },
+};
+
+const modes: { id: string }[] = [];
+export const languages = {
+  getLanguages: () => modes,
+  register(mode: { id: string }) {
+    modes.push(mode);
+  },
+  setMonarchTokensProvider() {},
+  setLanguageConfiguration() {},
 };

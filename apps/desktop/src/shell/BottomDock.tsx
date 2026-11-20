@@ -22,6 +22,7 @@ const icons = { Terminal, Problems: CircleAlert, Output: List };
 export function BottomDock({
   execution,
   problems,
+  languageOutput,
   active,
   select,
   close,
@@ -35,6 +36,7 @@ export function BottomDock({
   onTerminalRunning,
 }: {
   problems?: ReactNode;
+  languageOutput?: ReactNode;
   execution: ReturnType<typeof useExecution>;
   active: DockView;
   select: (view: DockView) => void;
@@ -143,7 +145,10 @@ export function BottomDock({
               onRunningChange={onTerminalRunning}
             />
           ) : name === "Output" ? (
-            <ExecutionOutput execution={execution} native={native} />
+            <>
+              <ExecutionOutput execution={execution} native={native} />
+              {languageOutput}
+            </>
           ) : (
             problems
           )}

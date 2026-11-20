@@ -55,6 +55,7 @@ export type {
   LanguageEvent,
   LanguageFeature,
   LanguagePosition,
+  LanguageServer,
   LanguageUpdate,
   WorkspaceTextEdit,
   WorkspaceFileEdit,

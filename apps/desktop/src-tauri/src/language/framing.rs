@@ -3,6 +3,9 @@ use std::io::{self, BufRead, Write};
 
 const MAX_BODY: usize = 1024 * 1024;
 const MAX_HEADER: usize = 4096;
+// An outgoing sync may contain a 2 MiB workspace document. JSON can
+// expand each control byte to six characters, plus message metadata.
+const MAX_OUTBOUND_BODY: usize = 13 * 1024 * 1024;
 
 pub fn read(input: &mut impl BufRead) -> io::Result<Value> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "Invalid LSP frame");
@@ -46,6 +49,12 @@ pub fn read(input: &mut impl BufRead) -> io::Result<Value> {
 
 pub fn write(output: &mut impl Write, message: &Value) -> io::Result<()> {
     let bytes = serde_json::to_vec(message)?;
+    if bytes.len() > MAX_OUTBOUND_BODY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Oversized LSP frame",
+        ));
+    }
     write!(output, "Content-Length: {}\r\n\r\n", bytes.len())?;
     output.write_all(&bytes)?;
     output.flush()

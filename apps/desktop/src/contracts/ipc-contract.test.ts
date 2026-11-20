@@ -22,6 +22,7 @@ import type {
   LanguageError,
   LanguageEvent,
   LanguageUpdate,
+  LanguageServer,
   LogEntry,
   SearchMatch,
   SearchResponse,
@@ -152,6 +153,7 @@ const errors = {
     "DENIED",
     "UNAVAILABLE",
     "START_FAILED",
+    "INCOMPATIBLE",
     "SERVER_EXITED",
     "BUSY",
     "INVALID_DOCUMENT",
@@ -162,6 +164,12 @@ const errors = {
 };
 
 const enums = {
+  LanguageServer: every<LanguageServer>()([
+    "clangd",
+    "typescript",
+    "pyright",
+    "rust-analyzer",
+  ]),
   WorkspaceSymbolKind: every<WorkspaceSymbolKind>()([
     "class",
     "constant",
@@ -219,6 +227,10 @@ const capabilities = shape<LanguageCapabilities>()({
   hover: "required",
   completion: "required",
   definition: "required",
+  references: "optional",
+  implementation: "optional",
+  declaration: "optional",
+  workspaceSymbol: "optional",
   prepareRename: "required",
   rename: "required",
 });
@@ -382,6 +394,8 @@ const payloads: Record<keyof typeof fixture.payloads, Spec> = {
   LanguageUpdate: shape<LanguageUpdate>()({
     capabilities: "nullable",
     events: "required",
+    stderr: "optional",
+    error: "optional",
   }),
 };
 

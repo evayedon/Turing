@@ -695,20 +695,41 @@ has a scoped debug-adapter transport, authorized launch and stop handling,
 verified breakpoint mapping, and paused-process controls. No generic debugger
 launch command or debugger shortcut is registered.
 
-## Managed C/C++ language intelligence and Problems
+## Managed language intelligence and Problems
 
-Open a workspace and select **Settings → Diagnostics → Enable clangd**. The native dialog
-identifies the exact executable and asks for permission for this session.
-Rust discovers an installed `clangd` from platform LLVM locations or absolute
-PATH entries. It fingerprints the executable before and after confirmation.
-The approval is never restored on launch or carried across workspace changes.
-There is no download, frontend-supplied process path, shell invocation, or
-generic JSON-RPC forwarding command. Only workbench windows have the four
-language IPC permissions.
+Open an approved workspace and use the **Problems** server controls to enable
+clangd, TypeScript/JavaScript, Pyright, or rust-analyzer. **Settings → Diagnostics**
+also provides the original clangd controls. The active document's server state
+appears in the status bar. Problems shows each server's state and Enable, Stop,
+or Retry action. Output displays bounded per-server stderr and version logs.
 
-Rust owns one session per workbench with a live workspace grant and opaque
-session ID. It reuses handle-relative file checks, and publishes a limited
-temporary mirror of open C/C++ sources and headers to clangd. Rename can
+Rust resolves an installed executable from the descriptor's allowlist. Discovery
+uses absolute PATH entries and platform LLVM, nvm, Cargo, and installed rustup
+toolchain directories. The npm-backed servers are started through an absolute
+Node executable with a fixed script entry and `--stdio`. On Windows, direct
+Node invocation avoids npm's shell wrappers. TypeScript language server 6.1
+requires a compatible `tsserver.js`. Turing looks for it alongside the Node
+installation or, in development, in the app's existing dependencies. TypeScript
+7's native CLI alone does not supply that entry. Pyright is preferred when both
+Pyright and basedpyright are installed.
+
+The native confirmation identifies the executable, related runtime files, and
+workspace access. Turing fingerprints those paths around confirmation and again
+before launch. Only after approval does it run a `--version` probe with a
+three-second deadline and bounded output. Pyright's probe uses the bundled CLI
+since its LSP entry does not implement the flag. Approval is scoped to the window,
+workspace, descriptor, executable paths and fingerprints, and Rust execution
+options. It is cleared on workspace revocation and never persisted. clangd still
+asks for confirmation each time. For the other descriptors, the renderer retries
+a crashed process at 500 ms and 1 s, using the cached native approval if it still
+matches. Stop or workspace replacement cancels pending retries.
+
+There is no download, renderer-supplied executable path, shell invocation, or
+generic JSON-RPC command. Only workbench windows have the four language IPC
+permissions. Rust owns at most one live session per server kind for the active
+workspace in each workbench. Each session has an opaque ID. For clangd, Rust
+reuses handle-relative file checks and publishes a limited temporary mirror of
+open C/C++ sources and headers. Rename can
 also stage authorized neighboring C/C++ files as described below. Saved file copies
 are obtained through the authorized file API. Unsaved drafts are sent over
 stdio. The mirror is owner-only on Unix and inherits the user temp directory's ACL on
@@ -723,9 +744,9 @@ The client negotiates UTF-16 positions and tracks monotonic document versions
 separately from saved file versions. Opening, editing, saving, renaming and
 closing tabs drive LSP document notifications. Renaming an Explorer item closes the old URI
 and opens the new path without replacing the Monaco model. The bridge accepts
-hover, completion, definition, rename and cancellation. It rejects stale or
-unversioned diagnostics, ignores stale responses, rejects server-initiated
-requests, and bounds frame size, queues and pending requests. Renderer results
+hover, completion, location queries, workspace symbols, rename and cancellation
+according to the negotiated server capabilities. It rejects stale and unversioned
+push diagnostics, and bounds frame size, queues and pending requests. Renderer results
 are checked against the current editor revision before they reach Monaco.
 Monaco completion supports plain-text insertions; additional source edits,
 commands and snippets are excluded. Missing or crashed servers show a retry
@@ -740,6 +761,61 @@ replacement, workspace close and window destruction revoke the session and
 force process cleanup. Unix uses a process group, signalled before the
 child is reaped so the group ID cannot be reused; Windows uses a
 kill-on-close Job Object. A desktop crash can leave temporary files behind.
+
+### Project-aware server access
+
+TypeScript, Pyright, and rust-analyzer receive the approved real root in
+`rootUri` and `workspaceFolders` so they can resolve imports, tsconfig/jsconfig,
+Python project configuration, and Cargo projects. The process starts in a private
+working directory, with an allowlisted environment. Servers run with the user's
+OS privileges and can read files, run subprocesses, and act outside the workspace
+under those privileges. Only enable these servers in trusted workspaces. Turing
+does not mediate the server's ambient filesystem access. TypeScript's automatic
+typing acquisition is disabled. Rust uses offline Cargo resolution and disables
+check-on-save, Cargo build scripts, and procedural macros by default. The
+workspace-scoped Rust opt-in enables build scripts and macros after a distinct
+native confirmation, because both can execute workspace or dependency code. Cargo
+project discovery and metadata still run in the default configuration.
+
+The bridge rechecks the workspace root identity and revalidates returned locations
+through the authorized registry. Definition, declaration, implementation,
+references, workspace symbols, edit targets, and diagnostics can refer only to
+authorized workspace files. Symlinks, traversal, paths outside the active root,
+and stale workspaces are refused. Diagnostics omit related locations. clangd
+continues to return locations from its mapped mirror. Workspace symbols merge with
+the existing Go to Symbol in Workspace index. For a project-aware Rename Symbol,
+Turing captures bounded, authorized closed-file snapshots before the request and
+revalidates their disk versions when the result returns. Targets outside those
+snapshots and the synced documents cause the preview to be rejected.
+
+For Pyright, Turing discovers platform site-packages directories in the workspace's
+`.venv` or `venv`, including in-project Poetry and uv environments. Pyright can
+execute the path it receives as `python.pythonPath` to inspect interpreter search
+paths. Turing therefore uses its private working directory as a non-executable
+sentinel and provides the discovered package directories through
+`python.analysis.extraPaths`. Turing does not invoke the workspace interpreter.
+
+The project-aware descriptors answer `workspace/configuration` from fixed host
+settings and acknowledge `window/workDoneProgress/create`, which grants no access
+and starts no local work. They leave dynamic watcher registration disabled.
+Project-aware servers can watch files directly with their OS privileges. The
+workspace watcher exposes coalesced change hints rather than the typed create and
+delete events needed for LSP watch subscriptions. Other inbound requests,
+including `workspace/applyEdit`, are refused. clangd continues to reject all
+server-initiated requests.
+
+For TypeScript and JavaScript, a ready managed session switches its authorized
+models to Monaco language IDs with the same syntax rules and separate provider
+selectors. Built-in JS/TS providers and markers stay active for other models.
+TypeScript language server pushes diagnostics without a document version. Turing
+uses only its fixed synchronous syntactic and semantic diagnostics requests,
+queued after document sync and correlated with that exact document version.
+Pyright, rust-analyzer and clangd use versioned publish diagnostics. Responses
+that arrive after a document change or request cancellation are discarded.
+
+The stderr stream keeps up to 100 entries per server, drops overlong lines, and
+redacts lines with secret markers such as Authorization headers, token names,
+credential labels, and common token prefixes.
 
 ### Rename Symbol and workspace edits
 
@@ -780,7 +856,7 @@ files with their reasons. Successful changes remain applied when another
 file conflicts.
 
 Every problem flows through one diagnostic store
-(`language/diagnostic-store.ts`). A producer (`clangd` or `compiler`)
+(`language/diagnostic-store.ts`). A producer (`clangd`, `typescript`, `pyright`, `rust-analyzer`, or `compiler`)
 publishes a batch per document, stamped with the document's `uri`,
 `revision` and `editRevision` at the time it was computed. A batch is shown
 only while its open document still has that exact stamp and has not changed
@@ -792,8 +868,7 @@ with IDs that do not depend on arrival order.
 
 Problems groups errors, warnings and informational messages. The Severity
 filter is under **Settings → Diagnostics**. Rows open the
-corresponding editor and location. The `clangd` marker owner is separate from
-`compiler`. Compiler entries come from recognized C++ build stderr for the
+corresponding editor and location. Each server has its own Monaco marker owner, alongside `compiler`. Compiler entries come from recognized C++ build stderr for the
 current, unchanged single-file Run snapshot. Output retains raw logs.
 Compiler columns are converted from UTF-8 bytes to Monaco's UTF-16 columns
 using the compiled text. They never land inside a character or past the end
@@ -823,13 +898,18 @@ tests, plus `lifecycle_tests`: a scripted LSP server over OS pipes that
 checks initialize and UTF-16 negotiation, server-request refusal, open, change,
 save and close sync, stale diagnostic and response filtering, cancellation
 and expiry, burst backpressure, crash detection, and each shutdown outcome.
-They need no external tools, so CI runs them on macOS, Windows and Linux. An
-opt-in integration test runs a trusted, already-installed clangd and requires
-a graceful shutdown.
+They need no external tools, so CI runs them on macOS, Windows and Linux.
+Linux CI also installs trusted server versions and runs the ignored integration
+suite. These tests open two-file projects for each language and check diagnostics,
+hover, cross-file navigation, references, rename and workspace symbols.
 
 ```sh
-TURING_TEST_CLANGD=/absolute/path/to/clangd cargo test --release --locked \
-  --manifest-path apps/desktop/src-tauri/Cargo.toml installed_clangd -- --ignored
+export TURING_TEST_CLANGD="$(command -v clangd)"
+export TURING_TEST_TSLS="$(command -v typescript-language-server)"
+export TURING_TEST_PYRIGHT="$(command -v pyright-langserver)"
+export TURING_TEST_RUST_ANALYZER="$(rustup which rust-analyzer)"
+CARGO_NET_OFFLINE=true cargo test --locked \
+  --manifest-path apps/desktop/src-tauri/Cargo.toml language:: -- --ignored
 ```
 
 Protocol and configuration references are the [LSP specification](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/) and [clangd configuration manual](https://clangd.llvm.org/config).

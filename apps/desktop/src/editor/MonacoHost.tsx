@@ -10,6 +10,7 @@ import type { NavigationTarget } from "./navigation";
 import { attachLanguage } from "../language/monaco-language";
 import {
   languagePath,
+  serverFor,
   type LanguageController,
 } from "../language/use-language";
 import type { Problem } from "../language/problems";
@@ -49,7 +50,30 @@ const theme = "turing-nebula";
 
 export type TextModels = ModelRegistry<monaco.editor.ITextModel>;
 
-function modeOf(tab: EditorTab) {
+function modeOf(
+  tab: EditorTab,
+  managedTypescript: boolean,
+  workspaceId?: string,
+) {
+  if (managedTypescript && serverFor(tab, workspaceId) === "typescript") {
+    const id = /\.(js|jsx|mjs|cjs)$/i.test(tab.name)
+      ? "turing-javascript"
+      : "turing-typescript";
+    if (
+      !monaco.languages.getLanguages().some((language) => language.id === id)
+    ) {
+      monaco.languages.register({ id });
+      const grammar =
+        id === "turing-javascript"
+          ? import("monaco-editor/languages/definitions/javascript/javascript.js")
+          : import("monaco-editor/languages/definitions/typescript/typescript.js");
+      void grammar.then(({ language, conf }) => {
+        monaco.languages.setMonarchTokensProvider(id, language);
+        monaco.languages.setLanguageConfiguration(id, conf);
+      });
+    }
+    return id;
+  }
   if (isLargeDocument(tab.draft)) return "plaintext";
   const language = documentLanguage(tab);
   return language.monaco ?? language.id;
@@ -95,6 +119,11 @@ export default function MonacoHost({
   /** This view belongs to the active group and drives workbench commands. */
   focused?: boolean;
 }) {
+  const clangdCapabilities = language?.capabilities;
+  const typescriptCapabilities = language?.servers?.typescript.capabilities;
+  const pyrightCapabilities = language?.servers?.pyright.capabilities;
+  const rustCapabilities = language?.servers?.["rust-analyzer"].capabilities;
+  const managedTypescript = !!typescriptCapabilities;
   const container = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   // View state is per group: the same document keeps its own cursor and
@@ -215,13 +244,22 @@ export default function MonacoHost({
         supports: (id) => {
           const model = instance.getModel();
           if (
-            id === "definition" &&
-            (model?.getLanguageId() === "cpp" || model?.getLanguageId() === "c")
+            id === "definition" ||
+            id === "references" ||
+            id === "implementation" ||
+            id === "declaration"
           ) {
-            return (
-              !!language?.capabilities?.definition &&
-              !!languagePath(active, workspaceId)
-            );
+            const kind = serverFor(active, workspaceId);
+            const managed = language?.forTab?.(active)?.capabilities;
+            if (kind && managed) return !!managed[id];
+            if (
+              model?.getLanguageId() === "cpp" ||
+              model?.getLanguageId() === "c"
+            )
+              return (
+                !!language?.capabilities?.[id] &&
+                !!languagePath(active, workspaceId, "clangd")
+              );
           }
           if (id === "undo") return !!model?.canUndo?.();
           if (id === "redo") return !!model?.canRedo?.();
@@ -353,7 +391,11 @@ export default function MonacoHost({
             : { scheme: "turing-document", path: `/${tab.key}/${tab.name}` },
         );
         if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: tab.key });
-        const created = monaco.editor.createModel(tab.draft, modeOf(tab), uri);
+        const created = monaco.editor.createModel(
+          tab.draft,
+          modeOf(tab, managedTypescript, workspaceId),
+          uri,
+        );
         models.remember(
           tab.key,
           tab.draft,
@@ -400,13 +442,13 @@ export default function MonacoHost({
         if (!open.has(key)) viewStates.current.delete(key);
       for (const tab of tabs) {
         const item = models.get(tab.key);
-        const tabMode = modeOf(tab);
+        const tabMode = modeOf(tab, managedTypescript, workspaceId);
         if (item && item.getLanguageId() !== tabMode)
           monaco.editor.setModelLanguage(item, tabMode);
       }
     });
     report(instance);
-  }, [active, tabs, models, primary]);
+  }, [active, tabs, models, primary, managedTypescript, workspaceId]);
 
   useLayoutEffect(() => {
     // The primary view observes all open models, including hidden tabs.
@@ -453,31 +495,66 @@ export default function MonacoHost({
     instance.focus();
   }, [active.key, reveal, group]);
 
-  const capabilities = language?.capabilities;
   useLayoutEffect(() => {
-    if (!workspaceId || !capabilities || !primary) return;
-    // Providers are global to Monaco, so only the primary view registers
-    // them. They serve every model, whichever group shows it.
-    return attachLanguage(
-      monaco,
-      workspaceId,
-      capabilities,
-      (model) => currentTabs().find((tab) => models.get(tab.key) === model),
-      (...args) => languageRequest(...args),
-      (model) => models.isShown(model),
+    if (!workspaceId || !primary) return;
+    const registrations = [
+      ["clangd", clangdCapabilities],
+      ["typescript", typescriptCapabilities],
+      ["pyright", pyrightCapabilities],
+      ["rust-analyzer", rustCapabilities],
+    ] as const;
+    const detach = registrations.flatMap(([kind, capabilities]) =>
+      capabilities
+        ? [
+            attachLanguage(
+              monaco,
+              workspaceId,
+              capabilities,
+              (model) =>
+                currentTabs().find((tab) => models.get(tab.key) === model),
+              (...args) => languageRequest(...args),
+              (model) => models.isShown(model),
+              kind,
+            ),
+          ]
+        : [],
     );
-  }, [workspaceId, capabilities, primary, models]);
+    return () => detach.forEach((dispose) => dispose());
+  }, [
+    workspaceId,
+    clangdCapabilities,
+    typescriptCapabilities,
+    pyrightCapabilities,
+    rustCapabilities,
+    primary,
+    models,
+  ]);
 
   useLayoutEffect(() => {
     if (focused && editor.current) reportCommands(editor.current);
-  }, [focused, active.key, active.uri, workspaceId, capabilities]);
+  }, [
+    focused,
+    active.key,
+    active.uri,
+    workspaceId,
+    clangdCapabilities,
+    typescriptCapabilities,
+    pyrightCapabilities,
+    rustCapabilities,
+  ]);
 
   useLayoutEffect(() => {
     if (!problems || !monaco.editor.setModelMarkers) return;
     for (const tab of currentTabs()) {
       const model = models.get(tab.key);
       if (!model) continue;
-      for (const owner of ["clangd", "compiler"] as const) {
+      for (const owner of [
+        "clangd",
+        "typescript",
+        "pyright",
+        "rust-analyzer",
+        "compiler",
+      ] as const) {
         const markers = problems
           .filter((item) => item.tabKey === tab.key && item.source === owner)
           .map(({ message, start, end, severity }) => ({

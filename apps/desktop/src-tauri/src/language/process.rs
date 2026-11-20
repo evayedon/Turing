@@ -1,10 +1,16 @@
-use super::{framing, Error, Result};
+use super::{
+    framing,
+    server::{Executable, Kind},
+    Error, Result,
+};
 use serde_json::{json, Value};
 use std::{
+    collections::VecDeque,
     io::{BufReader, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -33,6 +39,7 @@ pub enum Shutdown {
 
 pub struct Process {
     child: Option<Child>,
+    stderr: Arc<Mutex<VecDeque<String>>>,
     send: SyncSender<Vec<Value>>,
     pub receive: Receiver<Value>,
     #[cfg(windows)]
@@ -40,23 +47,70 @@ pub struct Process {
 }
 
 impl Process {
-    pub fn start(executable: &Path, directory: &Path) -> Result<Self> {
-        let mut command = Command::new(executable);
+    fn command(executable: &Executable, directory: &Path, kind: Kind, probe: bool) -> Command {
+        let entry = if probe {
+            &executable.version_entry
+        } else {
+            &executable.entry
+        };
+        let mut command = Command::new(executable.node.as_ref().unwrap_or(entry));
+        if executable.node.is_some() {
+            command.arg(entry);
+        }
         command
-            .args([
-                "--background-index=false",
-                "--enable-config=false",
-                "--clang-tidy=false",
-                "--pch-storage=memory",
-                "-j=1",
-            ])
-            .arg("--compile-commands-dir")
-            .arg(directory)
             .current_dir(directory)
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
+        if probe {
+            command
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stderr(Stdio::null());
+        } else {
+            command.args(kind.args());
+            if kind == Kind::Clangd {
+                command.arg("--compile-commands-dir").arg(directory);
+            }
+        }
+        if kind != Kind::Clangd {
+            // Node launchers use /usr/bin/env, and rust-analyzer invokes Cargo.
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let rust_bin = entry.parent().filter(|directory| {
+                kind == Kind::RustAnalyzer
+                    && directory
+                        .join(if cfg!(windows) { "cargo.exe" } else { "cargo" })
+                        .is_file()
+            });
+            let directories = rust_bin
+                .into_iter()
+                .map(Path::to_path_buf)
+                .chain(entry.ancestors().filter_map(|path| {
+                    let bin = path.join("bin");
+                    bin.join(if cfg!(windows) { "node.exe" } else { "node" })
+                        .is_file()
+                        .then_some(bin)
+                }))
+                .chain(std::env::split_paths(&path).filter(|path| path.is_absolute()));
+            if let Some(toolchain) = rust_bin.and_then(Path::parent).filter(|path| {
+                path.parent()
+                    .is_some_and(|parent| parent.ends_with("toolchains"))
+            }) {
+                command.env("RUSTUP_TOOLCHAIN", toolchain);
+            }
+            if let Ok(path) = std::env::join_paths(directories) {
+                command.env("PATH", path);
+            }
+            for key in ["HOME", "USERPROFILE", "CARGO_HOME", "RUSTUP_HOME"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+        }
+        if kind == Kind::RustAnalyzer {
+            command.env("CARGO_NET_OFFLINE", "true");
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -72,6 +126,53 @@ impl Process {
             }
             command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         }
+        command
+    }
+
+    pub fn probe(executable: &Executable, directory: &Path, kind: Kind) -> Result<String> {
+        let mut child = Self::command(executable, directory, kind, true)
+            .spawn()
+            .map_err(|_| Error::StartFailed)?;
+        #[cfg(windows)]
+        let _job = crate::terminal::platform::guard(&child).map_err(|_| terminate(&mut child))?;
+        let stdout = child.stdout.take().ok_or_else(|| terminate(&mut child))?;
+        let (send, receive) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("lsp-version".into())
+            .spawn(move || {
+                let mut bytes = Vec::new();
+                if stdout.take(4096).read_to_end(&mut bytes).is_ok() {
+                    let _ = send.send(bytes);
+                }
+            })
+            .map_err(|_| terminate(&mut child))?;
+        // On timeout the leader has not been reaped, so group cleanup is safe.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = child.try_wait().map_err(|_| terminate(&mut child))? {
+                if !status.success() {
+                    return Err(Error::Incompatible);
+                }
+                let output = receive
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| Error::Incompatible)?;
+                return String::from_utf8_lossy(&output)
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty() && line.bytes().any(|byte| byte.is_ascii_digit()))
+                    .map(|line| redact(line).chars().take(160).collect())
+                    .ok_or(Error::Incompatible);
+            }
+            if Instant::now() >= deadline {
+                terminate(&mut child);
+                return Err(Error::Incompatible);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    pub fn start(executable: &Executable, directory: &Path, kind: Kind) -> Result<Self> {
+        let mut command = Self::command(executable, directory, kind, false);
         let child = command.spawn().map_err(|_| Error::StartFailed)?;
         #[cfg(windows)]
         let (child, job) = {
@@ -96,6 +197,17 @@ impl Process {
             Ok(process) => process,
             Err(_) => return Err(abandon(child)),
         };
+        if let Some(stderr) = child.stderr.take() {
+            let logs = process.stderr.clone();
+            if thread::Builder::new()
+                .name("lsp-stderr".into())
+                .spawn(move || capture_stderr(stderr, &logs))
+                .is_err()
+            {
+                process.child = Some(child);
+                return Err(Error::StartFailed);
+            }
+        }
         process.child = Some(child);
         #[cfg(windows)]
         {
@@ -114,7 +226,7 @@ impl Process {
         let (send, outbound) = mpsc::sync_channel::<Vec<Value>>(8);
         let (inbound, receive) = mpsc::sync_channel(16);
         thread::Builder::new()
-            .name("clangd-input".into())
+            .name("lsp-input".into())
             .spawn(move || {
                 while let Ok(messages) = outbound.recv() {
                     for message in messages {
@@ -126,7 +238,7 @@ impl Process {
             })
             .map_err(|_| Error::StartFailed)?;
         thread::Builder::new()
-            .name("clangd-output".into())
+            .name("lsp-output".into())
             .spawn(move || {
                 let mut output = BufReader::new(output);
                 // A full queue blocks this thread, which in turn makes the
@@ -140,11 +252,28 @@ impl Process {
             .map_err(|_| Error::StartFailed)?;
         Ok(Self {
             child: None,
+            stderr: Arc::default(),
             send,
             receive,
             #[cfg(windows)]
             _job: None,
         })
+    }
+
+    pub fn record_version(&self, version: String) {
+        if let Ok(mut lines) = self.stderr.lock() {
+            if lines.len() >= 100 {
+                lines.pop_front();
+            }
+            lines.push_back(format!("Version: {version}"));
+        }
+    }
+
+    pub fn logs(&self) -> Vec<String> {
+        self.stderr
+            .lock()
+            .map(|mut lines| lines.drain(..).collect())
+            .unwrap_or_default()
     }
 
     pub fn send(&self, message: Value) -> Result<()> {
@@ -212,19 +341,118 @@ impl Process {
     }
 }
 
+fn redact(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    if [
+        "authorization",
+        "bearer",
+        "token",
+        "password",
+        "secret",
+        "api_key",
+        "apikey",
+        "credential",
+        "private key",
+        "cookie",
+        "passwd",
+        "api-key",
+        "github_pat_",
+        "eyj",
+        "xoxb-",
+        "xoxp-",
+        "akia",
+        "ghp_",
+        "sk-",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "[redacted]".into();
+    }
+    line.chars()
+        .filter(|ch| !ch.is_control() || *ch == '\t')
+        .collect()
+}
+
+fn capture_stderr(mut stderr: impl Read, logs: &Mutex<VecDeque<String>>) {
+    let mut buffer = [0; 4096];
+    let mut line = Vec::new();
+    let mut truncated = false;
+    let store_line = |line: &[u8], truncated| {
+        if let Ok(mut logs) = logs.lock() {
+            if logs.len() >= 100 {
+                logs.pop_front();
+            }
+            logs.push_back(if truncated {
+                "[overlong stderr line omitted]".into()
+            } else {
+                redact(&String::from_utf8_lossy(line))
+            });
+        }
+    };
+    while let Ok(count) = stderr.read(&mut buffer) {
+        if count == 0 {
+            break;
+        }
+        for &byte in &buffer[..count] {
+            if byte == b'\n' {
+                store_line(&line, truncated);
+                line.clear();
+                truncated = false;
+            } else if line.len() < 2048 {
+                line.push(byte);
+            } else {
+                truncated = true;
+            }
+        }
+    }
+    if !line.is_empty() {
+        store_line(&line, truncated);
+    }
+}
+
 impl Drop for Process {
     fn drop(&mut self) {
         let Some(child) = self.child.as_mut() else {
             return;
         };
-        // The unreaped leader keeps the group ID reserved, so this signal
-        // cannot reach an unrelated process group.
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-        }
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate(child);
+    }
+}
+
+fn terminate(child: &mut Child) -> Error {
+    // The unreaped leader keeps the group ID reserved.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Error::StartFailed
+}
+
+#[cfg(test)]
+mod stderr_tests {
+    use super::*;
+
+    #[test]
+    fn redacts_secrets_and_bounds_stderr_lines() {
+        let logs = Mutex::default();
+        let source = format!(
+            "server ready\nAuthorization: Bearer credential-value\nTOKEN=value\n{}\nlast line\n",
+            "x".repeat(3000)
+        );
+        capture_stderr(source.as_bytes(), &logs);
+        assert_eq!(
+            logs.into_inner().unwrap(),
+            [
+                "server ready",
+                "[redacted]",
+                "[redacted]",
+                "[overlong stderr line omitted]",
+                "last line",
+            ]
+        );
     }
 }
 
@@ -243,7 +471,12 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let process = Process::start(&script, fixture.path()).unwrap();
+        let process = Process::start(
+            &Executable::new(&script, Kind::Clangd).unwrap(),
+            fixture.path(),
+            Kind::Clangd,
+        )
+        .unwrap();
         let pid = process.child.as_ref().unwrap().id() as libc::pid_t;
         assert_eq!(
             process.receive.recv_timeout(Duration::from_secs(3)),

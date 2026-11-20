@@ -1,6 +1,6 @@
 import type * as Monaco from "monaco-editor";
 import type { EditorTab } from "../editor/use-editor";
-import type { LanguageFeature } from "@turing/contracts";
+import type { LanguageFeature, LanguageServer } from "@turing/contracts";
 import type { LanguageController } from "./use-language";
 import { range, record } from "./problems";
 
@@ -11,6 +11,7 @@ export function attachLanguage(
   find: (model: Monaco.editor.ITextModel) => EditorTab | undefined,
   request: LanguageController["request"],
   isActive: (model: Monaco.editor.ITextModel) => boolean,
+  server: LanguageServer = "clangd",
 ) {
   async function ask(
     model: Monaco.editor.ITextModel,
@@ -46,7 +47,13 @@ export function attachLanguage(
     }
   }
   const registrations: Monaco.IDisposable[] = [];
-  for (const language of ["c", "cpp"]) {
+  const languages = {
+    clangd: ["c", "cpp"],
+    typescript: ["turing-typescript", "turing-javascript"],
+    pyright: ["python"],
+    "rust-analyzer": ["rust"],
+  };
+  for (const language of languages[server]) {
     if (capabilities.hover)
       registrations.push(
         monaco.languages.registerHoverProvider(language, {
@@ -116,33 +123,61 @@ export function attachLanguage(
           },
         }),
       );
+    function location(
+      feature: "definition" | "references" | "implementation" | "declaration",
+    ) {
+      return async (
+        model: Monaco.editor.ITextModel,
+        at: Monaco.Position,
+        token: Monaco.CancellationToken,
+      ) => {
+        const targets = await ask(model, at, token, feature);
+        if (!Array.isArray(targets)) return [];
+        return targets.flatMap((target) => {
+          const entry = record(target);
+          const selected = range(entry?.range);
+          if (typeof entry?.path !== "string" || !selected) return [];
+          return [
+            {
+              uri: monaco.Uri.from({
+                scheme: "turing-workspace",
+                authority: workspaceId,
+                path: `/${entry.path}`,
+              }),
+              range: new monaco.Range(
+                selected.start.line + 1,
+                selected.start.character + 1,
+                selected.end.line + 1,
+                selected.end.character + 1,
+              ),
+            },
+          ];
+        });
+      };
+    }
     if (capabilities.definition)
       registrations.push(
         monaco.languages.registerDefinitionProvider(language, {
-          async provideDefinition(model, at, token) {
-            const targets = await ask(model, at, token, "definition");
-            if (!Array.isArray(targets)) return;
-            return targets.flatMap((target) => {
-              const entry = record(target);
-              const selected = range(entry?.range);
-              if (typeof entry?.path !== "string" || !selected) return [];
-              return [
-                {
-                  uri: monaco.Uri.from({
-                    scheme: "turing-workspace",
-                    authority: workspaceId,
-                    path: `/${entry.path}`,
-                  }),
-                  range: new monaco.Range(
-                    selected.start.line + 1,
-                    selected.start.character + 1,
-                    selected.end.line + 1,
-                    selected.end.character + 1,
-                  ),
-                },
-              ];
-            });
-          },
+          provideDefinition: location("definition"),
+        }),
+      );
+    if (capabilities.declaration)
+      registrations.push(
+        monaco.languages.registerDeclarationProvider(language, {
+          provideDeclaration: location("declaration"),
+        }),
+      );
+    if (capabilities.implementation)
+      registrations.push(
+        monaco.languages.registerImplementationProvider(language, {
+          provideImplementation: location("implementation"),
+        }),
+      );
+    if (capabilities.references)
+      registrations.push(
+        monaco.languages.registerReferenceProvider(language, {
+          provideReferences: (model, at, _context, token) =>
+            location("references")(model, at, token),
         }),
       );
   }

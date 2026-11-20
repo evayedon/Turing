@@ -69,7 +69,11 @@ import { compilerBatches } from "../language/problems";
 import { currentProblems } from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import { adjacentProblem, orderProblems } from "../language/problem-navigation";
-import { languagePath, useLanguage } from "../language/use-language";
+import {
+  languagePath,
+  serverFor,
+  useManagedLanguage,
+} from "../language/use-language";
 import { RenameSymbolDialog } from "../language/RenameSymbolDialog";
 import type { RenameOrigin } from "../language/RenameSymbolDialog";
 import { ModelRegistry } from "../editor/model-registry";
@@ -132,7 +136,7 @@ export function Workbench() {
     },
   );
   const execution = useExecution();
-  const language = useLanguage(
+  const language = useManagedLanguage(
     explorer.workspace?.id,
     explorer.native,
     editor.tabs,
@@ -346,6 +350,13 @@ export function Workbench() {
   const renameWorkspace = explorer.workspace?.id;
   const currentRename =
     renameOrigin?.workspaceId === renameWorkspace ? renameOrigin : undefined;
+  const activeServer = active
+    ? serverFor(active, explorer.workspace?.id)
+    : undefined;
+  const activeLanguage = activeServer
+    ? language.servers?.[activeServer]
+    : undefined;
+
   const commandState: CommandState = {
     native,
     modifier,
@@ -366,7 +377,7 @@ export function Workbench() {
     sidebar,
     renameTarget: !!selectedEntry?.identity,
     canRenameSymbol: !!(
-      language.capabilities?.rename &&
+      activeLanguage?.capabilities?.rename &&
       editorCommandsReady &&
       active &&
       languagePath(active, renameWorkspace) &&
@@ -406,7 +417,7 @@ export function Workbench() {
           workspaceId: renameWorkspace,
           tab: active,
           position: { line: cursor.line - 1, character: cursor.column - 1 },
-          prepare: !!language.capabilities?.prepareRename,
+          prepare: !!activeLanguage?.capabilities?.prepareRename,
         });
     },
     closeActiveEditor: () => {
@@ -792,9 +803,23 @@ export function Workbench() {
           )}
           <BottomDock
             execution={execution}
+            languageOutput={Object.entries(language.servers ?? {}).map(
+              ([kind, server]) =>
+                server.logs.length ? (
+                  <details key={kind}>
+                    <summary>{kind} stderr</summary>
+                    <pre>{server.logs.join("\n")}</pre>
+                  </details>
+                ) : null,
+            )}
             problems={
               <ProblemsPanel
                 problems={problems}
+                servers={
+                  explorer.native && explorer.workspace
+                    ? language.servers
+                    : undefined
+                }
                 filter={problemSeverity}
                 open={revealProblem}
               />
@@ -864,6 +889,17 @@ export function Workbench() {
           </span>
         </div>
         <div className="status-detail">
+          {explorer.native && activeServer && activeLanguage && (
+            <button
+              type="button"
+              className="quiet-button"
+              title={activeLanguage.message}
+              onClick={() => showDock("Problems")}
+            >
+              {activeServer} ·{" "}
+              {activeLanguage.status === "idle" ? "Off" : activeLanguage.status}
+            </button>
+          )}
           {active && isLargeDocument(active.draft) && (
             <span title="Syntax highlighting, suggestions, folding, inline diagnostics and draft recovery are off. Save edits to keep them.">
               Large file: some features off
@@ -927,6 +963,7 @@ export function Workbench() {
         <WorkspaceSymbolPicker
           key={explorer.workspace.id}
           workspaceId={explorer.workspace.id}
+          managedSymbols={language.symbols}
           dismiss={dismissPopup}
           navigate={({ relativePath, line, character }) => {
             dismissPopup();
