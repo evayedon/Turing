@@ -18,6 +18,7 @@ import { Workbench } from "../shell/Workbench";
 import { clearRecents } from "../shell/recent";
 import { useLayout } from "../state/layout";
 
+vi.mock("./draft-ipc", () => import("../test/mock-draft-ipc"));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 
 // The workspace watcher polls in the background; hold it out of IPC sequences.

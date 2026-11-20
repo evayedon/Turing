@@ -69,6 +69,26 @@ beforeEach(() => {
   race = undefined;
   ipc.mockReset();
   ipc.mockImplementation(async (command, args) => {
+    if (command === "draft_recovery" && args && "request" in args) {
+      const request = args.request;
+      if (request && typeof request === "object" && "action" in request) {
+        if (request.action === "list") {
+          return {
+            kind: "list",
+            entries: ["recovered.cpp", "journal.cpp"].flatMap((path) => {
+              const stored = localStorage.getItem(`fixture:${path}`);
+              return stored ? [JSON.parse(stored)] : [];
+            }),
+            skipped: false,
+          };
+        }
+        if (request.action === "matches")
+          return { kind: "matches", matches: true };
+        if (request.action === "snapshot")
+          return { kind: "written", id: "live" };
+        if (request.action === "resolve") return { kind: "done" };
+      }
+    }
     if (
       !args ||
       !("relativePath" in args) ||
@@ -273,10 +293,7 @@ it("preserves drafts on edit, revision, watcher, recovered-draft and write-race 
     },
   });
   for (const path of ["recovered.cpp", "journal.cpp"])
-    localStorage.setItem(
-      `turing:draft:v1:${path}`,
-      JSON.stringify(restore(path)),
-    );
+    localStorage.setItem(`fixture:${path}`, JSON.stringify(restore(path)));
   const { result } = renderHook(() => useEditor(workspaceId, true, "/project"));
   for (const path of ["modified.cpp", "reloaded.cpp", "watched.cpp"])
     await act(async () => result.current.open(path));

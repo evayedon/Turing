@@ -3,12 +3,8 @@ import type {
   WorkspaceEditResult,
   WorkspaceEditTarget,
 } from "./workspace-edit";
-import type { WorkspaceTextEdit } from "@turing/contracts";
-import {
-  isDirty,
-  useDraftRecovery,
-  type RecoveryDraft,
-} from "./use-draft-recovery";
+import type { RecoveryDraft, WorkspaceTextEdit } from "@turing/contracts";
+import { isDirty, useDraftRecovery } from "./use-draft-recovery";
 import type { NavigationTarget } from "./navigation";
 import {
   activeDocument,
@@ -84,6 +80,7 @@ export interface EditorTab {
   languageOverride?: string;
   saveError?: string;
   recovered?: boolean;
+  recoveryNote?: string;
   workspaceEditDraft?: boolean;
 }
 
@@ -376,7 +373,10 @@ export function useEditor(
       {
         ...tab,
         key,
-        uri: documentUri(tab.source, tab.name),
+        uri:
+          tab.source.kind === "untitled"
+            ? `untitled:${crypto.randomUUID()}`
+            : documentUri(tab.source, tab.name),
         revision: ++revisions.current,
       },
     ]);
@@ -434,40 +434,49 @@ export function useEditor(
     return perform(async () => {
       const source = entry.source;
       let tab: NewTab | undefined;
-      if (
-        source.kind === "workspace" &&
-        workspaceId &&
-        workspacePath === source.root &&
-        !latest.current.some(
-          ({ source: open }) =>
-            open.kind === "workspace" &&
-            open.workspaceId === workspaceId &&
-            open.relativePath === source.relativePath,
-        )
-      ) {
+      let recoveryNote: string | undefined;
+      if (source.kind === "workspace") {
+        if (!workspaceId || !(await recovery.matches(entry.id, workspaceId))) {
+          setError("Open the original workspace to restore this draft.");
+          return;
+        }
+        if (currentWorkspace.current !== workspaceId) return;
         try {
           const file = await invokeWorkspace("fs_read_file", {
             workspaceId,
             relativePath: source.relativePath,
           });
           if (currentWorkspace.current !== workspaceId) return;
-          if (file.content === entry.draft) {
-            recovery.remove(entry.id, entry);
+          const alreadyOpen = latest.current.some(
+            ({ source: open }) =>
+              open.kind === "workspace" &&
+              open.workspaceId === workspaceId &&
+              open.relativePath === source.relativePath,
+          );
+          if (alreadyOpen) {
+            recoveryNote =
+              "The original file is already open. Save As can save this recovered copy.";
+          } else if (file.content === entry.draft) {
+            await recovery.remove(entry.id);
             addTab(workspaceTab(file));
             return;
+          } else {
+            tab = {
+              ...workspaceTab(file),
+              source: {
+                kind: "workspace",
+                workspaceId,
+                relativePath: source.relativePath,
+                version: source.version,
+              },
+              changedOnDisk: file.version !== source.version,
+            };
           }
-          tab = {
-            ...workspaceTab(file),
-            source: {
-              kind: "workspace",
-              workspaceId,
-              relativePath: source.relativePath,
-              version: source.version,
-            },
-            changedOnDisk: file.version !== source.version,
-          };
         } catch (cause) {
+          if (currentWorkspace.current !== workspaceId) return;
           if (!missingOnDisk.includes(String(cause))) throw cause;
+          recoveryNote =
+            "The original file is missing or unavailable. Save As can save this recovered copy.";
         }
       }
       const key = addTab({
@@ -480,15 +489,16 @@ export function useEditor(
         }),
         draft: entry.draft,
         recovered: true,
+        recoveryNote,
         languageOverride: entry.languageOverride,
       });
-      recovery.recovered(entry, key);
+      await recovery.recovered(entry, key);
     });
   }
 
   function discardDraft(entry: RecoveryDraft) {
     return perform(async () => {
-      if (await confirmDiscard("tab")) recovery.remove(entry.id, entry);
+      if (await confirmDiscard("tab")) await recovery.remove(entry.id);
     });
   }
 
@@ -959,8 +969,8 @@ export function useEditor(
     setExitPending(false);
     void perform(async () => {
       if (!dirty || (await confirmDiscard("exit"))) {
-        recovery.track(latest.current, [], workspacePath);
         try {
+          await recovery.prepareExit();
           await invokeWorkspace("editor_exit", undefined);
         } catch (cause) {
           recovery.track([], latest.current, workspacePath);

@@ -17,6 +17,7 @@ import { Workbench } from "../shell/Workbench";
 import { useLayout } from "../state/layout";
 import { created, resetFakeMonaco } from "./fake-monaco";
 
+vi.mock("./draft-ipc", () => import("../test/mock-draft-ipc"));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 vi.mock("../git/git-ipc", async (original) => ({
   ...(await original<typeof import("../git/git-ipc")>()),

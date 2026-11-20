@@ -262,6 +262,14 @@ impl Registry {
             .ok_or(WorkspaceError::PermissionDenied)
     }
 
+    pub fn workspace_display_path(&self, owner: &str, id: &str) -> Result<&str> {
+        self.active
+            .as_ref()
+            .filter(|workspace| workspace.owner == owner && workspace.descriptor.id == id)
+            .map(|workspace| workspace.descriptor.display_path.as_str())
+            .ok_or(WorkspaceError::PermissionDenied)
+    }
+
     pub fn terminal_directory(&self, owner: &str, id: &str) -> Result<Dir> {
         Ok(self.authorize(owner, id)?.try_clone()?)
     }

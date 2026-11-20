@@ -1,5 +1,10 @@
 import type {
   BranchInfo,
+  RecoveryDraft,
+  RecoveryError,
+  RecoveryReply,
+  RecoveryRequest,
+  RecoverySource,
   DirectoryEntry,
   ExecutionError,
   ExecutionLanguage,
@@ -88,6 +93,12 @@ const shape =
     spec;
 
 const errors = {
+  recovery: every<RecoveryError>()([
+    "PERMISSION_DENIED",
+    "INVALID_DRAFT",
+    "DRAFT_LIMIT",
+    "JOURNAL_IO",
+  ]),
   workspace: every<WorkspaceError>()([
     "BUSY",
     "WINDOW_LIMIT",
@@ -271,7 +282,87 @@ const workspaceFileEdit = shape<WorkspaceFileEdit>()({
   edits: { array: workspaceTextEdit },
 });
 
-const payloads: Record<keyof typeof fixture.payloads, Spec> = {
+type RecoveryPayload = "RecoveryRequest" | "RecoveryReply";
+
+const recoveryWorkspace = shape<
+  Extract<RecoverySource, { kind: "workspace" }>
+>()({
+  kind: { values: ["workspace"] },
+  root: "required",
+  relativePath: "required",
+  version: "required",
+  identity: "optional",
+});
+const recoveryCopy = shape<Extract<RecoverySource, { kind: "copy" }>>()({
+  kind: { values: ["copy"] },
+});
+const recoveryDraft = shape<RecoveryDraft>()({
+  id: "required",
+  name: "required",
+  title: "required",
+  draft: "required",
+  timestamp: "required",
+  languageOverride: "optional",
+  source: "required",
+});
+const recoveryRequests = {
+  list: shape<Extract<RecoveryRequest, { action: "list" }>>()({
+    action: { values: ["list"] },
+  }),
+  migrate: shape<Extract<RecoveryRequest, { action: "migrate" }>>()({
+    action: { values: ["migrate"] },
+    entry: { object: { ...recoveryDraft, source: { object: recoveryCopy } } },
+  }),
+  snapshot: shape<Extract<RecoveryRequest, { action: "snapshot" }>>()({
+    action: { values: ["snapshot"] },
+    uri: "required",
+    workspaceId: "optional",
+    replaces: "optional",
+    entry: {
+      object: { ...recoveryDraft, source: { object: recoveryWorkspace } },
+    },
+  }),
+  resolve: shape<Extract<RecoveryRequest, { action: "resolve" }>>()({
+    action: { values: ["resolve"] },
+    id: "required",
+  }),
+  matches: shape<Extract<RecoveryRequest, { action: "matches" }>>()({
+    action: { values: ["matches"] },
+    id: "required",
+    workspaceId: "required",
+  }),
+} satisfies Record<RecoveryRequest["action"], Spec>;
+const recoveryReplies = {
+  list: shape<Extract<RecoveryReply, { kind: "list" }>>()({
+    kind: { values: ["list"] },
+    skipped: "required",
+    entries: {
+      array: { ...recoveryDraft, source: { object: recoveryWorkspace } },
+    },
+  }),
+  written: shape<Extract<RecoveryReply, { kind: "written" }>>()({
+    kind: { values: ["written"] },
+    id: "required",
+  }),
+  matches: shape<Extract<RecoveryReply, { kind: "matches" }>>()({
+    kind: { values: ["matches"] },
+    matches: "required",
+  }),
+  done: shape<Extract<RecoveryReply, { kind: "done" }>>()({
+    kind: { values: ["done"] },
+  }),
+} satisfies Record<RecoveryReply["kind"], Spec>;
+
+const {
+  RecoveryRequest: recoveryRequestCases,
+  RecoveryReply: recoveryReplyCases,
+  ...ordinaryCases
+} = fixture.payloads;
+
+const payloads: Record<
+  Exclude<keyof typeof fixture.payloads, RecoveryPayload>,
+  Spec
+> = {
   WorkspaceDescriptor: shape<WorkspaceDescriptor>()({
     id: "required",
     name: "required",
@@ -464,11 +555,11 @@ describe("IPC contract fixtures", () => {
 
   it("describes every fixture payload and nothing extra", () => {
     expect(sorted(Object.keys(payloads))).toEqual(
-      sorted(Object.keys(fixture.payloads)),
+      sorted(Object.keys(ordinaryCases)),
     );
   });
 
-  it.each(Object.entries(fixture.payloads))(
+  it.each(Object.entries(ordinaryCases))(
     "%s cases satisfy the TypeScript contract",
     (name, cases) => {
       const spec = payloads[name as keyof typeof payloads];
@@ -479,6 +570,33 @@ describe("IPC contract fixtures", () => {
       expect(problems).toEqual([]);
     },
   );
+
+  it("draft journal requests and replies satisfy each variant contract", () => {
+    expect(sorted(recoveryRequestCases.map(({ action }) => action))).toEqual(
+      sorted(Object.keys(recoveryRequests)),
+    );
+    expect(sorted(recoveryReplyCases.map(({ kind }) => kind))).toEqual(
+      sorted(Object.keys(recoveryReplies)),
+    );
+    for (const value of recoveryRequestCases) {
+      expect(
+        mismatches(
+          value,
+          recoveryRequests[value.action as keyof typeof recoveryRequests],
+          value.action,
+        ),
+      ).toEqual([]);
+    }
+    for (const value of recoveryReplyCases) {
+      expect(
+        mismatches(
+          value,
+          recoveryReplies[value.kind as keyof typeof recoveryReplies],
+          value.kind,
+        ),
+      ).toEqual([]);
+    }
+  });
 
   it("language events and capabilities satisfy their variant contracts", () => {
     const problems = fixture.payloads.LanguageUpdate.flatMap(

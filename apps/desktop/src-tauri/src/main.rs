@@ -3,6 +3,7 @@
 mod commands;
 #[cfg(test)]
 mod contract_fixtures;
+mod drafts;
 mod execution;
 mod git;
 mod language;
@@ -20,8 +21,12 @@ fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(windows::Windows::default())
+        .manage(drafts::DraftJournal::default())
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview
+                    .state::<drafts::DraftJournal>()
+                    .release(webview.label());
                 webview
                     .state::<windows::Windows>()
                     .page_loading(webview.label());
@@ -41,6 +46,7 @@ fn main() {
     let context = tauri::generate_context!();
     builder
         .invoke_handler(tauri::generate_handler![
+            drafts::draft_recovery,
             windows::window_new_workbench,
             windows::window_new_terminal,
             commands::workspace_open,
@@ -95,7 +101,10 @@ fn main() {
                     label,
                     event: WindowEvent::Destroyed,
                     ..
-                } => resources.remove(&label),
+                } => {
+                    app.state::<drafts::DraftJournal>().release(&label);
+                    resources.remove(&label);
+                }
                 RunEvent::WindowEvent {
                     label,
                     event: WindowEvent::CloseRequested { api, .. },

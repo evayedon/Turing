@@ -1,6 +1,15 @@
 {
   "$comment": "Shared IPC contract fixtures. Rust tests require native serialization to equal these values exactly; TypeScript tests require them to satisfy the declared contracts. Update both sides together.",
   "errors": {
+    "recovery": {
+      "native": [
+        "PERMISSION_DENIED",
+        "INVALID_DRAFT",
+        "DRAFT_LIMIT",
+        "JOURNAL_IO"
+      ],
+      "clientOnly": []
+    },
     "workspace": {
       "native": [
         "BUSY",
@@ -140,6 +149,88 @@
     "ExecutionStream": ["buildStdout", "buildStderr", "stdout", "stderr"]
   },
   "payloads": {
+    "RecoveryRequest": [
+      {
+        "action": "list"
+      },
+      {
+        "action": "migrate",
+        "entry": {
+          "id": "legacy",
+          "name": "Untitled",
+          "title": "Untitled",
+          "draft": "example",
+          "source": {
+            "kind": "copy"
+          },
+          "timestamp": 1
+        }
+      },
+      {
+        "action": "snapshot",
+        "uri": "turing-workspace://grant/src/main.ts",
+        "workspaceId": "grant",
+        "replaces": "old",
+        "entry": {
+          "id": "snapshot",
+          "name": "main.ts",
+          "title": "src/main.ts",
+          "draft": "example",
+          "source": {
+            "kind": "workspace",
+            "root": "/project",
+            "relativePath": "src/main.ts",
+            "version": "base",
+            "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "timestamp": 100,
+          "languageOverride": "typescript"
+        }
+      },
+      {
+        "action": "resolve",
+        "id": "snapshot"
+      },
+      {
+        "action": "matches",
+        "id": "snapshot",
+        "workspaceId": "grant"
+      }
+    ],
+    "RecoveryReply": [
+      {
+        "kind": "list",
+        "entries": [
+          {
+            "id": "snapshot",
+            "name": "main.ts",
+            "title": "src/main.ts",
+            "draft": "example",
+            "source": {
+              "kind": "workspace",
+              "root": "/project",
+              "relativePath": "src/main.ts",
+              "version": "base",
+              "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "timestamp": 100,
+            "languageOverride": "typescript"
+          }
+        ],
+        "skipped": true
+      },
+      {
+        "kind": "written",
+        "id": "snapshot"
+      },
+      {
+        "kind": "matches",
+        "matches": true
+      },
+      {
+        "kind": "done"
+      }
+    ],
     "WorkspaceDescriptor": [
       { "id": "ws-1", "name": "Turing", "displayPath": "~/Projects/Turing" }
     ],

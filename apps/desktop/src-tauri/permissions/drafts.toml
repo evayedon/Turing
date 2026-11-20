@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-draft-recovery"
+description = "Manage the local Rust-owned draft recovery journal from workbench windows."
+commands.allow = ["draft_recovery"]

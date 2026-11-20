@@ -234,27 +234,53 @@ follow the active group.
 
 ### Draft recovery
 
-The desktop workbench journals unsaved text in its local WebView storage,
-with separate records for each dirty buffer. For eligible drafts, the journal coalesces edits into one snapshot
-per buffer per 400 ms during editing and flushes when the page is hidden or
-unloaded. At 131,072 UTF-16 code units, it stops writing snapshots for that
-buffer, including on hide. It keeps any previously persisted snapshot until
-save or discard, so recovery can offer an earlier version.
-A hard crash can lose edits made since the last snapshot. Storage failures are
-shown in the editor. Browser previews still keep drafts in memory.
+Rust owns the journal under the directory returned by Tauri’s
+`app_local_data_dir()`, in `draft-recovery-default` for the current profile.
+Unix directory and file permissions are `0700` and `0600`. Records use a
+versioned header, length and SHA-256 checksum. Rust writes and syncs a
+temporary file in the journal directory, renames it into place, and syncs
+the directory on Unix. It ignores stale temporary files. Damaged records
+are skipped with a workbench notice and count toward the cap until they
+expire. The journal contains unsaved source text,
+and the application excludes it from logs.
 
-On the next launch, **Recover unsaved drafts** offers Restore and Discard.
-To restore into a workspace file, reopen the original workspace through the
-native picker. The editor reads the file through the new grant and compares
-the saved base version. A mismatch keeps the newer disk text intact and
-offers Save As. Missing files, standalone files, and workspaces without a
-current matching grant recover as untitled copies. The journal grants no
-filesystem access, and recovered tabs wait for an explicit save even when
-Auto Save is enabled. Save, successful reload, or confirmed discard removes
-the corresponding snapshot. A restored snapshot is replaced only after its
-new journal record has been written. Restoring opens the draft in the active
-editor group. Closing a group that shares the draft with another group keeps
-the draft and its journal entry. Closing its last view requires confirmation.
+A document is keyed by the approved root’s filesystem identity and its
+workspace-relative URI, or by its selected-file URI or generated untitled
+URI. A Rust-generated workbench instance ID scopes writes, so two windows
+may independently edit the same document. Groups within a workbench share
+one document and one snapshot. One native process holds the profile journal
+lock. Additional app processes using that profile get a recovery storage
+error while the lock is held. After relaunch, the first workbench to list
+orphaned drafts claims them. Other windows can claim unresolved drafts on
+their next list after that workbench closes or reloads.
+
+React coalesces updates into one snapshot per buffer per 400 ms and requests
+a flush on hide or page unload. A forced termination can lose edits made
+since the last durable snapshot. Drafts at or above 131,072 UTF-16 code units
+skip snapshotting. The journal caps records at 1 MiB each, 32 MiB total, and
+256 records. Orphaned, unclaimed drafts expire after 30 days and are removed
+oldest first. Active and claimed drafts are retained. When a size limit or
+write error blocks a snapshot, the editor identifies the affected document
+and keeps the in-memory draft and any previous durable snapshot. A normal
+close after confirmed discard clears that workbench’s own records.
+
+On startup, the workbench validates and imports legacy WebView localStorage
+drafts. Rust uses a deterministic ID to make retrying the import safe. The
+workbench deletes a legacy key only after Rust acknowledges the durable
+write.
+
+**Recover unsaved drafts** offers Restore and Discard. Workspace drafts
+stay pending until the original workspace is approved in the receiving
+workbench. Rust checks the approved root identity for native snapshots and
+the approved display path for legacy entries. This lookup grants no file
+access. Restore uses the normal authorized read and compares base versions.
+A version mismatch preserves the newer disk text and offers Compare and
+Save As. Missing or renamed files recover as untitled copies with a notice.
+Standalone and untitled drafts also recover as untitled copies. Recovered
+tabs are unsaved, and Auto Save skips them. Save, successful reload, or
+confirmed discard resolves the snapshot. Restoring opens the draft in the
+active editor group and replaces the old record only after the new snapshot
+is durable. Closing a group with a remaining view keeps the draft.
 
 ## Workspace watcher
 

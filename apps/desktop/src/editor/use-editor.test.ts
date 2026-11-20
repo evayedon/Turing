@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUTO_SAVE_DELAY_MS, useEditor } from "./use-editor";
 
+vi.mock("./draft-ipc", () => import("../test/mock-draft-ipc"));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 
 const ipc = vi.mocked(invoke);
