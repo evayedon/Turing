@@ -18,6 +18,11 @@ import { useLayout } from "../state/layout";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 
+// The workspace watcher polls in the background; hold it out of IPC sequences.
+vi.mock("../explorer/watch-ipc", () => ({
+  pollWorkspaceChanges: vi.fn(() => new Promise(() => {})),
+}));
+
 // Source control polls in the background; keep it out of these IPC sequences.
 vi.mock("../git/git-ipc", async (original) => ({
   ...(await original<typeof import("../git/git-ipc")>()),

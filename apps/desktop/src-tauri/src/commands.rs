@@ -1,7 +1,7 @@
 use crate::windows::workbench;
 use crate::workspace::{
     validate_save_content, DirectoryEntry, PickedFile, SelectedFileSnapshot, SelectedFileVersion,
-    TextFile, WorkspaceDescriptor, WorkspaceError,
+    TextFile, WorkspaceChanges, WorkspaceDescriptor, WorkspaceError,
 };
 use tauri::WebviewWindow;
 use tauri_plugin_dialog::DialogExt;
@@ -52,9 +52,11 @@ pub async fn workspace_open(
         let path = selection
             .into_path()
             .map_err(|_| WorkspaceError::OutsideWorkspace)?;
-        let mut registry = service.registry()?;
-        let workspace = registry.register(window.label(), &path)?;
+        let workspace = service.registry()?.register(window.label(), &path)?;
         resources.language.revoke(false);
+        // Watching is best effort: without it (for example when the OS watch
+        // limit is reached) views keep their manual and periodic checks.
+        let _ = service.watch(window.label(), &workspace.id);
         Ok(Some(workspace))
     })
     .await
@@ -68,6 +70,22 @@ pub async fn workspace_close(window: WebviewWindow, workspace_id: String) -> Res
         registry.close(window.label(), &workspace_id)?;
         resources.language.revoke(false);
         Ok(())
+    })
+    .await
+}
+
+/// Returns coalesced change hints for the caller's active workspace.
+#[tauri::command]
+pub async fn workspace_watch_poll(
+    window: WebviewWindow,
+    workspace_id: String,
+) -> Result<WorkspaceChanges> {
+    in_workspace(window, move |window| {
+        workbench(&window)?.workspace.registry()?.poll_changes(
+            window.label(),
+            &workspace_id,
+            std::time::Instant::now(),
+        )
     })
     .await
 }

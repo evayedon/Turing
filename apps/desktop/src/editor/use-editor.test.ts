@@ -207,3 +207,56 @@ describe("editor Auto Save", () => {
     expect(ipc).not.toHaveBeenCalled();
   });
 });
+
+describe("editor groups", () => {
+  it("keeps one document per tab while groups add views, reveal in the active group, and close views without prompting", async () => {
+    const { result, edit } = setup();
+    await act(async () => result.current.open("one.ts"));
+    act(() => result.current.splitEditor());
+    expect(result.current.tabs).toHaveLength(1);
+    expect(result.current.groups.groups).toHaveLength(2);
+    expect(result.current.groups.activeGroup).toBe("2");
+
+    edit("shared draft");
+    const [tab] = result.current.tabs;
+    expect(tab.draft).toBe("shared draft");
+
+    act(() => result.current.navigate({ tab }, { line: 3, column: 2 }));
+    expect(result.current.reveal).toEqual({
+      key: tab.key,
+      group: "2",
+      line: 3,
+      column: 2,
+    });
+
+    // Closing one of two views keeps the dirty document and asks nothing.
+    await act(async () => result.current.close(tab, "2"));
+    expect(ipc).not.toHaveBeenCalledWith(
+      "editor_confirm_discard",
+      expect.anything(),
+    );
+    expect(result.current.tabs).toEqual([tab]);
+    expect(result.current.groups.groups).toHaveLength(1);
+    expect(result.current.active).toBe(tab);
+
+    act(() => result.current.focusNextGroup(1));
+    expect(result.current.groups.activeGroup).toBe("1");
+    act(() => result.current.moveEditorToNextGroup());
+    expect(result.current.groups.groups).toHaveLength(1);
+  });
+
+  it("closes every view when a document closes", async () => {
+    const { result } = setup();
+    await act(async () => result.current.open("one.ts"));
+    await act(async () => result.current.open("two.ts"));
+    act(() => result.current.splitEditor());
+    act(() => result.current.select(result.current.tabs[0].key));
+    expect(result.current.groups.groups[1].keys).toHaveLength(2);
+    await act(async () => result.current.closeAll());
+    expect(result.current.tabs).toEqual([]);
+    expect(result.current.groups.groups).toEqual([
+      expect.objectContaining({ keys: [], activeKey: undefined }),
+    ]);
+    expect(result.current.active).toBeUndefined();
+  });
+});

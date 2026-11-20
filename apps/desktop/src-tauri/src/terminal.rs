@@ -612,7 +612,8 @@ mod tests {
         id: &str,
         mut accept: impl FnMut(&[u8], &TerminalOutput) -> bool,
     ) -> TerminalOutput {
-        let until = Instant::now() + Duration::from_secs(10);
+        // Windows CI starts shells slowly, especially with tests in parallel.
+        let until = Instant::now() + Duration::from_secs(if cfg!(windows) { 30 } else { 10 });
         let mut bytes = Vec::new();
         #[cfg(windows)]
         let mut query_offsets = [0; CONPTY_QUERIES.len()];
@@ -745,15 +746,17 @@ mod tests {
         // is already cmd.exe, it can consume the caret itself.
         #[cfg(windows)]
         let command = b"cmd.exe /D /C echo TURING-PTY-HE^LLO\r";
+        // The shell may drop input typed before it is ready, so resend the
+        // probe until its output appears; repeats are harmless.
         #[cfg(windows)]
-        let mut probe_sent = false;
+        let mut probe_sent: Option<Instant> = None;
         #[cfg(unix)]
         send(&service, &started.id, command);
         output_until(&service, &started.id, |bytes, _output| {
             // Queue the probe after any negotiation replies. Wait for actual
             // output first, without requiring a specific shell prompt.
             #[cfg(windows)]
-            if !probe_sent
+            if probe_sent.is_none_or(|at| at.elapsed() >= Duration::from_secs(2))
                 && !_output.finished
                 && !bytes.is_empty()
                 && !CONPTY_QUERIES
@@ -761,7 +764,7 @@ mod tests {
                     .any(|(query, _)| (1..query.len()).any(|len| bytes.ends_with(&query[..len])))
             {
                 send(&service, &started.id, command);
-                probe_sent = true;
+                probe_sent = Some(Instant::now());
             }
             bytes.windows(needle.len()).any(|window| window == needle)
         });

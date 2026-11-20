@@ -1,4 +1,24 @@
+import {
+  isDirty,
+  useDraftRecovery,
+  type RecoveryDraft,
+} from "./use-draft-recovery";
 import type { NavigationTarget } from "./navigation";
+import {
+  activeDocument,
+  closeDocumentInGroup,
+  closeGroup as closeGroupView,
+  createGroups,
+  documentsOnlyIn,
+  focusAdjacentGroup,
+  focusGroup as focusGroupView,
+  moveDocumentToNextGroup,
+  openDocument,
+  removeDocuments,
+  splitGroup,
+  viewCount,
+} from "./editor-groups";
+import type { EditorGroups, GroupId } from "./editor-groups";
 import { rememberRecent } from "../shell/recent";
 import { suggestedFilename } from "./languages";
 import {
@@ -11,8 +31,10 @@ import {
 import type {
   SelectedFileSnapshot,
   TextFile,
+  WorkspaceChanges,
   WorkspaceCommands,
 } from "@turing/contracts";
+import { touches } from "../explorer/use-workspace-watcher";
 import {
   invokeWorkspace,
   workspaceErrorMessage,
@@ -22,6 +44,9 @@ export interface EditorLocation {
   line: number;
   column: number;
 }
+
+/** A location to reveal in one document, in one editor group. */
+export type EditorReveal = EditorLocation & { key: string; group: GroupId };
 
 type SavedSource = (
   | { kind: "workspace"; workspaceId: string; relativePath: string }
@@ -48,6 +73,7 @@ export interface EditorTab {
   changedOnDisk: boolean;
   languageOverride?: string;
   saveError?: string;
+  recovered?: boolean;
 }
 
 type NewTab = Omit<EditorTab, "key" | "revision" | "uri">;
@@ -113,6 +139,26 @@ function writeFile(source: SavedSource, content: string) {
   });
 }
 
+/** Read failures that mean the saved source no longer matches disk. */
+const missingOnDisk = [
+  "FILE_CONFLICT",
+  "NOT_FOUND",
+  "NOT_FILE",
+  "OUTSIDE_WORKSPACE",
+  "INVALID_ENCODING",
+  "FILE_TOO_LARGE",
+];
+
+/** Compares disk with the saved version; `undefined` if it cannot tell. */
+async function diskChanged(source: SavedSource) {
+  try {
+    const file = await readFile(source);
+    return file.version !== source.version;
+  } catch (cause) {
+    return missingOnDisk.includes(String(cause)) ? true : undefined;
+  }
+}
+
 export const AUTO_SAVE_DELAY_MS = 1000;
 export const autoSaveKey = "turing:auto-save:v1";
 
@@ -128,7 +174,12 @@ type Operation = "foreground" | "automatic";
 type DiscardAction =
   WorkspaceCommands["editor_confirm_discard"]["args"]["action"];
 
-export function useEditor(workspaceId: string | undefined, native: boolean) {
+export function useEditor(
+  workspaceId: string | undefined,
+  native: boolean,
+  workspacePath?: string,
+) {
+  const recovery = useDraftRecovery(native);
   const [tabs, setTabs] = useState<EditorTab[]>([]);
   // Always the latest tabs, so work resumed after an await never acts on, or
   // writes back, a stale snapshot. Every change goes through `commitTabs`.
@@ -136,8 +187,12 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const currentWorkspace = useRef(workspaceId);
   const revisions = useRef(0);
   const inflight = useRef<Promise<unknown> | null>(null);
-  const [activeKey, setActiveKey] = useState<string>();
-  const [reveal, setReveal] = useState<EditorLocation & { key: string }>();
+  // Groups are views of the documents in `tabs`. Like tabs, every change
+  // goes through `commitGroups` so resumed work reads the latest layout.
+  const [groups, setGroups] = useState<EditorGroups>(createGroups);
+  const latestGroups = useRef<EditorGroups>(groups);
+  const activeKey = activeDocument(groups);
+  const [reveal, setReveal] = useState<EditorReveal>();
   const [operation, setOperation] = useState<Operation | null>(null);
   const [autoSavePreference, setAutoSave] = useState(loadAutoSave);
   const autoSave = native && autoSavePreference;
@@ -148,7 +203,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const untitledCount = useRef(0);
   const tabSequence = useRef(0);
   const active = tabs.find((tab) => tab.key === activeKey);
-  const dirty = tabs.some((tab) => tab.draft !== tab.content);
+  const dirty = tabs.some(isDirty);
   const canSave =
     native &&
     !!active &&
@@ -159,8 +214,29 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   }, [workspaceId]);
 
   function commitTabs(next: (previous: EditorTab[]) => EditorTab[]) {
-    latest.current = next(latest.current);
+    const previous = latest.current;
+    latest.current = next(previous);
+    recovery.track(previous, latest.current, workspacePath);
     setTabs(latest.current);
+  }
+
+  function commitGroups(next: (previous: EditorGroups) => EditorGroups) {
+    latestGroups.current = next(latestGroups.current);
+    setGroups(latestGroups.current);
+  }
+
+  function showDocument(key: string, group?: GroupId) {
+    commitGroups((previous) => openDocument(previous, key, group));
+  }
+
+  function forgetDocuments(keys: Iterable<string>) {
+    const closing = new Set(keys);
+    if (closing.size)
+      commitGroups((previous) => removeDocuments(previous, closing));
+  }
+
+  function revealIn(key: string, location: EditorLocation) {
+    setReveal({ key, group: latestGroups.current.activeGroup, ...location });
   }
 
   const find = (key: string) => latest.current.find((tab) => tab.key === key);
@@ -172,6 +248,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
             tab.source.kind !== "untitled" &&
             tab.draft !== tab.content &&
             !tab.changedOnDisk &&
+            !tab.recovered &&
             !tab.saveError,
         )
       : undefined;
@@ -224,17 +301,41 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     return invokeWorkspace("editor_confirm_discard", { action });
   }
 
-  function select(key: string) {
+  /** Shows a document in a group, the active group by default. */
+  function select(key: string, group?: GroupId) {
     if (pending.current) return;
-    setActiveKey(key);
+    showDocument(key, group);
     setError(undefined);
+  }
+
+  function focusGroup(group: GroupId) {
+    commitGroups((previous) => focusGroupView(previous, group));
+  }
+
+  function focusNextGroup(direction: 1 | -1) {
+    commitGroups((previous) => focusAdjacentGroup(previous, direction));
+  }
+
+  /** Opens a group's shown document in a new group to its right. */
+  function splitEditor(group?: GroupId) {
+    if (pending.current) return;
+    commitGroups((previous) => splitGroup(previous, group));
+  }
+
+  /** Moves the active document into the next group to the right. */
+  function moveEditorToNextGroup() {
+    if (pending.current) return;
+    commitGroups((previous) => {
+      const key = activeDocument(previous);
+      return key ? moveDocumentToNextGroup(previous, key) : previous;
+    });
   }
 
   function navigate(target: NavigationTarget, location: EditorLocation) {
     if (pending.current) return;
     if ("tab" in target) {
       select(target.tab.key);
-      setReveal({ key: target.tab.key, ...location });
+      revealIn(target.tab.key, location);
     } else {
       void open(target.relativePath, location);
     }
@@ -251,7 +352,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         revision: ++revisions.current,
       },
     ]);
-    setActiveKey(key);
+    showDocument(key);
     return key;
   }
 
@@ -265,7 +366,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     );
     if (existing) {
       select(existing.key);
-      if (location) setReveal({ key: existing.key, ...location });
+      if (location) revealIn(existing.key, location);
       return;
     }
     return perform(async () => {
@@ -276,7 +377,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       // The workspace was closed or replaced while reading: drop the reply.
       if (currentWorkspace.current !== workspaceId) return;
       const key = addTab(workspaceTab(file));
-      if (location) setReveal({ key, ...location });
+      if (location) revealIn(key, location);
     });
   }
 
@@ -294,10 +395,72 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
           tab.source.kind === "selected" && tab.source.fileId === file.fileId,
       );
       if (existing) {
-        setActiveKey(existing.key);
+        showDocument(existing.key);
       } else {
         addTab(selectedTab(file));
       }
+    });
+  }
+
+  function restoreDraft(entry: RecoveryDraft) {
+    return perform(async () => {
+      const source = entry.source;
+      let tab: NewTab | undefined;
+      if (
+        source.kind === "workspace" &&
+        workspaceId &&
+        workspacePath === source.root &&
+        !latest.current.some(
+          ({ source: open }) =>
+            open.kind === "workspace" &&
+            open.workspaceId === workspaceId &&
+            open.relativePath === source.relativePath,
+        )
+      ) {
+        try {
+          const file = await invokeWorkspace("fs_read_file", {
+            workspaceId,
+            relativePath: source.relativePath,
+          });
+          if (currentWorkspace.current !== workspaceId) return;
+          if (file.content === entry.draft) {
+            recovery.remove(entry.id, entry);
+            addTab(workspaceTab(file));
+            return;
+          }
+          tab = {
+            ...workspaceTab(file),
+            source: {
+              kind: "workspace",
+              workspaceId,
+              relativePath: source.relativePath,
+              version: source.version,
+            },
+            changedOnDisk: file.version !== source.version,
+          };
+        } catch (cause) {
+          if (!missingOnDisk.includes(String(cause))) throw cause;
+        }
+      }
+      const key = addTab({
+        ...(tab ?? {
+          name: `Recovered-${++untitledCount.current}-${entry.name}`,
+          title: entry.title,
+          source: { kind: "untitled" },
+          content: "",
+          changedOnDisk: false,
+        }),
+        draft: entry.draft,
+        recovered: true,
+        languageOverride: entry.languageOverride,
+      });
+      recovery.recovered(entry, key);
+    });
+  }
+
+  function discardDraft(entry: RecoveryDraft) {
+    return perform(async () => {
+      if (await confirmDiscard("tab")) recovery.remove(entry.id, entry);
     });
   }
 
@@ -406,29 +569,68 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     await invokeWorkspace("file_close", { fileId });
   }
 
-  function close({ key }: EditorTab) {
+  /**
+   * Closes a document's tab in one group (the active one by default). The
+   * document itself closes only with its last view.
+   */
+  function close({ key }: EditorTab, group?: GroupId) {
     return perform(async () => {
       const tab = find(key);
       if (!tab) return;
-      if (tab.draft !== tab.content && !(await confirmDiscard("tab"))) return;
-      await releaseFile(tab, latest.current);
-      const index = latest.current.findIndex((item) => item.key === key);
-      commitTabs((previous) => previous.filter((item) => item.key !== key));
-      const remaining = latest.current;
-      setActiveKey((current) =>
-        current === key
-          ? remaining[Math.min(index, remaining.length - 1)]?.key
-          : current,
+      const from = group ?? latestGroups.current.activeGroup;
+      const shown = latestGroups.current.groups.some(
+        ({ id, keys }) => id === from && keys.includes(key),
       );
+      if (!shown) return;
+      if (viewCount(latestGroups.current, key) > 1) {
+        commitGroups((previous) => closeDocumentInGroup(previous, key, from));
+        return;
+      }
+      if (isDirty(tab) && !(await confirmDiscard("tab"))) return;
+      await releaseFile(tab, latest.current);
+      commitTabs((previous) => previous.filter((item) => item.key !== key));
+      forgetDocuments([key]);
+    });
+  }
+
+  /**
+   * Closes a group. Documents only it was showing close with it, after a
+   * discard confirmation for each unsaved one.
+   */
+  function closeGroup(group?: GroupId) {
+    return perform(async () => {
+      const id = group ?? latestGroups.current.activeGroup;
+      if (latestGroups.current.groups.length < 2) return;
+      const closing = documentsOnlyIn(latestGroups.current, id).flatMap(
+        (key) => find(key) ?? [],
+      );
+      for (const tab of closing)
+        if (isDirty(tab) && !(await confirmDiscard("tab"))) return;
+      const remaining = [...closing];
+      try {
+        while (remaining.length) {
+          await releaseFile(remaining[0], latest.current);
+          remaining.shift();
+        }
+      } finally {
+        // A failed grant release keeps the group and its unreleased tabs.
+        const kept = new Set(remaining.map(({ key }) => key));
+        const closed = closing.flatMap(({ key }) =>
+          kept.has(key) ? [] : [key],
+        );
+        commitTabs((previous) =>
+          previous.filter(({ key }) => !closed.includes(key)),
+        );
+        if (!kept.size)
+          commitGroups((previous) => closeGroupView(previous, id));
+        forgetDocuments(closed);
+      }
     });
   }
 
   function closeAll() {
     return perform(async () => {
-      if (
-        latest.current.some((tab) => tab.draft !== tab.content) &&
-        !(await confirmDiscard("closeAll"))
-      )
+      if (latest.current.some(isDirty) && !(await confirmDiscard("closeAll")))
         return;
       const remaining = [...latest.current];
       try {
@@ -438,11 +640,11 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         }
       } finally {
         const kept = new Set(remaining.map(({ key }) => key));
-        commitTabs((previous) => previous.filter(({ key }) => kept.has(key)));
-        const left = latest.current;
-        setActiveKey((current) =>
-          left.some(({ key }) => key === current) ? current : left[0]?.key,
+        const closed = latest.current.flatMap(({ key }) =>
+          kept.has(key) ? [] : [key],
         );
+        commitTabs((previous) => previous.filter(({ key }) => kept.has(key)));
+        forgetDocuments(closed);
       }
     });
   }
@@ -485,6 +687,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       update(active, {
         ...selectedTab({ ...file, content: active.draft }),
         saveError: undefined,
+        recovered: false,
       });
       if (
         active.source.kind === "selected" &&
@@ -506,6 +709,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
         update(tab, {
           content: draft,
           savedVersion: version,
+          recovered: false,
           source: { ...source, version },
           changedOnDisk: false,
           saveError: undefined,
@@ -570,6 +774,7 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       update(active, {
         content: file.content,
         draft: file.content,
+        recovered: false,
         source: { ...source, version: file.version },
         changedOnDisk: false,
         saveError: undefined,
@@ -582,20 +787,13 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
       const workspaceTabs = latest.current.filter(
         (tab) => tab.source.kind === "workspace",
       );
-      if (
-        workspaceTabs.some((tab) => tab.draft !== tab.content) &&
-        !(await confirmDiscard("workspace"))
-      )
+      if (workspaceTabs.some(isDirty) && !(await confirmDiscard("workspace")))
         return;
       if (await action()) {
-        const closing = new Set(workspaceTabs.map(({ key }) => key));
         commitTabs((previous) =>
           previous.filter((tab) => tab.source.kind !== "workspace"),
         );
-        const remaining = latest.current;
-        setActiveKey((current) =>
-          current && closing.has(current) ? remaining.at(-1)?.key : current,
-        );
+        forgetDocuments(workspaceTabs.map(({ key }) => key));
       }
     });
   }
@@ -608,7 +806,13 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     setExitPending(false);
     void perform(async () => {
       if (!dirty || (await confirmDiscard("exit"))) {
-        await invokeWorkspace("editor_exit", undefined);
+        recovery.track(latest.current, [], workspacePath);
+        try {
+          await invokeWorkspace("editor_exit", undefined);
+        } catch (cause) {
+          recovery.track([], latest.current, workspacePath);
+          throw cause;
+        }
       }
     });
   });
@@ -640,27 +844,43 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
   const checkActive = useEffectEvent(async () => {
     const tab = active;
     if (!tab || tab.source.kind === "untitled" || pending.current) return;
-    let changed: boolean;
-    try {
-      const latest = await readFile(tab.source);
-      changed = latest.version !== tab.source.version;
-    } catch (cause) {
-      if (
-        ![
-          "FILE_CONFLICT",
-          "NOT_FOUND",
-          "NOT_FILE",
-          "OUTSIDE_WORKSPACE",
-          "INVALID_ENCODING",
-          "FILE_TOO_LARGE",
-        ].includes(String(cause))
-      )
-        return;
-      changed = true;
-    }
+    const changed = await diskChanged(tab.source);
+    if (changed === undefined) return;
     if (!pending.current && changed !== tab.changedOnDisk)
       update(tab, { changedOnDisk: changed });
   });
+
+  /**
+   * Revalidates every open tab of `id` that a watcher change set touches
+   * (all of them on rescan). Only the saved version is compared: drafts are
+   * never replaced, and a tab whose file was renamed or removed outside
+   * Turing is flagged instead of silently following the new name. Replies
+   * apply only to the revision they were issued for, so a concurrent save,
+   * reload or rename wins.
+   */
+  async function applyDiskChanges(id: string, changes: WorkspaceChanges) {
+    if (currentWorkspace.current !== id) return;
+    const affected = latest.current.filter(
+      (tab) =>
+        tab.source.kind === "workspace" &&
+        tab.source.workspaceId === id &&
+        touches(changes, tab.source.relativePath),
+    );
+    await Promise.all(
+      affected.map(async (tab) => {
+        if (tab.source.kind !== "workspace") return;
+        const changed = await diskChanged(tab.source);
+        const current = find(tab.key);
+        if (
+          changed === undefined ||
+          current?.revision !== tab.revision ||
+          current.changedOnDisk === changed
+        )
+          return;
+        update(tab, { changedOnDisk: changed });
+      }),
+    );
+  }
 
   useEffect(() => {
     if (!activeKey || !native) return;
@@ -677,8 +897,13 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
 
   return {
     tabs,
+    groups,
     active,
     reveal,
+    recoveryDrafts: recovery.available,
+    recoveryError: recovery.error,
+    restoreDraft,
+    discardDraft,
     busy,
     error: error ?? active?.saveError,
     readOnly: operation === "foreground",
@@ -694,11 +919,17 @@ export function useEditor(workspaceId: string | undefined, native: boolean) {
     renameWorkspaceEntry,
     close,
     closeAll,
+    closeGroup,
+    focusGroup,
+    focusNextGroup,
+    splitEditor,
+    moveEditorToNextGroup,
     edit,
     save,
     saveAs,
     setLanguage,
     reload,
     changeWorkspace,
+    applyDiskChanges,
   };
 }

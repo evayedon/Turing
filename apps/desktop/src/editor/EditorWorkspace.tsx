@@ -1,14 +1,42 @@
-import { ChevronRight, FileCode2, X } from "lucide-react";
-import { lazy, Suspense } from "react";
+import { ChevronRight, Columns2, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { EditorCommands } from "../shell/commands";
 import type { LanguageController } from "../language/use-language";
 import type { Problem } from "../language/problems";
 import type { EditorInfo } from "./editor-info";
-import type { useEditor } from "./use-editor";
+import { openDocuments } from "./editor-groups";
+import type { EditorGroup } from "./editor-groups";
+import { EditorTabStrip } from "./EditorTabStrip";
+import { ModelRegistry } from "./model-registry";
+import type { TextModels } from "./MonacoHost";
+import type { EditorTab, useEditor } from "./use-editor";
 
 const MonacoHost = lazy(() => import("./MonacoHost"));
 
+type EditorState = ReturnType<typeof useEditor>;
+
+function Breadcrumbs({ tab, label }: { tab: EditorTab; label: string }) {
+  return (
+    <nav className="breadcrumbs" aria-label={label} title={tab.title}>
+      {(tab.source.kind === "workspace"
+        ? tab.source.relativePath.split("/")
+        : [tab.name]
+      ).map((part, index) => (
+        <span key={index}>
+          {index > 0 && <ChevronRight size={12} aria-hidden="true" />}
+          {part}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+/**
+ * The editor area: one or more side-by-side editor groups. Each group has
+ * its own tabs and Monaco view; a document open in several groups shares
+ * one text model, held in a registry that lives as long as this component.
+ */
 export function EditorWorkspace({
   runControls,
   onCommandsReady,
@@ -16,14 +44,22 @@ export function EditorWorkspace({
   navigate,
   onSaveCommand,
   tabs,
+  groups,
   active,
   reveal,
+  recoveryDrafts,
+  recoveryError,
+  restoreDraft,
+  discardDraft,
   busy,
   readOnly,
   error,
   canSave,
   select,
   close,
+  closeGroup,
+  focusGroup,
+  splitEditor,
   edit,
   save,
   saveAs,
@@ -32,7 +68,7 @@ export function EditorWorkspace({
   emptyContent,
   language,
   problems,
-}: ReturnType<typeof useEditor> & {
+}: EditorState & {
   runControls?: ReactNode;
   language?: LanguageController;
   problems?: Problem[];
@@ -42,145 +78,211 @@ export function EditorWorkspace({
   onInfo: (info: EditorInfo) => void;
   emptyContent: ReactNode;
 }) {
-  return (
-    <>
-      {tabs.length > 0 && (
-        <div className="editor-toolbar">
-          <div className="editor-tabs" role="tablist" aria-label="Open files">
-            {tabs.map((tab) => {
-              const { name } = tab;
-              const dirty = tab.draft !== tab.content;
-              return (
-                <div className="editor-tab" key={tab.key}>
+  const [models] = useState<TextModels>(() => new ModelRegistry());
+  // Runs after every group's view has switched models, so a model is
+  // disposed only once no group lists its document.
+  useLayoutEffect(() => {
+    models.retain(openDocuments(groups));
+  }, [models, groups]);
+  useEffect(
+    () => () => {
+      models.clear();
+    },
+    [models],
+  );
+  const multiple = groups.groups.length > 1;
+
+  function pane(group: EditorGroup, index: number) {
+    const isActive = group.id === groups.activeGroup;
+    const shown = tabs.find(({ key }) => key === group.activeKey);
+    const groupTabs = group.keys.flatMap(
+      (key) => tabs.find((tab) => tab.key === key) ?? [],
+    );
+    const number = index + 1;
+    return (
+      <section
+        key={group.id}
+        className="editor-group"
+        data-editor-group={group.id}
+        data-inactive={multiple && !isActive ? "" : undefined}
+        aria-label={multiple ? `Editor group ${number}` : undefined}
+        onFocus={() => {
+          if (!isActive) focusGroup(group.id);
+        }}
+      >
+        {groupTabs.length > 0 && (
+          <div className="editor-toolbar">
+            <EditorTabStrip
+              label={multiple ? `Open files, group ${number}` : "Open files"}
+              tabs={groupTabs}
+              active={shown}
+              busy={busy}
+              select={(key) => select(key, group.id)}
+              close={(tab) => close(tab, group.id)}
+            />
+            <div className="editor-actions">
+              <button
+                type="button"
+                className="editor-icon-button"
+                disabled={busy || !shown}
+                aria-label="Split Editor Right"
+                title="Split Editor Right"
+                onClick={() => splitEditor(group.id)}
+              >
+                <Columns2 size={14} aria-hidden="true" />
+              </button>
+              {multiple && (
+                <button
+                  type="button"
+                  className="editor-icon-button"
+                  disabled={busy}
+                  aria-label={`Close editor group ${number}`}
+                  title="Close Editor Group"
+                  onClick={() => void closeGroup(group.id)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              )}
+              {isActive && (
+                <>
                   <button
                     type="button"
-                    role="tab"
-                    title={tab.title}
-                    aria-selected={active === tab}
-                    aria-label={dirty ? `${name} (unsaved)` : name}
-                    disabled={busy}
-                    tabIndex={active === tab ? 0 : -1}
-                    onClick={() => select(tab.key)}
-                    onKeyDown={(event) => {
-                      const index = tabs.findIndex(
-                        (item) => item.key === tab.key,
-                      );
-                      const next =
-                        event.key === "ArrowLeft"
-                          ? (index + tabs.length - 1) % tabs.length
-                          : event.key === "ArrowRight"
-                            ? (index + 1) % tabs.length
-                            : event.key === "Home"
-                              ? 0
-                              : event.key === "End"
-                                ? tabs.length - 1
-                                : undefined;
-                      if (next === undefined) return;
-                      event.preventDefault();
-                      const tablist =
-                        event.currentTarget.closest('[role="tablist"]');
-                      const buttons =
-                        tablist?.querySelectorAll<HTMLButtonElement>(
-                          '[role="tab"]',
-                        );
-                      buttons?.[next]?.focus();
-                      select(tabs[next].key);
-                    }}
+                    disabled={busy || !canSave}
+                    onClick={() =>
+                      onSaveCommand
+                        ? onSaveCommand()
+                        : void (active?.source.kind === "untitled"
+                            ? saveAs()
+                            : save())
+                    }
                   >
-                    <FileCode2 size={14} aria-hidden="true" />
-                    <span>{name}</span>
-                    {dirty && (
-                      <span className="editor-dirty" aria-hidden="true">
-                        {" "}
-                        ●
-                      </span>
-                    )}
+                    {active?.source.kind === "untitled" ? "Save As…" : "Save"}
                   </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    aria-label={`Close ${name}`}
-                    onClick={() => void close(tab)}
-                  >
-                    <X size={13} aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })}
+                  {runControls}
+                </>
+              )}
+            </div>
           </div>
-          <button
-            type="button"
-            disabled={busy || !canSave}
-            onClick={() =>
-              onSaveCommand
-                ? onSaveCommand()
-                : void (active?.source.kind === "untitled" ? saveAs() : save())
+        )}
+        {shown && (
+          <Breadcrumbs
+            tab={shown}
+            label={isActive ? "Active file path" : `File path, group ${number}`}
+          />
+        )}
+        {isActive && error && (
+          <p className="editor-notice" role="alert">
+            {error}
+          </p>
+        )}
+        {shown?.recovered && (
+          <p className="editor-notice" role="status">
+            {shown.changedOnDisk
+              ? "The file on disk changed since this draft was saved. Use Save As to keep a separate copy."
+              : shown.source.kind === "untitled"
+                ? "Recovered copy. Use Save As to choose where to save it."
+                : "Recovered draft. Save when you are ready to write it to disk."}
+          </p>
+        )}
+        {shown?.changedOnDisk && (
+          <div className="editor-notice">
+            <span>This file changed on disk.</span>
+            {isActive && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void reload()}
+              >
+                Reload from disk
+              </button>
+            )}
+          </div>
+        )}
+        {shown ? (
+          <Suspense
+            fallback={
+              <p className="panel-message" role="status">
+                Loading editor…
+              </p>
             }
           >
-            {active?.source.kind === "untitled" ? "Save As…" : "Save"}
-          </button>
-          {runControls}
-        </div>
-      )}
-      {active && (
-        <nav
-          className="breadcrumbs"
-          aria-label="Active file path"
-          title={active.title}
-        >
-          {(active.source.kind === "workspace"
-            ? active.source.relativePath.split("/")
-            : [active.name]
-          ).map((part, index) => (
-            <span key={index}>
-              {index > 0 && <ChevronRight size={12} aria-hidden="true" />}
-              {part}
-            </span>
-          ))}
-        </nav>
-      )}
-      {error && (
+            <MonacoHost
+              models={models}
+              group={group.id}
+              primary={index === 0}
+              focused={isActive}
+              active={shown}
+              reveal={reveal}
+              tabs={tabs}
+              readOnly={readOnly}
+              onChange={edit}
+              onInfo={onInfo}
+              onCommandsReady={onCommandsReady}
+              workspaceId={workspaceId}
+              onNavigate={navigate}
+              language={language}
+              problems={problems}
+            />
+          </Suspense>
+        ) : busy ? (
+          <p className="panel-message" role="status">
+            Working…
+          </p>
+        ) : (
+          emptyContent
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <>
+      {recoveryError && (
         <p className="editor-notice" role="alert">
-          {error}
+          {recoveryError}
         </p>
       )}
-      {active?.changedOnDisk && (
-        <div className="editor-notice">
-          <span>This file changed on disk.</span>
-          <button type="button" disabled={busy} onClick={() => void reload()}>
-            Reload from disk
-          </button>
-        </div>
+      {recoveryDrafts.length > 0 && (
+        <details className="editor-recovery">
+          <summary>Recover unsaved drafts ({recoveryDrafts.length})</summary>
+          {recoveryDrafts.some(({ source }) => source.kind === "workspace") && (
+            <p>Open the original workspace to restore a draft to its file.</p>
+          )}
+          <ul>
+            {recoveryDrafts.map((entry) => (
+              <li key={entry.id}>
+                <span
+                  title={
+                    entry.source.kind === "workspace"
+                      ? `${entry.source.root}/${entry.title}`
+                      : entry.title
+                  }
+                >
+                  {entry.name}
+                  {entry.source.kind === "workspace" && (
+                    <small>{entry.source.root}</small>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void restoreDraft(entry)}
+                >
+                  Restore <span className="visually-hidden">{entry.name}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void discardDraft(entry)}
+                >
+                  Discard <span className="visually-hidden">{entry.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
-      {active ? (
-        <Suspense
-          fallback={
-            <p className="panel-message" role="status">
-              Loading editor…
-            </p>
-          }
-        >
-          <MonacoHost
-            active={active}
-            reveal={reveal}
-            tabs={tabs}
-            readOnly={readOnly}
-            onChange={edit}
-            onInfo={onInfo}
-            onCommandsReady={onCommandsReady}
-            workspaceId={workspaceId}
-            onNavigate={navigate}
-            language={language}
-            problems={problems}
-          />
-        </Suspense>
-      ) : busy ? (
-        <p className="panel-message" role="status">
-          Working…
-        </p>
-      ) : (
-        emptyContent
-      )}
+      <div className="editor-groups">{groups.groups.map(pane)}</div>
     </>
   );
 }

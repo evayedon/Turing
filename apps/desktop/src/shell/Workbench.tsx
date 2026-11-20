@@ -1,3 +1,5 @@
+import { canMoveDocumentToNextGroup } from "../editor/editor-groups";
+import { isDirty } from "../editor/use-draft-recovery";
 import {
   CircleDot,
   FilePlus,
@@ -33,6 +35,7 @@ import {
 import { clearRecents, useRecents } from "./recent";
 import type { Recent } from "./recent";
 import { useExplorer } from "../explorer/use-explorer";
+import { useWorkspaceWatcher } from "../explorer/use-workspace-watcher";
 import { GitPanel } from "../git/GitPanel";
 import { useGit } from "../git/use-git";
 import {
@@ -103,8 +106,20 @@ function Panel({
 
 export function Workbench() {
   const explorer = useExplorer();
-  const editor = useEditor(explorer.workspace?.id, explorer.native);
+  const editor = useEditor(
+    explorer.workspace?.id,
+    explorer.native,
+    explorer.workspace?.displayPath,
+  );
   const git = useGit(explorer.workspace?.id, explorer.native);
+  useWorkspaceWatcher(
+    explorer.workspace?.id,
+    explorer.native,
+    (id, changes) => {
+      void explorer.applyChanges(id, changes);
+      void editor.applyDiskChanges(id, changes);
+    },
+  );
   const execution = useExecution();
   const language = useLanguage(
     explorer.workspace?.id,
@@ -317,6 +332,8 @@ export function Workbench() {
     canSave: editor.canSave,
     autoSave: editor.autoSave,
     tabCount: editor.tabs.length,
+    groupCount: editor.groups.groups.length,
+    canMoveEditorToNextGroup: canMoveDocumentToNextGroup(editor.groups),
     hasWorkspace: !!explorer.workspace,
     workspaceBusy,
     recentCount: recents.length,
@@ -352,6 +369,10 @@ export function Workbench() {
       if (active) void editor.close(active);
     },
     closeAllEditors: editor.closeAll,
+    splitEditor: () => editor.splitEditor(),
+    moveEditorToNextGroup: editor.moveEditorToNextGroup,
+    focusEditorGroup: editor.focusNextGroup,
+    closeEditorGroup: () => void editor.closeGroup(),
     selectSidebar,
     toggleSidebar: toggleSidebarFromMenu,
     toggleSourceControl: () => toggleSidebar("git"),
@@ -428,7 +449,7 @@ export function Workbench() {
   }, []);
 
   const live = active && info?.key === active.key ? info : undefined;
-  const changed = active && active.draft !== active.content;
+  const changed = active && isDirty(active);
   const source = active?.source;
   const saveState = editor.busy
     ? "Working…"
