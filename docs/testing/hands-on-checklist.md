@@ -1,8 +1,10 @@
-# Hands-on check (about 15 minutes)
+# Turing Core hands-on acceptance
 
-Tick each box as you go. If something is wrong, note the step number, what you
-expected and what happened, and take a screenshot. Everything here is already
-covered by automated tests; this is about how it feels in the real app.
+Run this checklist in the native Turing build on Windows, macOS, and Linux
+using the same commit. Record the commit, OS version, and a pass, fail, or
+blocked result for each section. For a failure or blocker, include the step
+number, expected result, actual result, and any relevant output or screenshot.
+Builds and lifecycle smoke tests provide separate evidence.
 
 ## Before you start
 
@@ -26,11 +28,25 @@ covered by automated tests; this is about how it feels in the real app.
    - `notes.md` with a few lines of text.
 3. For steps marked **(clangd)**, clangd must be installed. On this Mac it is
    (Xcode Command Line Tools).
+4. Use a disposable folder and local Git repository. Create `run.py` with
+   `print("turing acceptance")`. Initialize Git, set a repository-local test
+   identity, and commit the fixture files before opening the project:
+
+   ```text
+   git init
+   git config user.name "Turing Acceptance"
+   git config user.email "turing-acceptance@example.invalid"
+   git add main.cpp util.hpp notes.md run.py
+   git commit -m "Add acceptance fixture"
+   ```
+
+   The Run check requires Python 3.7 or newer on PATH. The shortcuts below
+   use macOS notation. On Windows and Linux, use Ctrl in place of Command.
 
 ## 1. Opening and the terminal
 
-- [ ] 1.1 **File → Open Folder…** and choose `~/turing-check`. Explorer lists
-      the three files.
+- [ ] 1.1 **File → Open Folder…** and choose the fixture folder. Explorer lists
+      all four files.
 - [ ] 1.2 Open the bottom panel (bottom-left panel icon). The Terminal tab
       shows a working shell prompt **without** clicking "Start terminal".
 - [ ] 1.3 The tabs read **Terminal**, **Problems**, **Output**, each with a
@@ -59,10 +75,12 @@ covered by automated tests; this is about how it feels in the real app.
       disk, without losing anything you typed in Turing.
 - [ ] 3.3 In Explorer, rename a file using another app or the terminal
       (`mv notes.md notes2.md`). Explorer updates by itself.
-- [ ] 3.4 Type something in `main.cpp` but **don't save**. Quit Turing
-      forcefully (in the terminal running it, press Ctrl+C). Start it again
-      with `pnpm dev:desktop` and reopen the folder. The editor area shows
-      **Recover unsaved drafts (1)**; expand it and choose Restore. Your unsaved text comes back, still unsaved.
+- [ ] 3.4 With Auto Save off, type a distinctive line in `main.cpp` and wait
+      at least one second for the draft snapshot. Force-terminate the test
+      Turing process using the OS process manager. Relaunch, reopen the
+      folder through the picker, and restore the draft from **Recover
+      unsaved drafts**. The buffer contains the new line and remains unsaved.
+      Check that the file on disk still contains the last explicitly saved text.
 
 ## 4. Problems and navigation **(clangd)**
 
@@ -94,8 +112,20 @@ covered by automated tests; this is about how it feels in the real app.
       Escape, open a file from Explorer, switch dock tabs, open and close the
       command palette. Focus is always visible and never gets stuck.
 
+## 7. Running and version-controlling the project
+
+- [ ] 7.1 Open `run.py`, then choose **Run File**. Output contains
+      `turing acceptance` and reports exit code zero.
+- [ ] 7.2 Change the printed text, save, and rerun. Output contains the new
+      text. In the integrated terminal, `git status --short` lists `run.py` as
+      modified.
+- [ ] 7.3 Open Source Control and inspect the diff for `run.py`. Stage just
+      that file and commit it. Verify with `git show --name-only HEAD` in
+      the integrated terminal that the commit contains `run.py` alone.
+
 ## When you are done
 
-Send back the numbers of any unticked steps with a short note and screenshots.
-Screen-reader checks (VoiceOver, NVDA, Orca) are separate: see
-`docs/accessibility/screen-reader-smoke.md` once accessibility work lands.
+Use the [draft recovery scenarios](draft-recovery-manual.md) to extend the
+crash check on macOS. Use the
+[screen-reader checklist](../accessibility/screen-reader-smoke.md) for
+VoiceOver, NVDA, and Orca.
