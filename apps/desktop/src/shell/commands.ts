@@ -70,6 +70,7 @@ export type CommandId =
   | "assistant"
   | "goFile"
   | "goLine"
+  | "workspaceSymbol"
   | "nextProblem"
   | "previousProblem"
   | "run"
@@ -218,6 +219,7 @@ export const menus: { label: string; entries: MenuRow[] }[] = [
       "goFile",
       "goLine",
       "symbol",
+      "workspaceSymbol",
       "-",
       "nextProblem",
       "previousProblem",

@@ -809,6 +809,20 @@ svg {
   padding: 7px var(--nebula-s2);
   border-radius: var(--nebula-radius);
 }
+.palette-option-label,
+.palette-option-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-option-detail {
+  flex: 0 1 60%;
+  margin-inline-start: var(--nebula-s2);
+  text-align: end;
+  color: var(--nebula-muted);
+  font-size: var(--nebula-xs);
+}
 .palette li:hover {
   background: var(--nebula-hover);
 }

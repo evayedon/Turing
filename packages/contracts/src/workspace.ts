@@ -62,6 +62,35 @@ export interface SearchResponse {
   skippedFiles: number;
 }
 
+export type WorkspaceSymbolKind =
+  | "class"
+  | "constant"
+  | "enum"
+  | "function"
+  | "interface"
+  | "macro"
+  | "module"
+  | "struct"
+  | "trait"
+  | "type"
+  | "variable";
+
+export interface WorkspaceSymbol {
+  name: string;
+  kind: WorkspaceSymbolKind;
+  relativePath: string;
+  /** Zero-based line and UTF-16 character offset. */
+  line: number;
+  character: number;
+}
+
+export interface SymbolsResponse {
+  generation: number;
+  complete: boolean;
+  truncated: boolean;
+  symbols: WorkspaceSymbol[];
+}
+
 export type WorkspaceError =
   | "BUSY"
   | "WINDOW_LIMIT"
@@ -111,6 +140,10 @@ export interface WorkspaceCommands {
   };
   fs_list_directory: { args: WorkspacePath; result: DirectoryEntry[] };
   fs_read_file: { args: WorkspacePath; result: TextFile };
+  workspace_symbols_query: {
+    args: { workspaceId: string; query: string; limit: number };
+    result: SymbolsResponse;
+  };
   workspace_search_begin: {
     args: { workspaceId: string; options: SearchOptions };
     result: string;

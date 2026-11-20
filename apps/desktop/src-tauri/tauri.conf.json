@@ -33,6 +33,7 @@
           "permissions": [
             "allow-workspace-readonly",
             "allow-workspace-search",
+            "allow-workspace-symbols",
             "allow-workspace-watch",
             "allow-workspace-edit",
             "allow-workspace-entry-mutations",

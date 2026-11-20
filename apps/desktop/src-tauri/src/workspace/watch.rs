@@ -152,6 +152,7 @@ pub(crate) fn classify(event: &notify::Result<Event>) -> Signal<'_> {
 #[derive(Debug, Default)]
 pub(crate) struct Inbox {
     pending: Coalescer,
+    symbols: Coalescer,
     closed: bool,
 }
 
@@ -179,10 +180,16 @@ pub(crate) fn deliver(inbox: &Mutex<Inbox>, root: &Path, event: notify::Result<E
     let now = Instant::now();
     match classify(&event) {
         Signal::Ignore => {}
-        Signal::Rescan => inbox.pending.rescan(now),
+        Signal::Rescan => {
+            inbox.pending.rescan(now);
+            inbox.symbols.rescan(now);
+        }
         Signal::Paths(paths) => {
             for path in paths {
                 if let Some(relative) = relative_path(root, path) {
+                    if !relative.split('/').any(super::search::ignored_directory) {
+                        inbox.symbols.path(relative.clone(), now);
+                    }
                     inbox.pending.path(relative, now);
                 }
             }
@@ -219,9 +226,29 @@ impl Watch {
         lock(&self.inbox).pending.take(now)
     }
 
+    pub(super) fn symbol_hints(&self) -> SymbolHints {
+        SymbolHints(Arc::clone(&self.inbox))
+    }
+
     #[cfg(test)]
     pub(crate) fn inbox(&self) -> Arc<Mutex<Inbox>> {
         Arc::clone(&self.inbox)
+    }
+}
+
+/// Independent consumer so Explorer polling cannot drain the index's hints.
+pub(super) struct SymbolHints(Arc<Mutex<Inbox>>);
+
+impl SymbolHints {
+    #[cfg(test)]
+    pub(super) fn test_inbox() -> (Self, Arc<Mutex<Inbox>>) {
+        let inbox = Arc::new(Mutex::new(Inbox::default()));
+        (Self(Arc::clone(&inbox)), inbox)
+    }
+
+    pub(super) fn take(&self, now: Instant) -> WorkspaceChanges {
+        let mut inbox = lock(&self.0);
+        inbox.symbols.take(now)
     }
 }
 

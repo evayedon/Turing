@@ -70,6 +70,7 @@ import { adjacentProblem, orderProblems } from "../language/problem-navigation";
 import { useLanguage } from "../language/use-language";
 import { BottomDock } from "./BottomDock";
 import { CommandPalette } from "./CommandPalette";
+import { WorkspaceSymbolPicker } from "./WorkspaceSymbolPicker";
 import { SettingsDialog } from "./SettingsDialog";
 import { Splitter } from "./Splitter";
 import { useQuickFiles } from "./use-quick-files";
@@ -811,6 +812,20 @@ export function Workbench() {
           run={(action) => {
             dismissPopup();
             runCommand(action.id, "palette");
+          }}
+        />
+      )}
+      {popup === "symbols" && explorer.workspace && (
+        <WorkspaceSymbolPicker
+          key={explorer.workspace.id}
+          workspaceId={explorer.workspace.id}
+          dismiss={dismissPopup}
+          navigate={({ relativePath, line, character }) => {
+            dismissPopup();
+            editor.navigate(
+              { relativePath },
+              { line: line + 1, column: character + 1 },
+            );
           }}
         />
       )}

@@ -2,10 +2,12 @@ mod file;
 mod mutations;
 mod search;
 mod selected;
+mod symbols;
 mod watch;
 
 pub use search::{SearchOptions, SearchResponse};
 pub use selected::{PickedFile, SelectedFileSnapshot, SelectedFileVersion};
+pub use symbols::SymbolsResponse;
 pub use watch::WorkspaceChanges;
 
 use cap_fs_ext::DirExt;
@@ -105,11 +107,18 @@ struct Workspace {
     root: Dir,
     /// Canonical filesystem path of the workspace root; used by git subprocess.
     canonical_path: std::path::PathBuf,
+    symbols: Option<symbols::Index>,
+    symbols_revoked: bool,
     /// Change notifications for this registration only; dropped with it.
     watch: Option<watch::Watch>,
 }
 
 impl Workspace {
+    fn revoke_symbols(&mut self) {
+        self.symbols = None;
+        self.symbols_revoked = true;
+    }
+
     /// True when the canonical path no longer names the approved directory
     /// (moved, deleted or replaced), so path-based OS events are untrusted.
     fn root_replaced(&self) -> bool {
@@ -170,6 +179,8 @@ impl Registry {
             root,
             canonical_path: canonical,
             watch: None,
+            symbols: None,
+            symbols_revoked: false,
         });
         Ok(descriptor)
     }
@@ -192,12 +203,15 @@ impl Registry {
     /// that finished starting after its registration was closed or replaced
     /// is refused and dropped.
     pub fn attach_watch(&mut self, owner: &str, id: &str, watch: watch::Watch) -> Result<()> {
-        self.active_mut(owner, id)?.watch = Some(watch);
+        let workspace = self.active_mut(owner, id)?;
+        workspace.symbols = None;
+        workspace.watch = Some(watch);
         Ok(())
     }
 
-    pub fn stop_watch(&mut self) {
+    pub fn page_reloaded(&mut self) {
         if let Some(workspace) = self.active.as_mut() {
+            workspace.revoke_symbols();
             workspace.watch = None;
         }
     }
@@ -216,6 +230,7 @@ impl Registry {
             return Ok(WorkspaceChanges::default());
         };
         if workspace.root_replaced() {
+            workspace.revoke_symbols();
             workspace.watch = None;
             return Ok(WorkspaceChanges {
                 paths: Vec::new(),
@@ -384,9 +399,9 @@ impl WorkspaceService {
         self.registry()?.attach_watch(owner, id, watch)
     }
 
-    pub fn stop_watch(&self) {
+    pub fn page_reloaded(&self) {
         if let Ok(mut registry) = self.registry.lock() {
-            registry.stop_watch();
+            registry.page_reloaded();
         }
     }
 
@@ -811,7 +826,7 @@ mod tests {
                 .unwrap()
                 .inbox()
         };
-        service.stop_watch();
+        service.page_reloaded();
         assert!(inbox.lock().unwrap().is_closed());
         assert_eq!(
             service

@@ -5,6 +5,7 @@ type PaletteEntry = {
   disabled?: boolean;
   hidden?: boolean;
   hint?: string;
+  detail?: string;
 };
 
 export function CommandPalette<Action extends PaletteEntry>({
@@ -15,6 +16,9 @@ export function CommandPalette<Action extends PaletteEntry>({
   inputLabel = "Search commands",
   placeholder = "Search commands…",
   notice,
+  onQueryChange,
+  emptyMessage = "No matching commands.",
+  actionLabel = "Run",
 }: {
   actions: Action[];
   dismiss: () => void;
@@ -23,6 +27,9 @@ export function CommandPalette<Action extends PaletteEntry>({
   inputLabel?: string;
   placeholder?: string;
   notice?: string;
+  onQueryChange?: (query: string) => void;
+  emptyMessage?: string;
+  actionLabel?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -41,7 +48,8 @@ export function CommandPalette<Action extends PaletteEntry>({
     ({ label, disabled, hidden }) =>
       !disabled &&
       !hidden &&
-      words.every((word) => label.toLowerCase().includes(word)),
+      (onQueryChange ||
+        words.every((word) => label.toLowerCase().includes(word))),
   );
   const matches = matching.slice(0, 100);
   const selected = Math.min(index, matches.length - 1);
@@ -99,6 +107,7 @@ export function CommandPalette<Action extends PaletteEntry>({
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
+              onQueryChange?.(event.target.value);
               setIndex(0);
             }}
             onKeyDown={(event) => {
@@ -127,7 +136,7 @@ export function CommandPalette<Action extends PaletteEntry>({
           />
           <kbd>Esc</kbd>
         </label>
-        <ul id="palette-results" role="listbox" aria-label="Commands">
+        <ul id="palette-results" role="listbox" aria-label={title}>
           {matches.map((action, i) => (
             <li
               id={`palette-option-${i}`}
@@ -137,14 +146,25 @@ export function CommandPalette<Action extends PaletteEntry>({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => execute(action)}
             >
-              {action.label}
+              {action.detail ? (
+                <>
+                  <span className="palette-option-label" title={action.label}>
+                    {action.label}
+                  </span>
+                  <span className="palette-option-detail" title={action.detail}>
+                    {action.detail}
+                  </span>
+                </>
+              ) : (
+                action.label
+              )}
               {action.hint && <kbd>{action.hint}</kbd>}
             </li>
           ))}
         </ul>
-        {!matches.length && (
+        {!matches.length && !notice && (
           <p className="panel-message" role="status">
-            No matching commands.
+            {emptyMessage}
           </p>
         )}
         {matching.length > matches.length && (
@@ -162,7 +182,7 @@ export function CommandPalette<Action extends PaletteEntry>({
             <kbd>↑</kbd> <kbd>↓</kbd> Navigate
           </span>
           <span>
-            <kbd>Enter</kbd> Run
+            <kbd>Enter</kbd> {actionLabel}
           </span>
         </footer>
       </div>

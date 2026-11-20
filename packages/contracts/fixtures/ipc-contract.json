@@ -87,6 +87,19 @@
     }
   },
   "enums": {
+    "WorkspaceSymbolKind": [
+      "class",
+      "constant",
+      "enum",
+      "function",
+      "interface",
+      "macro",
+      "module",
+      "struct",
+      "trait",
+      "type",
+      "variable"
+    ],
     "EntryKind": ["directory", "file"],
     "FileState": [
       "untracked",
@@ -138,6 +151,23 @@
     "WorkspaceChanges": [
       { "paths": ["src/main.rs", "docs/ünï"], "rescan": false },
       { "paths": [], "rescan": true }
+    ],
+    "SymbolsResponse": [
+      {
+        "generation": 3,
+        "complete": true,
+        "truncated": true,
+        "symbols": [
+          {
+            "name": "café",
+            "kind": "function",
+            "relativePath": "src/ünï.rs",
+            "line": 2,
+            "character": 7
+          }
+        ]
+      },
+      { "generation": 4, "complete": false, "truncated": false, "symbols": [] }
     ],
     "SearchResponse": [
       {

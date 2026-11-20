@@ -318,6 +318,24 @@ pub fn editor_exit(window: WebviewWindow) -> Result<()> {
 }
 
 #[tauri::command]
+pub async fn workspace_symbols_query(
+    window: WebviewWindow,
+    workspace_id: String,
+    query: String,
+    limit: usize,
+) -> Result<crate::workspace::SymbolsResponse> {
+    in_workspace(window, move |window| {
+        workbench(&window)?.workspace.registry()?.query_symbols(
+            window.label(),
+            &workspace_id,
+            &query,
+            limit,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 pub fn workspace_search_begin(
     window: WebviewWindow,
     workspace_id: String,

@@ -32,3 +32,8 @@ commands.allow = ["workspace_create_file", "workspace_rename_entry"]
 identifier = "allow-workspace-watch"
 description = "Poll coalesced change hints for the active authorized workspace."
 commands.allow = ["workspace_watch_poll"]
+
+[[permission]]
+identifier = "allow-workspace-symbols"
+description = "Query the bounded symbol index of the active authorized workspace."
+commands.allow = ["workspace_symbols_query"]

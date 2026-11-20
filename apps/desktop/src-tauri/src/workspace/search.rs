@@ -12,12 +12,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_QUERY_BYTES: usize = 256;
-const MAX_ENTRIES: usize = 50_000;
-const MAX_SCAN_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_DEPTH: usize = 32;
+pub(super) const MAX_QUERY_BYTES: usize = 256;
+pub(super) const MAX_ENTRIES: usize = 50_000;
+pub(super) const MAX_SCAN_BYTES: u64 = 128 * 1024 * 1024;
+pub(super) const MAX_DEPTH: usize = 32;
 const MAX_MATCHES: usize = 500;
-const MAX_DURATION: Duration = Duration::from_secs(10);
+pub(super) const MAX_DURATION: Duration = Duration::from_secs(10);
 const IGNORED: &[&str] = &[
     ".git",
     ".hg",
@@ -242,59 +242,7 @@ impl Scan<'_> {
     }
 
     fn visit(&mut self, parents: &mut Vec<String>) -> Result<()> {
-        if self.traversal_finished()? {
-            return Ok(());
-        }
-        let components = parents.iter().map(String::as_str).collect::<Vec<_>>();
-        let entries = directory_at(&self.task.root, &components).and_then(|dir| {
-            let entries = dir.entries()?;
-            Ok((dir, entries))
-        });
-        let (directory, entries) = match entries {
-            Ok(opened) => opened,
-            Err(error) if parents.is_empty() => return Err(error),
-            Err(_) => {
-                self.response.skipped_files += 1;
-                return Ok(());
-            }
-        };
-        for entry in entries {
-            if self.traversal_finished()? {
-                break;
-            }
-            self.entries += 1;
-            let Ok(entry) = entry else {
-                self.response.skipped_files += 1;
-                continue;
-            };
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if !valid_component(&name) || name.starts_with(".turing-save-") {
-                continue;
-            }
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => {
-                    if IGNORED
-                        .iter()
-                        .any(|ignored| name.eq_ignore_ascii_case(ignored))
-                    {
-                        continue;
-                    }
-                    if parents.len() >= MAX_DEPTH {
-                        self.response.truncated = true;
-                        continue;
-                    }
-                    parents.push(name);
-                    self.visit(parents)?;
-                    parents.pop();
-                }
-                Ok(kind) if kind.is_file() => self.scan_file(&directory, parents, &name)?,
-                Ok(_) => {}
-                Err(_) => self.response.skipped_files += 1,
-            }
-        }
-        Ok(())
+        Walk::visit(self, &self.task.root, parents)
     }
 
     fn scan_file(&mut self, directory: &Dir, parents: &[String], name: &str) -> Result<()> {
@@ -307,30 +255,14 @@ impl Scan<'_> {
         {
             return Ok(());
         }
-        let components = parents.iter().map(String::as_str).collect::<Vec<_>>();
-        let reachable = || -> Result<bool> {
-            Ok(file::same_file(
-                &directory.dir_metadata()?,
-                &directory_at(&self.task.root, &components)?.dir_metadata()?,
-            ))
-        };
-        // Re-resolve the parent from the root on both sides of the read so
-        // a relocated or replaced subdirectory cannot supply results.
-        if !matches!(reachable(), Ok(true)) {
-            self.response.skipped_files += 1;
-            return Ok(());
-        }
-        let snapshot = match file::read_snapshot_metered(directory, name, false, &mut self.bytes) {
-            Ok(snapshot) => snapshot,
-            Err(_) => {
-                self.response.skipped_files += 1;
-                return Ok(());
-            }
-        };
-        if !matches!(reachable(), Ok(true)) {
-            self.response.skipped_files += 1;
-            return Ok(());
-        }
+        let snapshot =
+            match read_reachable(&self.task.root, directory, parents, name, &mut self.bytes) {
+                Ok(snapshot) => snapshot,
+                Err(_) => {
+                    self.response.skipped_files += 1;
+                    return Ok(());
+                }
+            };
         let content = snapshot
             .content
             .strip_prefix('\u{feff}')
@@ -382,6 +314,124 @@ impl Scan<'_> {
         }
         Ok(())
     }
+}
+
+impl Walk for Scan<'_> {
+    fn stop(&mut self) -> Result<bool> {
+        self.traversal_finished()
+    }
+
+    fn count_entry(&mut self) {
+        self.entries += 1;
+    }
+
+    fn skipped(&mut self) {
+        self.response.skipped_files += 1;
+    }
+
+    fn truncate(&mut self) {
+        self.response.truncated = true;
+    }
+
+    fn file(&mut self, _: &Dir, directory: &Dir, parents: &[String], name: &str) -> Result<()> {
+        self.scan_file(directory, parents, name)
+    }
+}
+
+pub(super) fn visible_component(name: &str) -> bool {
+    valid_component(name) && !name.starts_with(".turing-save-")
+}
+
+pub(super) fn ignored_directory(name: &str) -> bool {
+    IGNORED
+        .iter()
+        .any(|ignored| name.eq_ignore_ascii_case(ignored))
+}
+
+pub(super) trait Walk {
+    fn stop(&mut self) -> Result<bool>;
+    fn count_entry(&mut self);
+    fn skipped(&mut self);
+    fn truncate(&mut self);
+    fn file(&mut self, root: &Dir, directory: &Dir, parents: &[String], name: &str) -> Result<()>;
+
+    fn visit(&mut self, root: &Dir, parents: &mut Vec<String>) -> Result<()> {
+        if self.stop()? {
+            return Ok(());
+        }
+        let components = parents.iter().map(String::as_str).collect::<Vec<_>>();
+        let entries = directory_at(root, &components).and_then(|dir| {
+            let entries = dir.entries()?;
+            Ok((dir, entries))
+        });
+        let (directory, entries) = match entries {
+            Ok(opened) => opened,
+            Err(error) if parents.is_empty() => return Err(error),
+            Err(_) => {
+                self.skipped();
+                return Ok(());
+            }
+        };
+        for entry in entries {
+            if self.stop()? {
+                break;
+            }
+            self.count_entry();
+            let Ok(entry) = entry else {
+                self.skipped();
+                continue;
+            };
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !visible_component(&name) {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => {
+                    if ignored_directory(&name) {
+                        continue;
+                    }
+                    if parents.len() >= MAX_DEPTH {
+                        self.truncate();
+                        continue;
+                    }
+                    parents.push(name);
+                    self.visit(root, parents)?;
+                    parents.pop();
+                }
+                Ok(kind) if kind.is_file() => self.file(root, &directory, parents, &name)?,
+                Ok(_) => {}
+                Err(_) => self.skipped(),
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn read_reachable(
+    root: &Dir,
+    directory: &Dir,
+    parents: &[String],
+    name: &str,
+    bytes: &mut u64,
+) -> Result<file::Snapshot> {
+    let components = parents.iter().map(String::as_str).collect::<Vec<_>>();
+    let reachable = || -> Result<bool> {
+        Ok(file::same_file(
+            &directory.dir_metadata()?,
+            &directory_at(root, &components)?.dir_metadata()?,
+        ))
+    };
+    // Re-resolve the parent on both sides of the read to reject relocated directories.
+    if !reachable()? || super::is_workspace_link(&directory.symlink_metadata(name)?) {
+        return Err(WorkspaceError::OutsideWorkspace);
+    }
+    let snapshot = file::read_snapshot_metered(directory, name, false, bytes)?;
+    if !reachable()? {
+        return Err(WorkspaceError::OutsideWorkspace);
+    }
+    Ok(snapshot)
 }
 
 fn word_boundaries(line: &str, start: usize, end: usize) -> bool {

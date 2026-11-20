@@ -42,7 +42,7 @@ export type CommandState = {
 };
 
 export type PopupKind =
-  "commands" | "files" | "line" | "shortcuts" | "about" | "recent";
+  "commands" | "files" | "symbols" | "line" | "shortcuts" | "about" | "recent";
 
 /** Workbench operations that command run functions compose. */
 export type CommandActions = {
@@ -290,6 +290,17 @@ export const commandRegistry: Record<CommandId, CommandDeclaration> = {
       !state.editorBusy && (state.native || state.tabCount > 0),
     shortcut: { key: "p", primary: true },
     run: (actions) => actions.openPopup("files"),
+  },
+  workspaceSymbol: {
+    label: "Go to Symbol in Workspace…",
+    shortcut: { key: "t", primary: true },
+    keyboard: { nativeOnly: true },
+    enabled: (state) =>
+      state.native &&
+      state.hasWorkspace &&
+      !state.workspaceBusy &&
+      !state.editorBusy,
+    run: (actions) => actions.openPopup("symbols"),
   },
   goLine: {
     label: "Go to Line/Column…",

@@ -40,7 +40,7 @@ impl Resources {
     fn reload(&self) {
         self.language.revoke(false);
         self.terminal.close_all();
-        self.workspace.stop_watch();
+        self.workspace.page_reloaded();
     }
 
     fn shutdown(&self) {

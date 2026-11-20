@@ -350,6 +350,39 @@ describe("editor workspace", () => {
     });
   });
 
+  it("opens a workspace symbol from the Go menu at its editor location", async () => {
+    const user = userEvent.setup();
+    render(<Workbench />);
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
+    await screen.findByRole("button", { name: "main.ts" });
+    ipc.mockResolvedValueOnce({
+      generation: 1,
+      complete: true,
+      truncated: false,
+      symbols: [
+        {
+          name: "launch",
+          kind: "function",
+          relativePath: "main.ts",
+          line: 2,
+          character: 8,
+        },
+      ],
+    });
+    await user.click(screen.getByRole("menuitem", { name: "Go" }));
+    await user.click(
+      screen.getByRole("menuitem", { name: /Go to Symbol in Workspace/ }),
+    );
+    await screen.findByRole("option", { name: /launch/ });
+    await user.keyboard("{Enter}");
+    const editor = await screen.findByRole("textbox", { name: "File editor" });
+    expect(editor.getAttribute("data-location")).toBe("3:9");
+    expect(ipc).toHaveBeenCalledWith("fs_read_file", {
+      workspaceId: "project",
+      relativePath: "main.ts",
+    });
+  });
+
   it("opens search results using scoped reads and reveals repeated hits in an existing tab", async () => {
     const user = userEvent.setup();
     render(<Workbench />);

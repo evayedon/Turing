@@ -115,6 +115,21 @@ describe("declarative command registry", () => {
     );
   });
 
+  it("opens workspace symbols with the platform shortcut only for a native workspace", () => {
+    for (const [modifier, event] of [
+      ["Ctrl", { key: "t", ctrlKey: true }],
+      ["⌘", { key: "t", metaKey: true }],
+    ] as const) {
+      const target = context({ modifier, native: true, hasWorkspace: true });
+      expect(handleShortcut(target, key(event))).toBe("ran");
+      expect(target.actions.openPopup).toHaveBeenCalledWith("symbols");
+      const preview = context({ modifier, native: false, hasWorkspace: true });
+      expect(handleShortcut(preview, key(event))).toBe("ignored");
+      const empty = context({ modifier, native: true, hasWorkspace: false });
+      expect(handleShortcut(empty, key(event))).toBe("ignored");
+    }
+  });
+
   it("treats a disabled command as a no-op from every entry point", () => {
     const disabled = context({ canSave: false });
     for (const source of ["menu", "palette", "control"] as const)

@@ -99,6 +99,46 @@ Search reports partial results when it hits a limit. Cancellation and the
 deadline are checked during scanning. An OS filesystem call already in progress
 can delay either. Results are grouped by file and include short snippets.
 
+## Workspace symbols
+
+**Go → Go to Symbol in Workspace** (Ctrl+T or Cmd+T) opens a searchable
+quick-pick. It debounces queries, refreshes while open, and discards replies
+when the query, workspace, or picker changes. Selecting a symbol opens its
+authorized file and reveals its zero-based line and UTF-16 character offset
+through the editor's location navigation.
+
+`workspace_symbols_query` is an explicit workbench-only permission. Rust
+checks the caller and workspace registration before reading the index and
+checks the approved root identity before issuing a reply. Each response carries
+the registration generation, a `complete` flag for the current indexing pass,
+and a `truncated` flag for scan or result limits. Queries match case-insensitive
+terms against declaration names, prefer prefixes, and return up to 100 results.
+An empty query lists the first symbols in path and source order.
+
+The first query starts a native worker for the registration. It extracts
+single-line declarations from saved TypeScript, JavaScript, Rust, Python,
+and C/C++ files. Extraction is lexical and best-effort. Overloads are listed
+individually, and declarations that require multiline or semantic analysis may
+be missed. The index works independently of the managed clangd session.
+
+The worker reuses Search's directory walker, exclusions, entry and depth limits,
+and handle-relative snapshots. Each pass can read up to 12,000 source files,
+2 MiB per file and 128 MiB total. The index stores at most 256 declarations per
+file and 30,000 overall. It checks for cancellation between entries and source
+lines, with a cooperative 10-second budget per pass. A filesystem call in
+progress can delay cancellation. Closing or replacing a workspace, reloading
+the page, and destroying the window all cancel and discard its worker.
+
+The watcher coalesces an independent copy of change hints for the index.
+Updates replace or remove the affected file or directory subtree using
+authorized reads. A rescan hint triggers a full pass. Global truncation remains
+visible until a full pass can cover the workspace. While a pass is running,
+queries return an incomplete response without entries from the prior pass. If
+the OS watcher cannot start, the worker rescans every 15 seconds. An index
+test scans 4,000 files within the traversal budget and switches workspaces
+halfway through a second scan to verify cancellation and stale registration
+denial.
+
 ## Individual files and Save As
 
 Opening a native file selection registers one filename within a retained parent

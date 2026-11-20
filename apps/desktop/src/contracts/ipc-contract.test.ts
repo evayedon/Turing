@@ -18,6 +18,9 @@ import type {
   LogEntry,
   SearchMatch,
   SearchResponse,
+  SymbolsResponse,
+  WorkspaceSymbol,
+  WorkspaceSymbolKind,
   SelectedFileSnapshot,
   SelectedFileVersion,
   StatusEntry,
@@ -151,6 +154,19 @@ const errors = {
 };
 
 const enums = {
+  WorkspaceSymbolKind: every<WorkspaceSymbolKind>()([
+    "class",
+    "constant",
+    "enum",
+    "function",
+    "interface",
+    "macro",
+    "module",
+    "struct",
+    "trait",
+    "type",
+    "variable",
+  ]),
   EntryKind: every<DirectoryEntry["kind"]>()(["directory", "file"]),
   FileState: every<FileState>()([
     "untracked",
@@ -232,6 +248,20 @@ const payloads: Record<keyof typeof fixture.payloads, Spec> = {
   WorkspaceChanges: shape<WorkspaceChanges>()({
     paths: "required",
     rescan: "required",
+  }),
+  SymbolsResponse: shape<SymbolsResponse>()({
+    generation: "required",
+    complete: "required",
+    truncated: "required",
+    symbols: {
+      array: shape<WorkspaceSymbol>()({
+        name: "required",
+        kind: { values: enums.WorkspaceSymbolKind },
+        relativePath: "required",
+        line: "required",
+        character: "required",
+      }),
+    },
   }),
   SearchResponse: shape<SearchResponse>()({
     files: {

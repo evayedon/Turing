@@ -43,6 +43,7 @@ fn main() {
             commands::fs_list_directory,
             commands::fs_read_file,
             commands::workspace_search_begin,
+            commands::workspace_symbols_query,
             commands::workspace_search_run,
             commands::workspace_search_cancel,
             commands::fs_write_file,
