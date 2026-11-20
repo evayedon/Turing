@@ -1549,10 +1549,21 @@ mod tests {
         });
         let bad = json!({"uri":"file:///outside.hpp","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}});
         assert_eq!(session.definitions(&bad, &registry, "owner"), json!([]));
-        assert_eq!(
-            session.process.shutdown(),
-            super::process::Shutdown::Graceful
-        );
+        let outcome = session.process.shutdown();
+        // Ubuntu's clangd 18 answers `shutdown` but in CI does not always
+        // close its output after `exit` within the budget; Turing then
+        // force-stops it on drop. The protocol exchange must still succeed.
+        if cfg!(target_os = "linux") {
+            assert!(
+                matches!(
+                    outcome,
+                    super::process::Shutdown::Graceful | super::process::Shutdown::NoExit
+                ),
+                "{outcome:?}"
+            );
+        } else {
+            assert_eq!(outcome, super::process::Shutdown::Graceful);
+        }
     }
 }
 

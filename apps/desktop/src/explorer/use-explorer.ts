@@ -15,30 +15,70 @@ import {
 export function useExplorer() {
   const native = nativeWorkspaceAvailable();
   const currentWorkspace = useRef<string | undefined>(undefined);
+  const listings = useRef(new Map<string, symbol>());
+  const browsing = useRef<symbol | undefined>(undefined);
   const [workspace, setWorkspace] = useState<WorkspaceDescriptor | null>(null);
   const [relativePath, setRelativePath] = useState("");
+  const loadedFolders = useRef(new Map<string, DirectoryEntry[]>());
   const [folders, setFolders] = useState(
     () => new Map<string, DirectoryEntry[]>(),
   );
+
   const [busy, setBusy] = useState<
     "selecting folder" | "loading folder" | "closing workspace" | null
   >(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function readDirectory(workspaceId: string, path: string) {
+  function updateFolders(
+    update: (
+      previous: Map<string, DirectoryEntry[]>,
+    ) => Map<string, DirectoryEntry[]>,
+  ) {
+    loadedFolders.current = update(loadedFolders.current);
+    setFolders(loadedFolders.current);
+  }
+
+  async function listDirectory(id: string, path: string, watcher = false) {
+    if (currentWorkspace.current !== id) return;
+    const request = Symbol();
+    listings.current.set(path, request);
+    const isCurrent = () =>
+      currentWorkspace.current === id && listings.current.get(path) === request;
+    try {
+      const entries = await invokeWorkspace("fs_list_directory", {
+        workspaceId: id,
+        relativePath: path,
+      });
+      if (isCurrent())
+        updateFolders((previous) => new Map(previous).set(path, entries));
+    } catch (cause) {
+      if (!isCurrent()) return;
+      if (
+        watcher &&
+        path &&
+        ["NOT_FOUND", "NOT_DIRECTORY", "OUTSIDE_WORKSPACE"].includes(
+          String(cause),
+        )
+      )
+        forget(path);
+      else if (!watcher || !path) setError(workspaceErrorMessage(cause));
+    } finally {
+      if (isCurrent()) listings.current.delete(path);
+    }
+  }
+
+  async function readDirectory(id: string, path: string) {
+    if (currentWorkspace.current !== id) return;
+    const request = Symbol();
+    browsing.current = request;
     setRelativePath(path);
     setBusy("loading folder");
     setError(null);
     try {
-      const entries = await invokeWorkspace("fs_list_directory", {
-        workspaceId,
-        relativePath: path,
-      });
-      setFolders((previous) => new Map(previous).set(path, entries));
-    } catch (cause) {
-      setError(workspaceErrorMessage(cause));
+      await listDirectory(id, path);
     } finally {
-      setBusy(null);
+      if (currentWorkspace.current === id && browsing.current === request)
+        setBusy(null);
     }
   }
 
@@ -52,6 +92,7 @@ export function useExplorer() {
       );
       if (selection) {
         currentWorkspace.current = selection.id;
+        listings.current.clear();
         setWorkspace(selection);
         if (selection.displayPath)
           rememberRecent({
@@ -59,7 +100,7 @@ export function useExplorer() {
             name: selection.name,
             path: selection.displayPath,
           });
-        setFolders(new Map());
+        updateFolders(() => new Map());
         await readDirectory(selection.id, "");
         return true;
       }
@@ -76,10 +117,12 @@ export function useExplorer() {
     setError(null);
     try {
       await invokeWorkspace("workspace_close", { workspaceId: workspace.id });
+      if (currentWorkspace.current !== workspace.id) return;
       currentWorkspace.current = undefined;
+      listings.current.clear();
       setWorkspace(null);
       setRelativePath("");
-      setFolders(new Map());
+      updateFolders(() => new Map());
       return true;
     } catch (cause) {
       setError(workspaceErrorMessage(cause));
@@ -89,27 +132,19 @@ export function useExplorer() {
   }
 
   async function refresh(path: string) {
-    if (!workspace) return;
-    const id = workspace.id;
+    if (!workspace || currentWorkspace.current !== workspace.id) return;
     setError(null);
-    try {
-      const entries = await invokeWorkspace("fs_list_directory", {
-        workspaceId: id,
-        relativePath: path,
-      });
-      if (currentWorkspace.current === id)
-        setFolders((previous) => new Map(previous).set(path, entries));
-    } catch (cause) {
-      if (currentWorkspace.current === id)
-        setError(workspaceErrorMessage(cause));
-    }
+    await listDirectory(workspace.id, path);
   }
 
   /** Drops a folder that vanished, and everything loaded below it. */
   function forget(path: string) {
     const within = (item: string) =>
       item === path || item.startsWith(`${path}/`);
-    setFolders(
+    for (const pending of listings.current.keys()) {
+      if (within(pending)) listings.current.delete(pending);
+    }
+    updateFolders(
       (previous) =>
         new Map([...previous].filter(([folder]) => !within(folder))),
     );
@@ -120,36 +155,16 @@ export function useExplorer() {
     );
   }
 
-  async function reconcile(id: string, path: string) {
-    try {
-      const entries = await invokeWorkspace("fs_list_directory", {
-        workspaceId: id,
-        relativePath: path,
-      });
-      if (currentWorkspace.current !== id) return;
-      setFolders((previous) =>
-        previous.has(path) ? new Map(previous).set(path, entries) : previous,
-      );
-    } catch (cause) {
-      if (currentWorkspace.current !== id) return;
-      if (
-        path &&
-        ["NOT_FOUND", "NOT_DIRECTORY", "OUTSIDE_WORKSPACE"].includes(
-          String(cause),
-        )
-      )
-        forget(path);
-      else if (!path) setError(workspaceErrorMessage(cause));
-      // Other failures keep the listing; Reload folder reports them.
-    }
-  }
-
-  /** Re-lists the loaded folders that a watcher change set may affect. */
+  /** Re-lists loaded folders and folders whose first listing is still pending. */
   async function applyChanges(id: string, changes: WorkspaceChanges) {
     if (currentWorkspace.current !== id) return;
+    const paths = new Set([
+      ...loadedFolders.current.keys(),
+      ...listings.current.keys(),
+    ]);
     await Promise.all(
-      foldersToRefresh(changes, folders.keys()).map((path) =>
-        reconcile(id, path),
+      foldersToRefresh(changes, paths).map((path) =>
+        listDirectory(id, path, true),
       ),
     );
   }
@@ -159,8 +174,11 @@ export function useExplorer() {
       path === old || path.startsWith(`${old}/`)
         ? next + path.slice(old.length)
         : path;
+    for (const path of listings.current.keys()) {
+      if (move(path) !== path) listings.current.delete(path);
+    }
     setRelativePath(move);
-    setFolders(
+    updateFolders(
       (previous) =>
         new Map(
           [...previous].map(([path, entries]) => [

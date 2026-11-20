@@ -157,8 +157,12 @@ export interface WorkspaceCommands {
     result: void;
   };
   fs_write_file: {
-    args: WorkspacePath & { content: string; expectedVersion: string };
-    result: string;
+    args: WorkspacePath & {
+      content: string;
+      expectedVersion: string;
+      recreate?: true;
+    };
+    result: string | null;
   };
   file_open: {
     args: { recentPath: string } | undefined;

@@ -588,6 +588,22 @@ svg {
   font-size: var(--nebula-sm);
   overflow-wrap: anywhere;
 }
+.editor-conflict {
+  flex-wrap: wrap;
+}
+.editor-disk-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--nebula-s2);
+  padding: var(--nebula-s2) var(--nebula-s3);
+  border-bottom: 1px solid var(--nebula-border);
+}
+.editor-disk-comparison pre {
+  max-height: 20vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .editor-notice[role="alert"] {
   color: var(--nebula-danger);
 }
@@ -2102,4 +2118,18 @@ svg {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   background: var(--nebula-panel);
+}
+
+.monaco-editor.monaco-overflow-host {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: transparent;
+  pointer-events: none;
+}
+
+.monaco-overflow-host
+  :is(.overflowingContentWidgets, .overflowingOverlayWidgets)
+  > * {
+  pointer-events: auto;
 }

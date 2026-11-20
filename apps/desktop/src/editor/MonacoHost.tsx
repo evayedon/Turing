@@ -13,11 +13,13 @@ import {
   serverFor,
   type LanguageController,
 } from "../language/use-language";
+import { watchMonacoMarkers } from "../language/monaco-markers";
+import type { DiagnosticBatch } from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import { applyTextChanges, isLargeDocument } from "./performance-budget";
 import { documentLanguage } from "./languages";
-import { monacoActions } from "../shell/commands";
-import type { EditorCommands } from "../shell/commands";
+import { editorCommands, monacoActions } from "../shell/commands";
+import type { EditorCommands, MonacoCommand } from "../shell/commands";
 import type { EditorInfo } from "./editor-info";
 import type { GroupId } from "./editor-groups";
 import type { ModelRegistry } from "./model-registry";
@@ -47,6 +49,18 @@ const environment = {
 Object.assign(globalThis, { MonacoEnvironment: environment });
 
 const theme = "turing-nebula";
+
+const navigationPreconditions = new Map<MonacoCommand, string>([
+  ["definition", "editorHasDefinitionProvider"],
+  ["declaration", "editorHasDeclarationProvider && !isInEmbeddedEditor"],
+  ["implementation", "editorHasImplementationProvider"],
+  [
+    "references",
+    "editorHasReferenceProvider && !inReferenceSearchEditor && !isInEmbeddedEditor",
+  ],
+]);
+
+const providerAction = (id: MonacoCommand) => `turing.provider.${id}`;
 
 export type TextModels = ModelRegistry<monaco.editor.ITextModel>;
 
@@ -96,6 +110,7 @@ export default function MonacoHost({
   onNavigate,
   language,
   problems,
+  onMonacoDiagnostics,
   models,
   group,
   primary = true,
@@ -111,6 +126,7 @@ export default function MonacoHost({
   onNavigate?: (target: NavigationTarget, location: EditorLocation) => void;
   language?: LanguageController;
   problems?: Problem[];
+  onMonacoDiagnostics?: (batches: DiagnosticBatch[]) => void;
   onChange: (tab: EditorTab, value: string) => void;
   models: TextModels;
   group: GroupId;
@@ -133,6 +149,15 @@ export default function MonacoHost({
   );
   const shownKey = useRef<string>(undefined);
   const currentTabs = useEffectEvent(() => tabs);
+  const publishDiagnostics = useEffectEvent((batches: DiagnosticBatch[]) =>
+    onMonacoDiagnostics?.(batches),
+  );
+  const collectDiagnostics = !!onMonacoDiagnostics;
+
+  useLayoutEffect(() => {
+    if (!primary || !collectDiagnostics) return;
+    return watchMonacoMarkers(monaco, models, currentTabs, publishDiagnostics);
+  }, [models, primary, collectDiagnostics]);
   const languageRequest = useEffectEvent(
     (...args: Parameters<LanguageController["request"]>) =>
       language?.request(...args) ?? Promise.resolve(undefined),
@@ -240,48 +265,52 @@ export default function MonacoHost({
           typeof navigator.clipboard?.readText === "function" ||
           (document.queryCommandSupported?.("paste") ?? false),
       };
-      onCommandsReady?.({
-        supports: (id) => {
-          const model = instance.getModel();
+      const supports: EditorCommands["supports"] = (id) => {
+        const model = instance.getModel();
+        if (
+          id === "definition" ||
+          id === "references" ||
+          id === "implementation" ||
+          id === "declaration"
+        ) {
+          // A managed server's negotiated capability enables navigation;
+          // otherwise fall back to Monaco's live providers below. C/C++ has
+          // no Monaco provider, so it needs clangd.
+          const managed = serverFor(active, workspaceId)
+            ? language?.forTab?.(active)?.capabilities
+            : undefined;
+          if (managed?.[id]) return true;
           if (
-            id === "definition" ||
-            id === "references" ||
-            id === "implementation" ||
-            id === "declaration"
-          ) {
-            const kind = serverFor(active, workspaceId);
-            const managed = language?.forTab?.(active)?.capabilities;
-            if (kind && managed) return !!managed[id];
-            if (
-              model?.getLanguageId() === "cpp" ||
-              model?.getLanguageId() === "c"
+            (model?.getLanguageId() === "cpp" ||
+              model?.getLanguageId() === "c") &&
+            !(
+              language?.capabilities?.[id] &&
+              languagePath(active, workspaceId, "clangd")
             )
-              return (
-                !!language?.capabilities?.[id] &&
-                !!languagePath(active, workspaceId, "clangd")
-              );
-          }
-          if (id === "undo") return !!model?.canUndo?.();
-          if (id === "redo") return !!model?.canRedo?.();
-          if (id === "cut" || id === "copy" || id === "paste")
-            return clipboard[id];
-          if (
-            id === "symbol" ||
-            id === "definition" ||
-            id === "declaration" ||
-            id === "implementation" ||
-            id === "references"
           )
-            return (
-              instance.getAction(monacoActions[id])?.isSupported() ?? false
-            );
-          return triggers.has(id) || !!instance.getAction(monacoActions[id]);
-        },
+            return false;
+        }
+        if (id === "undo") return !!model?.canUndo?.();
+        if (id === "redo") return !!model?.canRedo?.();
+        if (id === "cut" || id === "copy" || id === "paste")
+          return clipboard[id];
+        const action = instance.getAction(monacoActions[id]);
+        if (navigationPreconditions.has(id))
+          return (
+            (action ?? instance.getAction(providerAction(id)))?.isSupported() ??
+            false
+          );
+        if (id === "symbol") return action?.isSupported() ?? false;
+        return triggers.has(id) || !!action;
+      };
+      onCommandsReady?.({
+        supports,
         run: (id) => {
+          if (navigationPreconditions.has(id) && !supports(id)) return;
           instance.focus();
           const action = instance.getAction(monacoActions[id]);
           if (action?.isSupported()) void action.run();
-          else if (triggers.has(id))
+          else if (triggers.has(id) || navigationPreconditions.has(id))
             instance.trigger("workbench", monacoActions[id], null);
         },
         position: () => {
@@ -305,12 +334,34 @@ export default function MonacoHost({
 
   useLayoutEffect(() => {
     if (!container.current) return;
-    const colors = getComputedStyle(container.current);
+    const host = container.current;
+    const colors = getComputedStyle(host);
+    const overflow = document.createElement("div");
+    overflow.className = "monaco-editor vs-dark monaco-overflow-host";
+    (host.closest(".workbench") ?? host.parentElement)?.append(overflow);
     monaco.editor.defineTheme(theme, {
       base: "vs-dark",
       inherit: true,
       rules: [],
       colors: {
+        "editorHoverWidget.background": colors
+          .getPropertyValue("--nebula-panel")
+          .trim(),
+        "editorHoverWidget.foreground": colors
+          .getPropertyValue("--nebula-text")
+          .trim(),
+        "editorHoverWidget.border": colors
+          .getPropertyValue("--nebula-border")
+          .trim(),
+        "editorSuggestWidget.background": colors
+          .getPropertyValue("--nebula-panel")
+          .trim(),
+        "editorSuggestWidget.foreground": colors
+          .getPropertyValue("--nebula-text")
+          .trim(),
+        "editorSuggestWidget.border": colors
+          .getPropertyValue("--nebula-border")
+          .trim(),
         "editor.background": colors.getPropertyValue("--nebula-canvas").trim(),
         "editor.foreground": colors.getPropertyValue("--nebula-text").trim(),
         "editorLineNumber.foreground": colors
@@ -330,11 +381,14 @@ export default function MonacoHost({
           .trim(),
       },
     });
-    const instance = monaco.editor.create(container.current, {
+    const instance = monaco.editor.create(host, {
       model: null,
       theme,
       ariaLabel: "File editor",
       automaticLayout: true,
+      fixedOverflowWidgets: true,
+      overflowWidgetsDomNode: overflow,
+      hover: { above: false },
       fontSize: 13,
       lineHeight: 22,
       padding: { top: 10 },
@@ -346,6 +400,20 @@ export default function MonacoHost({
       dropIntoEditor: { enabled: false },
       fontFamily: colors.getPropertyValue("--nebula-mono").trim(),
     });
+    // Monaco registers these as global commands in some releases. A local
+    // action exposes the same provider precondition through isSupported().
+    const navigationActions = Array.from(
+      navigationPreconditions,
+      ([id, precondition]) =>
+        instance.addAction?.({
+          id: providerAction(id),
+          label: editorCommands[id].label,
+          precondition,
+          run(view) {
+            view.trigger("workbench", monacoActions[id], null);
+          },
+        }),
+    );
     editor.current = instance;
     const detachView = models.attach(instance);
     const opener = monaco.editor.registerEditorOpener?.({
@@ -369,7 +437,9 @@ export default function MonacoHost({
       if (isFocused()) reportCommands(undefined);
       detachView();
       // The registry owns the models; another group may still show them.
+      navigationActions.forEach((action) => action?.dispose());
       instance.dispose();
+      overflow.remove();
       editor.current = null;
       states.clear();
     };
@@ -541,6 +611,7 @@ export default function MonacoHost({
     typescriptCapabilities,
     pyrightCapabilities,
     rustCapabilities,
+    active.languageOverride,
   ]);
 
   useLayoutEffect(() => {

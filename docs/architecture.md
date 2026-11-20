@@ -170,14 +170,21 @@ permission bits are carried forward. Replacement creates a new inode, so hard
 link associations, extended attributes, and custom ACLs are outside the current
 save guarantees. File checks on focus and every four seconds cover the active
 tab, and workspace watcher events revalidate every touched tab (see
-[Workspace watcher](#workspace-watcher)). Each save checks its version
-independently.
+[Workspace watcher](#workspace-watcher)). Each ordinary save checks its version
+independently. When the target of a workspace tab has disappeared, explicit
+Save offers native confirmation to recreate it.
+The authorized write rechecks the root and parent and publishes the staged
+text only if the destination is still vacant. A process that restores the
+name first keeps its file.
 
 The File menu's Auto Save setting is off at startup and applies for the current
 session. It waits one second before saving changed, already named desktop tabs
 through the same version-checked commands. Edits made during a write remain in
 the draft. Failed writes stay dirty and pause automatic retries for that tab.
-Known disk conflicts require the normal reload or Save As workflow. Untitled
+Known disk conflicts require explicit resolution. Keep mine leaves the
+draft and conflict in place. Compare with disk reads an authorized snapshot
+and shows it beside the editor text. Reload asks before discarding dirty text.
+Save As can preserve the draft in a separate file. Untitled
 documents still use the native picker on explicit Save, and browser preview
 keeps its drafts in memory.
 
@@ -289,22 +296,27 @@ cannot reach a later registration.
 
 **Frontend.** The workbench polls every 500 ms while the document is visible,
 backs off to 2 s after a transient failure and stops on `PERMISSION_DENIED`.
-Replies for a workspace that is no longer current are dropped. The Explorer
-re-lists each loaded folder that contains a changed path or lies below one,
-and forgets folders that no longer exist, moving the browse location to the
-parent. The editor re-reads touched workspace tabs and sets `changedOnDisk`
-when the version differs or the file is gone. Each touched document is checked
-once per change set, and all its groups share the flag. The watcher preserves
-drafts, and a
-reply applies only to the revision it was issued for, so Turing's own saves
-and renames win. A tab whose file was renamed outside Turing is flagged as
-changed, not moved to the new name. Its save is refused as a conflict until the
-user reloads or uses Save As.
+Replies for a workspace that is no longer current are dropped. Explorer
+re-lists each loaded or pending folder that contains a changed path or lies
+below one. A newer listing supersedes earlier reads of the same folder.
+When a folder disappears, Explorer forgets that subtree and returns to its
+surviving parent.
+
+The editor checks each affected document once per batch. It compares the
+current disk version to the saved base and ignores a reply superseded by a
+newer check, tab revision, or workspace registration. All groups share the
+result. Clean tabs offer explicit reload, and dirty tabs keep their draft.
+An external rename or removal marks the original tab **Deleted on disk**.
+A temp-file replacement at the original path is seen as a version change
+when the path exists at revalidation. A later event clears the deleted
+status if the path reappears. Search runs independently of polling and reads
+the workspace as it traverses the filesystem.
 
 The active-tab check on focus and every four seconds remains as a fallback.
 `notify` cannot report a ReadDirectoryChangesW buffer overflow on Windows, and
 network or virtual filesystems may not deliver events. Runtime behavior on
 Linux and Windows is covered only by CI unit tests, not GUI smoke tests.
+See the [macOS watcher acceptance steps](testing/file-watcher-manual.md).
 
 ## Workbench layout
 
@@ -316,7 +328,7 @@ preferences. These preferences contain only layout values.
 
 The bottom dock offers Terminal, Problems, and Output views and uses the same
 layout controls as the side panels. Output shows Run & Build progress.
-Problems displays live clangd diagnostics and recognized C++ compiler diagnostics.
+Problems displays Monaco worker diagnostics, live clangd diagnostics and recognized C++ compiler diagnostics.
 
 ## Integrated terminal
 
@@ -389,29 +401,47 @@ through Save As. If the saved revision changes on disk, reload the file first.
 One Run & Build job per workbench can be active while its terminal sessions
 continue.
 
-Supported sources are Python 3.7+ (`.py`) and single-file C++17 (`.cpp`,
-`.cc`, `.cxx`). The application looks for Python and for clang++ or g++ in
-absolute directories on its inherited PATH. These tools must be installed and
-functional on the host, including any system C++ headers and linker. On Windows,
-use an installed compiler with its target toolchain available. Project build
-systems, sibling imports or headers, custom flags, external libraries that
-require extra link arguments, and multiple source files are outside this
-workflow.
+Run discovers tools in inherited PATH order, ignoring relative directories and
+WindowsApps aliases. Within a directory it tries the names in the order shown
+below (with `.exe` on Windows). Bounded tool probes check that the selected
+installation can start. Install the toolchain on the host and expose it on
+Turing’s PATH. Missing or unusable installations return language-specific
+errors with installation guidance. Run remains available for a retry.
+
+| Source                             | Tool and execution                                                                                                                                                                                                                                              |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Python (`.py`)                     | `python3`, then `python` (`python` first on Windows). Runs isolated Python 3.7+.                                                                                                                                                                                |
+| C (`.c`)                           | `clang`, then `gcc`. Compiles C17 and runs the staged binary.                                                                                                                                                                                                   |
+| C++ (`.cpp`, `.cc`, `.cxx`, `.C`)  | `clang++`, then `g++`. Compiles C++17 and runs the staged binary.                                                                                                                                                                                               |
+| Rust (`.rs`)                       | `rustc`. Compiles one Rust 2021 source with an explicit crate name and runs the staged binary.                                                                                                                                                                  |
+| Go (`.go`)                         | `go`. Builds the staged file, then invokes `go run` from scratch using that build cache. Clears GOFLAGS, keeps Go caches and temp files in scratch, and disables module/toolchain downloads and cgo.                                                            |
+| Java (`.java`)                     | `java` and `javac` (next to the selected `java` if present, then on PATH). Uses javac for build diagnostics when available. Java 11+ launches the staged source directly. Earlier versions run the compiled class matching the filename, including its package. |
+| JavaScript (`.js`, `.mjs`, `.cjs`) | `node`. Checks syntax and runs the staged source.                                                                                                                                                                                                               |
+| TypeScript (`.ts`, `.mts`, `.cts`) | `node --experimental-strip-types`. Requires a Node installation with a working strip-types loader and supports only erasable TypeScript syntax.                                                                                                                 |
+| C# (`.cs`)                         | `dotnet`. Requires a local .NET 6+ SDK and targeting packs. Builds a generated console project with NuGet package sources cleared, then runs the resulting DLL.                                                                                                 |
+
+Use self-contained source with the host toolchain’s standard library and, for
+native compilers, an installed linker and system headers. Project build
+systems, sibling imports or headers, custom flags, external packages, and
+multiple source files are outside this workflow.
 
 Rust checks caller ownership and reads the versioned source through the existing
 workspace or standalone file grant. It stages those exact bytes in a unique
-OS temporary directory and constructs process arguments itself. A successful C++
-compile runs the binary created for that run. Failure leaves the compiler's
-diagnostics in Output. Scratch files are cleaned up when the worker finishes.
-Python's `__file__` and compiler diagnostic paths point at staged files.
-On Unix the child starts through the retained workspace root or standalone
-parent directory handle. On Windows the child starts in the scratch directory
-because standard process launch accepts a path for its working directory.
+OS temporary directory and constructs process arguments itself. Scratch files
+are cleaned up when the worker finishes. Builds and tool probes run in scratch
+with an allowlist of environment variables. On Unix, programs normally start
+through the retained workspace root or standalone parent directory handle. Go
+and the Java source launcher start in scratch. On Windows, all processes start
+in scratch because standard process launch accepts a path for its working directory.
 
-Output distinguishes compiler stdout and stderr from program stdout and stderr.
+Output distinguishes build stdout and stderr from program stdout and stderr.
 It reports phase, exit code, elapsed time, and Stop. Output retains at most
-256 KiB per run and decodes UTF-8 with replacement for invalid bytes, including
-legacy compiler encodings. Compiler diagnostics remain text in Output.
+256 KiB per run and decodes UTF-8 with replacement for invalid bytes. The
+Problems panel maps recognized C, C++, Rust, Go, Java, Node syntax, TypeScript,
+and C# diagnostics for the staged file back to the exact saved revision.
+Byte and scalar columns are converted to UTF-16 for the editor. Java source
+launch and Node’s TypeScript loader combine build and run in one process, so
+their diagnostics can arrive on program stderr. Other messages remain in Output.
 Stdin is closed, so programs receive EOF. Use the integrated terminal to run
 programs that need interactive input.
 
@@ -419,7 +449,7 @@ The dedicated local-workbench capability accepts only a saved file grant and
 version, then an opaque Run ID for reading and stopping. Phase notifications
 use a per-run Tauri channel. The shell terminal and any future AI integration
 have separate authorization paths. Code executes with the user's OS privileges.
-The compiler is limited to 60 seconds and the program to 30 seconds. Stop and
+Tool probes are limited to five seconds each, builds to 60 seconds, and programs to 30 seconds. Stop and
 normal app shutdown cancel active subprocesses. Unix uses a process group for
 cancellation and disables core dumps. Windows uses a Job Object. On Unix, a program that exits normally can leave
 children running. Processes that escape cancellation or start before Windows
@@ -683,8 +713,11 @@ and use no performance thresholds.
 ## Code navigation and debugging status
 
 Definition, declaration, implementation, and references use Monaco's
-registered providers. The menu disables operations when the active model has
-no provider. Cross-file destinations must belong to an already-open document
+registered providers. The Go menu reads provider availability from the active
+editor when opened, including providers loaded lazily by Monaco. In the bundled
+TypeScript and JavaScript services, Definition and References are available.
+Declaration and Implementation require their own providers. Python has
+syntax highlighting and no bundled navigation provider. Cross-file destinations must belong to an already-open document
 or use the active workspace's synthetic model URI. New workspace reads still
 go through Rust's authorized file command. Monaco's bundled providers may be
 limited to loaded models. Full project navigation for Python and C++ needs a
@@ -760,7 +793,9 @@ exit, and anything but graceful falls through to forced cleanup. Workspace
 replacement, workspace close and window destruction revoke the session and
 force process cleanup. Unix uses a process group, signalled before the
 child is reaped so the group ID cannot be reused; Windows uses a
-kill-on-close Job Object. A desktop crash can leave temporary files behind.
+kill-on-close Job Object. A desktop crash can leave temporary files behind. Ubuntu's clangd 18 replies to `shutdown`
+but in CI does not always close its output within that budget after `exit`;
+Turing then force-stops it, so Stop never hangs.
 
 ### Project-aware server access
 
@@ -856,7 +891,7 @@ files with their reasons. Successful changes remain applied when another
 file conflicts.
 
 Every problem flows through one diagnostic store
-(`language/diagnostic-store.ts`). A producer (`clangd`, `typescript`, `pyright`, `rust-analyzer`, or `compiler`)
+(`language/diagnostic-store.ts`). A producer (`clangd`, `typescript`, `pyright`, `rust-analyzer`, `compiler`, or `monaco` for Monaco's built-in JSON/CSS/HTML and unmanaged TS/JS markers)
 publishes a batch per document, stamped with the document's `uri`,
 `revision` and `editRevision` at the time it was computed. A batch is shown
 only while its open document still has that exact stamp and has not changed
@@ -865,6 +900,20 @@ deterministically. A newer batch from the same producer replaces the older
 one, and a stopped or crashed producer publishes nothing, which clears its
 items. Output is ordered by open-tab order, position, severity and producer,
 with IDs that do not depend on arrival order.
+
+The primary Monaco view listens once for marker changes across the shared models,
+including open background tabs. It coalesces updates in 100 ms windows and reads
+up to 200 markers per affected document from its active bundled validator.
+Large documents in plain-text mode skip marker collection. Monaco marker batches
+also expire on a language override change. F8 and Shift+F8 use the combined store.
+Bundled validators can emit markers without a model version. Those markers are
+stamped when Monaco reports them, using the local model version and document stamp
+to guard queued publication.
+
+Monaco uses one overflow host per editor view, mounted at the workbench root.
+Fixed overflow positioning uses the viewport for hover, suggest, and parameter
+hints, with hovers preferring placement below their anchor. Widgets inherit
+the Nebula theme and render above the editor panes.
 
 Problems groups errors, warnings and informational messages. The Severity
 filter is under **Settings → Diagnostics**. Rows open the

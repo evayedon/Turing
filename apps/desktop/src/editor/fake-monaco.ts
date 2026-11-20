@@ -5,6 +5,8 @@
  * `vi.mock("monaco-editor", () => import("./fake-monaco"))`.
  */
 
+import type { editor as Monaco } from "monaco-editor";
+
 type Position = { lineNumber: number; column: number };
 type ContentEvent = {
   versionId: number;
@@ -16,6 +18,10 @@ type ViewState = { position: Position; scrollTop: number };
 
 const editors: FakeEditor[] = [];
 const models: FakeModel[] = [];
+const markers = new Map<FakeModel, Map<string, Monaco.IMarkerData[]>>();
+const markerListeners = new Set<(resources: FakeUri[]) => void>();
+
+export const providers = new Map<string, Set<string>>();
 
 export class FakeUri {
   constructor(
@@ -183,7 +189,9 @@ export class FakeEditor {
   disposed = false;
   readonly input: HTMLTextAreaElement;
   readonly options: Record<string, unknown> = {};
+  readonly triggered: string[] = [];
   private cursor = new Set<Listener>();
+  private actions = new Map<string, { isSupported: () => boolean }>();
 
   constructor(readonly container: HTMLElement) {
     this.input = document.createElement("textarea");
@@ -223,10 +231,24 @@ export class FakeEditor {
   notifyContent() {
     this.input.value = this.model?.value ?? "";
   }
-  getAction() {
-    return undefined;
+  addAction({ id, precondition }: { id: string; precondition: string }) {
+    this.actions.set(id, {
+      isSupported: () =>
+        precondition
+          .split(" && ")
+          .every(
+            (key) =>
+              key.startsWith("!") ||
+              !!providers.get(this.model?.language ?? "")?.has(key),
+          ),
+    });
+    return { dispose: () => this.actions.delete(id) };
+  }
+  getAction(id: string) {
+    return this.actions.get(id);
   }
   trigger(_source: string, id: string) {
+    this.triggered.push(id);
     if (id === "undo") this.model?.undo();
     if (id === "redo") this.model?.redo();
   }
@@ -253,12 +275,15 @@ export const created = {
 export function resetFakeMonaco() {
   editors.length = 0;
   models.length = 0;
+  markers.clear();
+  markerListeners.clear();
+  providers.clear();
   created.editors.length = 0;
   created.models.length = 0;
   modes.length = 0;
 }
 
-export const MarkerSeverity = { Error: 8, Warning: 4, Info: 2 };
+export const MarkerSeverity = { Error: 8, Warning: 4, Info: 2, Hint: 1 };
 
 export const Uri = {
   from: ({
@@ -274,8 +299,9 @@ export const Uri = {
 
 export const editor = {
   defineTheme() {},
-  create(container: HTMLElement) {
+  create(container: HTMLElement, options: Record<string, unknown>) {
     const instance = new FakeEditor(container);
+    instance.updateOptions(options);
     editors.push(instance);
     created.editors.push(instance);
     return instance;
@@ -296,7 +322,34 @@ export const editor = {
   setModelLanguage(model: FakeModel, language: string) {
     model.language = language;
   },
-  setModelMarkers() {},
+  onDidChangeMarkers(listener: (resources: FakeUri[]) => void) {
+    return subscribe(markerListeners, listener);
+  },
+  getModelMarkers({
+    resource,
+    owner,
+    take,
+  }: {
+    resource: FakeUri;
+    owner: string;
+    take: number;
+  }) {
+    const model = this.getModel(resource);
+    return model ? (markers.get(model)?.get(owner) ?? []).slice(0, take) : [];
+  },
+  setModelMarkers(
+    model: FakeModel,
+    owner: string,
+    items: Monaco.IMarkerData[],
+  ) {
+    const byOwner = markers.get(model) ?? new Map();
+    byOwner.set(
+      owner,
+      items.map((item) => ({ ...item, owner })),
+    );
+    markers.set(model, byOwner);
+    for (const listener of markerListeners) listener([model.uri]);
+  },
   registerEditorOpener() {
     return { dispose() {} };
   },

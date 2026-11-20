@@ -3,7 +3,16 @@ export type ExecutionSource = (
   | { kind: "selected"; fileId: string }
 ) & { version: string };
 
-export type ExecutionLanguage = "python" | "cpp";
+export type ExecutionLanguage =
+  | "python"
+  | "cpp"
+  | "c"
+  | "rust"
+  | "go"
+  | "java"
+  | "javascript"
+  | "typescript"
+  | "csharp";
 export type ExecutionPhase =
   "preparing" | "compiling" | "running" | "stopping" | "completed" | "failed";
 export type ExecutionStream =
@@ -16,6 +25,13 @@ export type ExecutionError =
   | "SOURCE_UNAVAILABLE"
   | "PYTHON_UNAVAILABLE"
   | "COMPILER_UNAVAILABLE"
+  | "C_COMPILER_UNAVAILABLE"
+  | "RUST_UNAVAILABLE"
+  | "GO_UNAVAILABLE"
+  | "JAVA_UNAVAILABLE"
+  | "NODE_UNAVAILABLE"
+  | "TYPESCRIPT_UNAVAILABLE"
+  | "DOTNET_UNAVAILABLE"
   | "PROCESS_UNAVAILABLE"
   | "TIMED_OUT"
   | "INTERNAL";

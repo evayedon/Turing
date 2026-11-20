@@ -302,3 +302,26 @@ describe("declarative command registry", () => {
     expect(options).not.toContain("New Workspace File");
   });
 });
+
+it("reads the active editor's navigation support when opening the Go menu", async () => {
+  const user = userEvent.setup();
+  const current = new Set<string>();
+  const workbench = state({ editorSupports: (id) => current.has(id) });
+  render(
+    <MenuBar commands={() => describeCommands(workbench)} onRun={vi.fn()} />,
+  );
+  current.add("definition");
+  current.add("references");
+  await user.click(screen.getByRole("menuitem", { name: "Go" }));
+  for (const [label, available] of [
+    ["Go to Definition", true],
+    ["Go to Declaration", false],
+    ["Go to Implementation", false],
+    ["Go to References", true],
+  ] as const)
+    expect(
+      screen
+        .getByRole("menuitem", { name: label })
+        .hasAttribute("aria-disabled"),
+    ).toBe(!available);
+});

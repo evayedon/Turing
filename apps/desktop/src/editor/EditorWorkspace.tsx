@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { EditorCommands } from "../shell/commands";
 import type { LanguageController } from "../language/use-language";
+import type { DiagnosticBatch } from "../language/diagnostic-store";
 import type { Problem } from "../language/problems";
 import type { EditorInfo } from "./editor-info";
 import { openDocuments } from "./editor-groups";
@@ -65,15 +66,19 @@ export function EditorWorkspace({
   save,
   saveAs,
   reload,
+  compareDisk,
+  keepDraft,
   onInfo,
   emptyContent,
   language,
   problems,
+  onMonacoDiagnostics,
 }: EditorState & {
   runControls?: ReactNode;
   sharedModels?: TextModels;
   language?: LanguageController;
   problems?: Problem[];
+  onMonacoDiagnostics?: (batches: DiagnosticBatch[]) => void;
   workspaceId?: string;
   onCommandsReady?: (commands: EditorCommands | undefined) => void;
   onSaveCommand?: () => void;
@@ -190,18 +195,73 @@ export function EditorWorkspace({
           </p>
         )}
         {shown?.changedOnDisk && (
-          <div className="editor-notice">
-            <span>This file changed on disk.</span>
-            {isActive && (
+          <>
+            <div className="editor-notice editor-conflict">
+              <span role="status">
+                {shown.deletedOnDisk
+                  ? shown.source.kind === "workspace"
+                    ? "Deleted on disk. Save can recreate this file after confirmation."
+                    : "Deleted on disk. Use Save As to keep a copy."
+                  : shown.draft !== shown.content
+                    ? shown.keptDraft
+                      ? "Draft kept. The disk conflict is still unresolved."
+                      : "This file changed on disk. Keep your draft, compare it with disk, or reload and discard your edits."
+                    : "This file changed on disk."}
+              </span>
+              {!shown.deletedOnDisk && (
+                <>
+                  {shown.draft !== shown.content && !shown.keptDraft && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => keepDraft(shown)}
+                    >
+                      Keep mine
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void reload(shown)}
+                  >
+                    Reload from disk
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void compareDisk(shown)}
+                  >
+                    {shown.diskComparison
+                      ? "Close comparison"
+                      : "Compare with disk"}
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void reload()}
+                onClick={() => void saveAs(shown)}
               >
-                Reload from disk
+                Save As a copy…
               </button>
+            </div>
+            {!shown.deletedOnDisk && shown.diskComparison !== undefined && (
+              <div
+                className="editor-disk-comparison"
+                aria-label="Disk comparison"
+                role="region"
+              >
+                <section aria-label="Editor text">
+                  <strong>Editor text</strong>
+                  <pre tabIndex={0}>{shown.draft}</pre>
+                </section>
+                <section aria-label="Disk text">
+                  <strong>Disk text</strong>
+                  <pre tabIndex={0}>{shown.diskComparison.content}</pre>
+                </section>
+              </div>
             )}
-          </div>
+          </>
         )}
         {shown ? (
           <div
@@ -233,6 +293,7 @@ export function EditorWorkspace({
                 onNavigate={navigate}
                 language={language}
                 problems={problems}
+                onMonacoDiagnostics={onMonacoDiagnostics}
               />
             </Suspense>
           </div>

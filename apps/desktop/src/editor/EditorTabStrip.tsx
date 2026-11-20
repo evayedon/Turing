@@ -34,6 +34,7 @@ export function EditorTabStrip({
       {tabs.map((tab, index) => {
         const { name } = tab;
         const dirty = isDirty(tab);
+        const status = tab.deletedOnDisk ? "Deleted on disk" : undefined;
         return (
           <div className="editor-tab" key={tab.key}>
             <button
@@ -41,9 +42,13 @@ export function EditorTabStrip({
               role="tab"
               id={`${id}-${index}`}
               aria-controls={active === tab ? panelId : undefined}
-              title={tab.title}
+              title={status ? `${tab.title} · ${status}` : tab.title}
               aria-selected={active === tab}
-              aria-label={dirty ? `${name} (unsaved)` : name}
+              aria-label={
+                name +
+                (dirty ? " (unsaved)" : "") +
+                (status ? ` (${status})` : "")
+              }
               disabled={busy}
               tabIndex={active === tab ? 0 : -1}
               onClick={() => select(tab.key)}
@@ -70,6 +75,7 @@ export function EditorTabStrip({
             >
               <FileCode2 size={14} aria-hidden="true" />
               <span>{name}</span>
+              {status && <span aria-hidden="true">{status}</span>}
               {dirty && (
                 <span className="editor-dirty" aria-hidden="true">
                   {" "}
