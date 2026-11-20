@@ -135,9 +135,13 @@ describe("Run & Build", () => {
     );
     const output = screen.getByRole("tabpanel", { name: "Output" });
     expect(within(output).getByRole("button", { name: "Stop" })).toBeTruthy();
+    // The run's status region is already mounted when the result arrives,
+    // so WebKit announces the exit code.
+    const status = within(output).getByRole("status");
     await act(async () => finish(completed));
     expect(within(output).getByText("ok")).toBeTruthy();
-    expect(within(output).getByText(/exit code 0/i)).toBeTruthy();
+    expect(within(output).getByRole("status")).toBe(status);
+    expect(status.textContent).toMatch(/exit code 0/i);
   });
 
   it("requires saving a changed buffer and runs the new revision after save", async () => {

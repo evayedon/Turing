@@ -74,11 +74,10 @@ export function GitPanel({
           {git.error}
         </p>
       )}
-      {git.notice && (
-        <p className="panel-message" role="status">
-          {git.notice}
-        </p>
-      )}
+      {/* Stays mounted: WebKit ignores live regions inserted with text. */}
+      <div role="status">
+        {git.notice && <p className="panel-message">{git.notice}</p>}
+      </div>
       {staged.length === 0 && changes.length === 0 ? (
         <p className="panel-message">No changes in the working tree.</p>
       ) : (
@@ -152,7 +151,12 @@ function BranchBar({ git }: { git: GitState }) {
             className="git-sync"
             title={`${status.ahead} ahead, ${status.behind} behind upstream`}
           >
-            ↑{status.ahead} ↓{status.behind}
+            <span aria-hidden="true">
+              ↑{status.ahead} ↓{status.behind}
+            </span>
+            <span className="visually-hidden">
+              {status.ahead} ahead, {status.behind} behind upstream
+            </span>
           </span>
         )}
         <button
@@ -322,6 +326,7 @@ function ChangeGroup({
               <button
                 type="button"
                 className="git-entry-open"
+                aria-label={`${entry.path}, ${label}`}
                 disabled={editorBusy || entry.state === "deleted"}
                 title={
                   entry.originalPath
@@ -346,7 +351,7 @@ function ChangeGroup({
               <span
                 className={`git-badge git-badge-${entry.state}`}
                 title={label}
-                aria-label={label}
+                aria-hidden="true"
               >
                 {letter}
               </span>

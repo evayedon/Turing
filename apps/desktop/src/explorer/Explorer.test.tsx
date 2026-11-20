@@ -116,6 +116,10 @@ describe("workspace explorer", () => {
     render(<Workbench />);
     await user.click(screen.getByRole("button", { name: "Open folder" }));
     const folder = await screen.findByRole("button", { name: "src/" });
+    const readme = screen.getByRole("button", { name: "README.md" });
+    // Roving tabindex: the tree is one Tab stop, arrows move inside it.
+    expect(folder.tabIndex).toBe(0);
+    expect(readme.tabIndex).toBe(-1);
     folder.focus();
     await user.keyboard("{ArrowRight}");
     const child = await screen.findByRole("button", { name: "main.ts" });
@@ -123,6 +127,8 @@ describe("workspace explorer", () => {
     expect(screen.getByRole("button", { name: "README.md" })).toBeTruthy();
     await user.keyboard("{ArrowRight}");
     expect(document.activeElement).toBe(child);
+    expect(child.tabIndex).toBe(0);
+    expect(folder.tabIndex).toBe(-1);
     await user.keyboard("{ArrowLeft}");
     expect(document.activeElement).toBe(folder);
     await user.keyboard("{ArrowLeft}");
@@ -155,9 +161,8 @@ describe("workspace explorer", () => {
 
     await user.click(screen.getByRole("button", { name: "Open folder" }));
     const explorer = within(screen.getByRole("region", { name: "Explorer" }));
-    expect((await explorer.findByRole("status")).textContent).toContain(
-      "Loading folder",
-    );
+    const status = explorer.getByRole("status");
+    await waitFor(() => expect(status.textContent).toContain("Loading folder"));
     rejectListing("PERMISSION_DENIED");
     expect((await screen.findByRole("alert")).textContent).toContain(
       "could not access",

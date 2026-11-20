@@ -182,3 +182,69 @@ Source Control view. Leave at least one fixture file untracked or modified.
 
 Record the focused control, exact keys, expected result, and actual speech for
 any failure. Include the platform and build with the completed checklist.
+
+## Code audit findings (phase 4)
+
+This section records a source review of the checklist above against the React
+components. **No screen reader was run for it.** VoiceOver, NVDA, and Orca
+results still have to come from people running the checklist on real
+hardware. Each fix has a focused Vitest and Testing Library assertion, with an
+axe check where the view already had one. jsdom cannot show what WebKit or any
+screen reader actually speaks.
+
+### Fixed
+
+| Scenario | Area                                                  | Finding                                                                                                                                                                                  | Fix                                                                                                                                                                                                                   |
+| -------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2        | `explorer/Explorer.tsx`                               | Every tree row was a Tab stop, so Tab walked the whole tree.                                                                                                                             | Roving tabindex. The focused row, or else the active file, or else the first row, is the single Tab stop. Arrow keys move within the tree.                                                                            |
+| 1, 2     | `explorer/Explorer.tsx`                               | The "Loading folder…" status was inserted together with its text. WebKit ignores live regions created that way.                                                                          | The status region stays mounted and only its content changes.                                                                                                                                                         |
+| 4        | `editor/MonacoHost.tsx`, `editor/EditorWorkspace.tsx` | Every editor group's text area was named "File editor".                                                                                                                                  | Monaco gets `ariaLabel` "File editor, group N" when the editor is split, and keeps "File editor" otherwise.                                                                                                           |
+| 4        | `editor/EditorTabStrip.tsx`                           | Open-file tabs reach their tablist only through `aria-owns`, which WebKit does not map reliably. Their position could be lost.                                                           | Tabs carry `aria-posinset` and `aria-setsize`.                                                                                                                                                                        |
+| 7        | `terminal/TerminalSessions.tsx`                       | The same `aria-owns` issue affected session tabs.                                                                                                                                        | Session tabs carry `aria-posinset` and `aria-setsize`.                                                                                                                                                                |
+| 7        | `terminal/TerminalPanel.tsx`                          | "Shell exited with code N." and "No matches" were status regions inserted together with their text.                                                                                      | Both messages use one persistent visually hidden status region (`shell/LiveStatus.tsx`).                                                                                                                              |
+| 5        | `language/ProblemsPanel.tsx`                          | Nothing announced the number of problems, and every problem was a Tab stop. Server messages were status regions inserted together with their text.                                       | A persistent status region gives counts such as "Errors: 1, Warnings: 1". The list uses roving tabindex. Each server message element stays mounted.                                                                   |
+| 6        | `execution/ExecutionOutput.tsx`                       | No change was needed. The run status element persists from "running" to "completed · Exit code 0", so the result is announced.                                                           | A test now checks that the region stays mounted across the update.                                                                                                                                                    |
+| 8, 9     | `shell/CommandPalette.tsx`                            | Empty-result, "Keep typing", and indexing notices were status regions inserted together with their text.                                                                                 | A mounted `role="status"` wrapper holds them, with no visual change. Symbol options are tested with their full name, for example "fresh function · src/example.ts:4".                                                 |
+| 10       | `search/SearchPanel.tsx`                              | The result count was a new status element created with the results, so WebKit would not announce it.                                                                                     | One status region, mounted before the search starts, holds the searching, canceled, and result-count text.                                                                                                            |
+| 10       | `git/GitPanel.tsx`                                    | A file's change state came only from a badge with `aria-label` on a generic `span` and a `title`. The ahead/behind count was read as arrow glyphs. Notices were inserted status regions. | Each file button is named with its path and state, for example "src/app.ts, Modified", and the badge is `aria-hidden`. The ahead/behind count has a visually hidden text equivalent. The notice region stays mounted. |
+| 11       | `editor/EditorWorkspace.tsx`                          | "Recovered copy…" and the on-disk conflict notices were status regions inserted together with their text, once in each group.                                                            | One persistent workspace-level status region announces these notices for the active tab. The visible notices are unchanged.                                                                                           |
+
+### Reviewed and left unchanged
+
+- **Menus (1).** The title-bar menus already use `menubar`, `menu`, and
+  `menuitem`/`menuitemcheckbox` roles, with a roving tabindex, `aria-expanded`,
+  and Escape returning focus to the trigger. Shortcut hints use
+  `aria-description`, and WebKit support for that attribute has not been
+  verified. Submenus are siblings of their trigger and have no `aria-controls`.
+- **Explorer semantics (2).** Rows are buttons in nested lists that carry
+  `aria-expanded` and `aria-current`. They do not use `tree`/`treeitem` roles.
+  A screen reader announces them as buttons in a list, with no tree level.
+  Switching to `role="tree"` would be a larger restructure, so it was left for
+  a decision after a human run.
+- **Live regions with names.** The status bar's "Document save state" (3) and
+  "Problem navigation" (5) regions have an `aria-label`. Some screen readers
+  speak the label in place of the changed text. A human should confirm that
+  "Saved" and the F8 problem text are spoken. Both regions already stay mounted.
+- **Monaco screen-reader mode (2, 3, 4).** `accessibilitySupport` keeps
+  Monaco's default (`auto`). Monaco cannot detect a screen reader inside a
+  WebView. How well line-by-line reading works with VoiceOver, NVDA, and Orca
+  needs a human run. A setting may be needed.
+- **First run output (6).** The status of the first program run is created
+  with the run, so its initial "running" phase may not be announced. The final
+  "Exit code" update is announced.
+- **Draft restore focus (11).** Focus moves to the editor through MonacoHost
+  when the restored model is shown. Nothing else sets focus explicitly. If the
+  editor is still loading lazily, focus could briefly fall to the document
+  body. Check this during a human run.
+- **Rename Symbol dialog.** It is outside the 11 scenarios and was not changed.
+  Its status and alert messages are still inserted together with their text.
+- **Disabled Start actions.** "Clone Git Repository…" and "Connect to…" give
+  their reason only in `title`. They are native disabled buttons, so they are
+  not in the Tab order.
+
+### Still needs a human run
+
+All 11 scenarios still need a human run on VoiceOver (macOS), NVDA (Windows),
+and Orca (Linux). The boxes in the checklist table stay unchecked. The
+persistent-region fixes in particular are based on how WebKit is documented to
+behave, and no one has heard them spoken yet.

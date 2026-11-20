@@ -152,8 +152,9 @@ describe("editor workspace", () => {
     });
     await act(async () => deliver({ paths: ["main.ts"], rescan: false }));
     await waitFor(() =>
+      // One notice per group, plus the persistent live region.
       expect(screen.getAllByText(/Keep your draft, compare it/)).toHaveLength(
-        2,
+        3,
       ),
     );
     const left = within(screen.getByRole("region", { name: "Editor group 1" }));
@@ -163,7 +164,7 @@ describe("editor workspace", () => {
     ).toContain("external text");
     expect(left.getByRole("button", { name: "Save As a copy…" })).toBeTruthy();
     await user.click(left.getByRole("button", { name: "Keep mine" }));
-    expect(screen.getAllByText(/Draft kept/)).toHaveLength(2);
+    expect(screen.getAllByText(/Draft kept/)).toHaveLength(3);
 
     deleted = true;
     vi.mocked(pollWorkspaceChanges).mockResolvedValueOnce({
@@ -579,7 +580,18 @@ describe("editor workspace", () => {
     ipc.mockResolvedValueOnce(snapshot("main.ts", "external content", "other"));
     fireEvent(window, new Event("focus"));
 
-    expect(await screen.findByText("This file changed on disk.")).toBeTruthy();
+    expect(
+      await screen.findByText("This file changed on disk.", {
+        selector: ".editor-conflict span",
+      }),
+    ).toBeTruthy();
+    // Announced through a live region that existed before the change.
+    expect(
+      screen
+        .getAllByRole("status")
+        .map(({ textContent }) => textContent)
+        .includes("This file changed on disk."),
+    ).toBe(true);
     expect(editor.value).toBe("contents of main.ts");
     expect(screen.getByRole("tab", { name: "main.ts" })).toBeTruthy();
   });

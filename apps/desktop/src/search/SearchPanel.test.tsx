@@ -43,14 +43,17 @@ describe("workspace search", () => {
       skippedFiles: 0,
     });
     const query = screen.getByRole("searchbox", { name: "Search text" });
+    // WebKit only announces live regions that already exist, so the count
+    // must land in the region rendered before the search started.
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
     query.focus();
     await user.keyboard("needle{Enter}");
     const match = await screen.findByRole("button", {
       name: /main.ts, line 2, column 3/,
     });
-    expect(screen.getByRole("status").textContent).toContain(
-      "1 match in 1 file",
-    );
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toContain("1 match in 1 file");
     await expectAccessible(container);
     screen.getByText("main.ts").focus();
     await user.tab();

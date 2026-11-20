@@ -44,6 +44,9 @@ export function EditorTabStrip({
               aria-controls={active === tab ? panelId : undefined}
               title={status ? `${tab.title} · ${status}` : tab.title}
               aria-selected={active === tab}
+              // WebKit does not reliably map aria-owns, so give the position.
+              aria-posinset={index + 1}
+              aria-setsize={tabs.length}
               aria-label={
                 name +
                 (dirty ? " (unsaved)" : "") +

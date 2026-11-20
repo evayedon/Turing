@@ -83,11 +83,18 @@ describe("workbench panels", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Restore Untitled-1" }),
     );
+    const regions = screen.getAllByRole("status");
     await user.keyboard("{Enter}");
     expect(
       screen.getByRole("tab", { name: "Recovered-1-Untitled-1 (unsaved)" }),
     ).toBeTruthy();
     expect(screen.queryByText("Recover unsaved drafts (1)")).toBeNull();
+    // The notice lands in a live region that existed before the restore.
+    expect(
+      regions.some(({ textContent }) =>
+        textContent?.startsWith("Recovered copy."),
+      ),
+    ).toBe(true);
   });
 
   it("opens Explorer and Editor on a fresh profile", () => {
