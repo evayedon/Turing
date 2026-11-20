@@ -168,7 +168,9 @@
     input.element.focus();
     await waitFor(
       "editor focus",
-      () => document.hasFocus() && document.activeElement === input.element,
+      // Only the page's active element matters for scripted input; OS window
+      // focus is not guaranteed for a background launch.
+      () => document.activeElement === input.element,
     );
     const started = performance.now();
     for (const char of text) insert(input, char);
