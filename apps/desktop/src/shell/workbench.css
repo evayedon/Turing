@@ -393,6 +393,7 @@ svg {
 }
 .editor-tabs {
   display: flex;
+  min-width: 0;
   overflow: auto hidden;
 }
 .editor-tab {
@@ -468,6 +469,50 @@ svg {
 }
 .breadcrumbs span:last-child {
   color: var(--nebula-text);
+}
+.editor-groups {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: auto;
+}
+.editor-group {
+  container: editor-group / inline-size;
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+  min-width: min(100%, 10rem);
+}
+.editor-group + .editor-group {
+  border-left: 1px solid var(--nebula-border);
+}
+.editor-group[data-inactive] .editor-tab:has([aria-selected="true"])::after {
+  background: var(--nebula-muted);
+}
+.editor-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+}
+@container editor-group (max-width: 22rem) {
+  .editor-toolbar {
+    flex-direction: column;
+  }
+
+  .editor-actions,
+  .editor-run {
+    flex-wrap: wrap;
+  }
+
+  .editor-actions {
+    border-top: 1px solid var(--nebula-border);
+  }
+}
+.editor-toolbar .editor-icon-button {
+  padding-inline: 8px;
 }
 .monaco-host {
   position: relative;

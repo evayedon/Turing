@@ -49,9 +49,9 @@ pub struct TerminalStarted {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalOutput {
-    bytes: Vec<u8>,
-    finished: bool,
-    exit_code: Option<u32>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) finished: bool,
+    pub(crate) exit_code: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -598,13 +598,13 @@ pub async fn terminal_close(window: WebviewWindow, id: String) -> Result<()> {
     .await
 }
 
+#[cfg(all(windows, any(test, feature = "perf")))]
+pub(crate) const CONPTY_QUERIES: [(&[u8], &[u8]); 2] =
+    [(b"\x1b[6n", b"\x1b[1;1R"), (b"\x1b[c", b"\x1b[?1;0c")];
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(windows)]
-    const CONPTY_QUERIES: [(&[u8], &[u8]); 2] =
-        [(b"\x1b[6n", b"\x1b[1;1R"), (b"\x1b[c", b"\x1b[?1;0c")];
 
     #[track_caller]
     fn output_until(

@@ -60,6 +60,36 @@ const reads = () =>
     .map(([, args]) => (args as { relativePath: string }).relativePath);
 
 describe("editor watcher reconciliation", () => {
+  it("checks a shared document once and exposes the same flag in both groups", async () => {
+    const { result } = renderHook(() => useEditor("workspace", true));
+    await act(async () => result.current.open("src/a.ts"));
+    act(() => result.current.splitEditor());
+    const [left, right] = result.current.groups.groups;
+    const key = left.activeKey;
+    expect(right.activeKey).toBe(key);
+    act(() => result.current.edit(result.current.active!, "unsaved edit"));
+
+    ipc.mockClear();
+    disk.set("src/a.ts", "external");
+    await act(async () =>
+      result.current.applyDiskChanges("workspace", {
+        paths: ["src/a.ts"],
+        rescan: false,
+      }),
+    );
+    expect(reads()).toEqual(["src/a.ts"]);
+    expect(result.current.tabs).toHaveLength(1);
+    const flagged = result.current.tabs[0];
+    expect(flagged).toMatchObject({
+      key,
+      changedOnDisk: true,
+      draft: "unsaved edit",
+    });
+    expect(result.current.active).toBe(flagged);
+    act(() => result.current.focusGroup(left.id));
+    expect(result.current.active).toBe(flagged);
+  });
+
   it("checks only touched tabs and flags external edits and removals", async () => {
     const { result, flags } = await openAll();
     ipc.mockClear();

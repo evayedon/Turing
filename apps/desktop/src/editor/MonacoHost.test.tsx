@@ -3,6 +3,8 @@
 import { render } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import MonacoHost from "./MonacoHost";
+import type { TextModels } from "./MonacoHost";
+import { ModelRegistry } from "./model-registry";
 import type { EditorTab } from "./use-editor";
 
 const mocks = vi.hoisted(() => {
@@ -82,10 +84,13 @@ it("changes language on the same model after a rename and a manual selection", (
     draft: "my draft",
     changedOnDisk: false,
   };
+  const models: TextModels = new ModelRegistry();
   const view = (active: EditorTab) => (
     <MonacoHost
       active={active}
       tabs={[active]}
+      models={models}
+      group="1"
       readOnly={false}
       onInfo={report}
       onCommandsReady={ready}
@@ -141,10 +146,13 @@ it("updates and clears clangd and compiler markers independently", () => {
     draft: "int x;",
     changedOnDisk: false,
   };
+  const models: TextModels = new ModelRegistry();
   const view = (show: boolean) => (
     <MonacoHost
       active={tab}
       tabs={[tab]}
+      models={models}
+      group="1"
       readOnly={false}
       onInfo={vi.fn()}
       onChange={vi.fn()}

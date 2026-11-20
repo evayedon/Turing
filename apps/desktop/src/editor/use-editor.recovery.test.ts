@@ -152,3 +152,44 @@ it("does not discard a snapshot another window edited after recovery opened", as
   await act(async () => result.current.discardDraft(stale));
   expect(result.current.recoveryDrafts[0]?.draft).toBe("updated");
 });
+
+it("restores an empty draft into the active group and journals it until its last view is discarded", async () => {
+  (await writeSnapshot("")).unmount();
+  const { result } = renderHook(() => useEditor("other", true, "/other"));
+  act(() => result.current.newFile());
+  act(() => result.current.splitEditor());
+  const [left, right] = result.current.groups.groups;
+  expect(result.current.groups.activeGroup).toBe(right.id);
+
+  await act(async () =>
+    result.current.restoreDraft(result.current.recoveryDrafts[0]),
+  );
+  const restored = result.current.active!;
+  expect(restored).toMatchObject({ recovered: true, draft: "" });
+  expect(result.current.groups.groups).toEqual([
+    left,
+    { ...right, keys: [...right.keys, restored.key], activeKey: restored.key },
+  ]);
+
+  act(() => result.current.splitEditor());
+  const shared = result.current.groups.activeGroup;
+  ipc.mockClear();
+  await act(async () => result.current.closeGroup(shared));
+  expect(ipc).not.toHaveBeenCalled();
+  expect(result.current.active).toBe(restored);
+
+  allowDiscard = false;
+  await act(async () => result.current.closeGroup(right.id));
+  expect(ipc).toHaveBeenCalledWith("editor_confirm_discard", { action: "tab" });
+  expect(result.current.active).toBe(restored);
+  const restarted = renderHook(() => useEditor(undefined, true));
+  expect(restarted.result.current.recoveryDrafts[0]?.draft).toBe("");
+  restarted.unmount();
+
+  allowDiscard = true;
+  await act(async () => result.current.closeGroup(right.id));
+  expect(result.current.groups.groups).toEqual([left]);
+  expect(result.current.tabs).not.toContain(restored);
+  const afterDiscard = renderHook(() => useEditor(undefined, true));
+  expect(afterDiscard.result.current.recoveryDrafts).toEqual([]);
+});

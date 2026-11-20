@@ -57,6 +57,11 @@ export type CommandId =
   | "rename"
   | "closeEditor"
   | "closeAll"
+  | "splitEditor"
+  | "moveEditorToNextGroup"
+  | "focusNextGroup"
+  | "focusPreviousGroup"
+  | "closeGroup"
   | "explorer"
   | "search"
   | "sidebar"
@@ -208,6 +213,16 @@ export const menus: { label: string; entries: MenuRow[] }[] = [
       "sidebar",
       "dock",
       { label: "Dock Panels", entries: ["showTerminal", "output", "problems"] },
+      {
+        label: "Editor Layout",
+        entries: [
+          "splitEditor",
+          "moveEditorToNextGroup",
+          "focusNextGroup",
+          "focusPreviousGroup",
+          "closeGroup",
+        ],
+      },
       "-",
       "palette",
       "settings",

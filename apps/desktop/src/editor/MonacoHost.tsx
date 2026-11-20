@@ -17,7 +17,9 @@ import { documentLanguage } from "./languages";
 import { monacoActions } from "../shell/commands";
 import type { EditorCommands } from "../shell/commands";
 import type { EditorInfo } from "./editor-info";
-import type { EditorLocation, EditorTab } from "./use-editor";
+import type { GroupId } from "./editor-groups";
+import type { ModelRegistry } from "./model-registry";
+import type { EditorLocation, EditorReveal, EditorTab } from "./use-editor";
 
 const environment = {
   getWorker(_moduleId: string, language: string) {
@@ -44,11 +46,18 @@ Object.assign(globalThis, { MonacoEnvironment: environment });
 
 const theme = "turing-nebula";
 
-interface OpenModel {
-  model: monaco.editor.ITextModel;
-  viewState: monaco.editor.ICodeEditorViewState | null;
+export type TextModels = ModelRegistry<monaco.editor.ITextModel>;
+
+function modeOf(tab: EditorTab) {
+  const language = documentLanguage(tab);
+  return language.monaco ?? language.id;
 }
 
+/**
+ * One editor group's Monaco view. Text models come from the shared
+ * registry, so a document open in several groups has one model (common
+ * content and undo stack). Cursor, selection and scroll stay per group.
+ */
 export default function MonacoHost({
   active,
   reveal,
@@ -61,9 +70,13 @@ export default function MonacoHost({
   onNavigate,
   language,
   problems,
+  models,
+  group,
+  primary = true,
+  focused = true,
 }: {
   active: EditorTab;
-  reveal?: EditorLocation & { key: string };
+  reveal?: EditorReveal;
   tabs: EditorTab[];
   readOnly: boolean;
   onInfo: (info: EditorInfo) => void;
@@ -73,21 +86,38 @@ export default function MonacoHost({
   language?: LanguageController;
   problems?: Problem[];
   onChange: (tab: EditorTab, value: string) => void;
+  models: TextModels;
+  group: GroupId;
+  /** The one view that registers language providers for every model. */
+  primary?: boolean;
+  /** This view belongs to the active group and drives workbench commands. */
+  focused?: boolean;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const models = useRef(new Map<string, OpenModel>());
-  const syncing = useRef(false);
+  // View state is per group: the same document keeps its own cursor and
+  // scroll in each group.
+  const viewStates = useRef(
+    new Map<string, monaco.editor.ICodeEditorViewState | null>(),
+  );
+  const shownKey = useRef<string>(undefined);
   const currentTabs = useEffectEvent(() => tabs);
   const languageRequest = useEffectEvent(
     (...args: Parameters<LanguageController["request"]>) =>
       language?.request(...args) ?? Promise.resolve(undefined),
   );
   const lastReveal = useRef<typeof reveal>(undefined);
-  const change = useEffectEvent((value: string) => onChange(active, value));
+  const change = useEffectEvent((model: monaco.editor.ITextModel) => {
+    // Every view of a shared model hears the edit; only one reports it.
+    if (models.get(active.key) !== model) return;
+    if (!models.claimChange(active.key, model.getVersionId())) return;
+    onChange(active, model.getValue(undefined, true));
+  });
+  const isFocused = useEffectEvent(() => focused);
 
   const report = useEffectEvent(
     (instance: monaco.editor.IStandaloneCodeEditor) => {
+      if (!focused) return;
       const position = instance.getPosition();
       const model = instance.getModel();
       if (!position || !model) return;
@@ -124,9 +154,7 @@ export default function MonacoHost({
         return;
       }
       const known = tabs.find(
-        (tab) =>
-          models.current.get(tab.key)?.model.uri.toString() ===
-          resource.toString(),
+        (tab) => models.get(tab.key)?.uri.toString() === resource.toString(),
       );
       if (
         known &&
@@ -260,7 +288,7 @@ export default function MonacoHost({
       fontFamily: colors.getPropertyValue("--nebula-mono").trim(),
     });
     editor.current = instance;
-    reportCommands(instance);
+    const detachView = models.attach(instance);
     const opener = monaco.editor.registerEditorOpener?.({
       openCodeEditor(source, resource, selection) {
         if (source !== instance) return false;
@@ -271,35 +299,34 @@ export default function MonacoHost({
       },
     });
     lastReveal.current = undefined;
-    const cache = models.current;
+    shownKey.current = undefined;
+    const states = viewStates.current;
     const subscription = instance.onDidChangeModelContent(() => {
-      if (!syncing.current)
-        change(instance.getModel()?.getValue(undefined, true) ?? "");
+      const model = instance.getModel();
+      if (!models.syncing && model) change(model);
     });
     const cursor = instance.onDidChangeCursorPosition(() => {
-      if (!syncing.current) report(instance);
+      if (!models.syncing) report(instance);
     });
     return () => {
       cursor.dispose();
       subscription.dispose();
       opener?.dispose();
-      reportCommands(undefined);
+      if (isFocused()) reportCommands(undefined);
+      detachView();
+      // The registry owns the models; another group may still show them.
       instance.dispose();
       editor.current = null;
-      for (const { model } of cache.values()) model.dispose();
-      cache.clear();
+      states.clear();
     };
-  }, []);
+  }, [models]);
 
   useLayoutEffect(() => {
     const instance = editor.current;
     if (!instance) return;
-    const cache = models.current;
     const activeKey = active.key;
-    const language = documentLanguage(active);
-    const mode = language.monaco ?? language.id;
-    let next = cache.get(activeKey);
-    if (!next) {
+    const mode = modeOf(active);
+    const model = models.acquire(activeKey, () => {
       let uri = monaco.Uri.from(
         active.source.kind === "workspace"
           ? {
@@ -310,48 +337,49 @@ export default function MonacoHost({
           : { scheme: "turing-document", path: `/${activeKey}/${active.name}` },
       );
       if (monaco.editor.getModel?.(uri)) uri = uri.with({ query: activeKey });
-      next = {
-        model: monaco.editor.createModel(active.draft, mode, uri),
-        viewState: null,
-      };
-      cache.set(activeKey, next);
-    }
+      return monaco.editor.createModel(active.draft, mode, uri);
+    });
 
-    if (next.model.getLanguageId() !== mode)
-      monaco.editor.setModelLanguage(next.model, mode);
-
-    syncing.current = true;
-    try {
-      if (instance.getModel() !== next.model) {
-        const previous = [...cache.values()].find(
-          ({ model }) => model === instance.getModel(),
-        );
-        if (previous) previous.viewState = instance.saveViewState();
-        instance.setModel(next.model);
-        if (next.viewState) instance.restoreViewState(next.viewState);
-        if (document.activeElement?.getAttribute("role") !== "tab")
+    models.sync(() => {
+      if (instance.getModel() !== model) {
+        const previous = shownKey.current;
+        if (previous !== undefined && instance.getModel())
+          viewStates.current.set(previous, instance.saveViewState());
+        instance.setModel(model);
+        const state = viewStates.current.get(activeKey);
+        if (state) instance.restoreViewState(state);
+        if (
+          isFocused() &&
+          document.activeElement?.getAttribute("role") !== "tab"
+        )
           instance.focus();
       }
-      if (next.model.getValue(undefined, true) !== active.draft)
-        next.model.setValue(active.draft);
-      const openTabs = new Map(tabs.map((tab) => [tab.key, tab]));
-      for (const [id, { model }] of cache) {
-        const tab = openTabs.get(id);
-        if (!tab) {
-          model.dispose();
-          cache.delete(id);
-        } else if (id !== activeKey) {
-          const language = documentLanguage(tab);
-          const mode = language.monaco ?? language.id;
-          if (model.getLanguageId() !== mode)
-            monaco.editor.setModelLanguage(model, mode);
-        }
+      shownKey.current = activeKey;
+      if (model.getValue(undefined, true) !== active.draft)
+        model.setValue(active.draft);
+      const open = new Set(tabs.map(({ key }) => key));
+      for (const key of viewStates.current.keys())
+        if (!open.has(key)) viewStates.current.delete(key);
+      for (const tab of tabs) {
+        const item = models.get(tab.key);
+        const tabMode = modeOf(tab);
+        if (item && item.getLanguageId() !== tabMode)
+          monaco.editor.setModelLanguage(item, tabMode);
       }
-    } finally {
-      syncing.current = false;
-    }
+    });
     report(instance);
-  }, [active, tabs]);
+  }, [active, tabs, models]);
+
+  useLayoutEffect(() => {
+    const instance = editor.current;
+    if (!focused || !instance) return;
+    report(instance);
+    // Follow a group switch with keyboard focus, unless focus already moved
+    // into this group (its tabs or toolbar) on its own.
+    const target = document.activeElement;
+    const pane = container.current?.closest("[data-editor-group]");
+    if (!(pane ?? container.current)?.contains(target)) instance.focus();
+  }, [focused]);
 
   useLayoutEffect(() => {
     const instance = editor.current;
@@ -361,6 +389,7 @@ export default function MonacoHost({
       !model ||
       !reveal ||
       reveal.key !== active.key ||
+      reveal.group !== group ||
       reveal === lastReveal.current
     )
       return;
@@ -372,35 +401,35 @@ export default function MonacoHost({
     instance.setPosition(position);
     instance.revealPositionInCenter(position);
     instance.focus();
-  }, [active.key, reveal]);
+  }, [active.key, reveal, group]);
 
   const capabilities = language?.capabilities;
   useLayoutEffect(() => {
-    if (!workspaceId || !capabilities) {
-      if (editor.current) reportCommands(editor.current);
-      return;
-    }
-    const detach = attachLanguage(
+    if (!workspaceId || !capabilities || !primary) return;
+    // Providers are global to Monaco, so only the primary view registers
+    // them. They serve every model, whichever group shows it.
+    return attachLanguage(
       monaco,
       workspaceId,
       capabilities,
-      (model) =>
-        currentTabs().find(
-          (tab) => models.current.get(tab.key)?.model === model,
-        ),
+      (model) => currentTabs().find((tab) => models.get(tab.key) === model),
       (...args) => languageRequest(...args),
-      (model) => editor.current?.getModel() === model,
+      (model) => models.isShown(model),
     );
-    if (editor.current) reportCommands(editor.current);
-    return detach;
-  }, [workspaceId, capabilities]);
+  }, [workspaceId, capabilities, primary, models]);
+
+  useLayoutEffect(() => {
+    if (focused && editor.current) reportCommands(editor.current);
+  }, [focused, active.key, active.uri, workspaceId, capabilities]);
 
   useLayoutEffect(() => {
     if (!problems || !monaco.editor.setModelMarkers) return;
-    for (const [key, { model }] of models.current)
+    for (const tab of currentTabs()) {
+      const model = models.get(tab.key);
+      if (!model) continue;
       for (const owner of ["clangd", "compiler"] as const) {
         const markers = problems
-          .filter((item) => item.tabKey === key && item.source === owner)
+          .filter((item) => item.tabKey === tab.key && item.source === owner)
           .map(({ message, start, end, severity }) => ({
             message,
             source: owner,
@@ -417,7 +446,8 @@ export default function MonacoHost({
           }));
         monaco.editor.setModelMarkers(model, owner, markers);
       }
-  }, [problems, active.key]);
+    }
+  }, [problems, active.key, models]);
 
   useLayoutEffect(
     () => editor.current?.updateOptions({ readOnly }),

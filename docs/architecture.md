@@ -198,6 +198,32 @@ writes back a stale snapshot. A file read or creation that finishes after its
 workspace was closed or replaced is discarded instead of opening a tab, and a
 revoked grant surfaces as a save error that keeps the draft.
 
+### Editor groups
+
+The editor area starts with one group. Split Editor Right opens the current
+document in a new group beside the source. Explorer and navigation open
+documents in the active group. Move Editor into Next Group moves the active
+tab to the group on its right, creating one when the source has other tabs
+and is already at the right edge. View → Editor Layout and the command
+palette expose the split, move, close and focus commands.
+
+`editor-groups.ts` tracks each group's ordered document keys and selected tab,
+plus the active group. `use-editor.ts` owns one document record per key,
+including its URI, revision, draft, dirty state and save lifecycle. Closing a
+tab or group prompts for unsaved changes only for documents that would lose
+their last tab. Workspace changes remove the departing workspace's documents
+from every group.
+
+The editor workspace owns a Monaco model registry keyed by document key.
+Each group has its own editor instance and saves its own cursor, selection
+and scroll for each document. Views share model content, undo history and
+Problems markers. A shared edit updates the document record once per model
+version. The registry retains models for open tabs, including inactive tabs,
+and disposes them after the last group drops the tab and the views have
+detached. The primary group registers language providers for all visible
+models. Editor commands, status and Problems navigation (including F8)
+follow the active group.
+
 ### Draft recovery
 
 The desktop workbench journals unsaved text in its local WebView storage,
@@ -215,7 +241,9 @@ current matching grant recover as untitled copies. The journal grants no
 filesystem access, and recovered tabs wait for an explicit save even when
 Auto Save is enabled. Save, successful reload, or confirmed discard removes
 the corresponding snapshot. A restored snapshot is replaced only after its
-new journal record has been written.
+new journal record has been written. Restoring opens the draft in the active
+editor group. Closing a group that shares the draft with another group keeps
+the draft and its journal entry. Closing its last view requires confirmation.
 
 ## Workspace watcher
 
@@ -261,7 +289,9 @@ Replies for a workspace that is no longer current are dropped. The Explorer
 re-lists each loaded folder that contains a changed path or lies below one,
 and forgets folders that no longer exist, moving the browse location to the
 parent. The editor re-reads touched workspace tabs and sets `changedOnDisk`
-when the version differs or the file is gone. It never replaces drafts, and a
+when the version differs or the file is gone. Each touched document is checked
+once per change set, and all its groups share the flag. The watcher preserves
+drafts, and a
 reply applies only to the revision it was issued for, so Turing's own saves
 and renames win. A tab whose file was renamed outside Turing is flagged as
 changed, not moved to the new name. Its save is refused as a conflict until the
@@ -524,8 +554,8 @@ with code 0. A failure or timeout prints the same JSON with `"status":"failed"`
 and an `error` message, and exits with code 1. Each step has a 60-second limit
 and a watchdog enforces the overall limit.
 
-The summary is the baseline for startup and interaction timing. All values are
-milliseconds: `mainPageLoadedMs` from process start, and per window
+The lifecycle summary reports timing in milliseconds. It includes
+`mainPageLoadedMs` from harness initialization, and per window
 `openToPageLoadedMs`, `openToReadyMs`, `readyToPtyMs` for terminals, and
 `closeMs`. `totalMs` covers the whole run.
 
@@ -536,6 +566,62 @@ and resource cleanup. It does not check pixels, layout, focus, keyboard or
 pointer interaction, editor behaviour, shell output, workspace access, or
 dirty-document prompts. A passing run does not show that installers or signed
 bundles launch.
+
+### Startup and interaction baseline
+
+The non-default `perf` cargo feature implies `smoke`. The Node driver enables
+both harness modes (`TURING_SMOKE=1` and `TURING_PERF=1`) and launches the binary
+sequentially, ten times by default. It reads each native smoke summary from a
+private temporary path, prints a table and writes schema-versioned JSON with
+raw captures and aggregates. Build without installers from the repository root:
+
+```sh
+pnpm build
+CARGO_NET_OFFLINE=true cargo build --release --locked --features perf,tauri/custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
+node apps/desktop/scripts/perf-baseline.mjs --output baseline.json
+node apps/desktop/scripts/perf-baseline.mjs --compare baseline.json next.json
+node --test apps/desktop/scripts/perf-metrics.node.mjs
+```
+
+Use `--runs N` to override the launch count and `--binary PATH` for an alternate
+Cargo target directory. Run in a GUI session and leave the app focused during
+the editor workload. Use the same machine, OS, build profile, run count and
+display setup for both captures. Each launch starts a fresh app process with private
+WebViews to isolate settings and recent workspaces. OS caches may warm across runs. Percentiles use nearest rank, so the default p95
+is the maximum of ten samples. The comparison reports new minus old values
+and percentage changes relative to the old baseline.
+
+- **Startup.** Main page-load and initial React mount are measured from the
+  beginning of Rust's `main`. Auxiliary windows are timed from the open
+  request to the mount sentinel, with separate rows for the first and
+  second window of each kind.
+- **Memory.** RSS is sampled after main load and mount, after two workbenches
+  and two terminal windows have opened and the latter have started PTYs,
+  and after the workloads and auxiliary window teardown. macOS uses
+  `proc_pidinfo(PROC_PIDTASKINFO)` and Linux uses `/proc/self/statm`. Windows
+  RSS is unavailable because the existing `windows-sys` features omit
+  ProcessStatus. Only the Turing app process is sampled. WebView processes
+  and PTY shell processes are separate.
+- **Editor.** A Rust-generated temporary workspace goes through the regular
+  workspace registration path in one harness-owned workbench. An
+  initialization script opens a 1,320,000-byte, 40,000-line text file through
+  Explorer and times the first rendered Monaco view. It then sends 159
+  characters through Monaco's platform input element and waits for a paint.
+  The harness checks the rendered text and verifies the saved bytes before
+  closing the workbench. Results return through a document-title sentinel.
+- **PTY.** A dedicated session in an auxiliary terminal window uses the
+  production start, input and read handlers. The start clock ends when the
+  first command's readiness marker arrives from the shell. The throughput
+  clock covers command submission through receipt of 200,000 verified lines
+  from `yes | head` on Unix and PowerShell on Windows. It counts 6,400,000
+  payload bytes and excludes line endings, shell echo and terminal control
+  bytes. This measures the PTY path through the Rust read handler. The
+  frontend's xterm rendering and IPC serialization are outside that timing.
+
+The **CI** workflow's manual dispatch runs the capture on macOS and Windows
+directly and on Linux under Xvfb. Each successful capture uploads its JSON
+as a platform-specific artifact. The capture and upload steps are optional
+and use no performance thresholds.
 
 ## Code navigation and debugging status
 

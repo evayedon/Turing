@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
   push:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -91,3 +92,28 @@ jobs:
           echo "Smoke summary:"
           cat "$TURING_SMOKE_OUTPUT" || echo "No summary was written."
           exit "$status"
+
+      - name: Capture startup and interaction baseline
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        timeout-minutes: 12
+        shell: bash
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: |
+          cargo build --release --locked --features perf,tauri/custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
+          output="$RUNNER_TEMP/turing-perf-baseline.json"
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" node apps/desktop/scripts/perf-baseline.mjs --output "$output"
+          else
+            node apps/desktop/scripts/perf-baseline.mjs --output "$output"
+          fi
+
+      - name: Upload startup and interaction baseline
+        if: always() && github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: turing-perf-${{ matrix.os }}
+          path: ${{ runner.temp }}/turing-perf-baseline.json
+          if-no-files-found: ignore

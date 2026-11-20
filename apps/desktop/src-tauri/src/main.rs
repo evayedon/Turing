@@ -15,6 +15,8 @@ mod workspace;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 fn main() {
+    #[cfg(feature = "perf")]
+    let started = std::time::Instant::now();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(windows::Windows::default())
@@ -31,6 +33,12 @@ fn main() {
     // `smoke` feature and activates only when TURING_SMOKE=1.
     #[cfg(feature = "smoke")]
     let builder = smoke::install(builder);
+    #[cfg(feature = "perf")]
+    let mut context = tauri::generate_context!();
+    #[cfg(feature = "perf")]
+    let builder = smoke::configure_perf(builder, &mut context, started);
+    #[cfg(not(feature = "perf"))]
+    let context = tauri::generate_context!();
     builder
         .invoke_handler(tauri::generate_handler![
             windows::window_new_workbench,
@@ -77,7 +85,7 @@ fn main() {
             git::git_checkout,
             git::git_log,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to start Turing Core")
         .run(|app, event| {
             let resources = app.state::<windows::Windows>();

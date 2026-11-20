@@ -34,6 +34,8 @@ function state(overrides: Partial<CommandState> = {}): CommandState {
     canSave: true,
     autoSave: false,
     tabCount: 1,
+    groupCount: 1,
+    canMoveEditorToNextGroup: false,
     hasWorkspace: true,
     workspaceBusy: false,
     recentCount: 0,
@@ -71,6 +73,10 @@ function actions(): CommandActions {
     renameSelection: vi.fn(),
     closeActiveEditor: vi.fn(),
     closeAllEditors: vi.fn(),
+    splitEditor: vi.fn(),
+    moveEditorToNextGroup: vi.fn(),
+    focusEditorGroup: vi.fn(),
+    closeEditorGroup: vi.fn(),
     selectSidebar: vi.fn(),
     toggleSidebar: vi.fn(),
     toggleSourceControl: vi.fn(),
@@ -146,6 +152,39 @@ describe("declarative command registry", () => {
     expect(handleShortcut(enabled, pressed)).toBe("ran");
     expect(pressed.defaultPrevented).toBe(true);
     expect(enabled.actions.save).toHaveBeenCalledTimes(4);
+  });
+
+  it("gates editor group commands on the group layout", () => {
+    const single = context();
+    const views = describeCommands(single.state);
+    expect(views.splitEditor.enabled).toBe(true);
+    expect(views.splitEditor.hint).toBe("Ctrl+\\");
+    expect(views.moveEditorToNextGroup.enabled).toBe(false);
+    expect(views.focusNextGroup.enabled).toBe(false);
+    expect(views.closeGroup.enabled).toBe(false);
+    expect(views.focusNextGroup.hint).toBe("Ctrl+F6");
+    expect(views.focusPreviousGroup.hint).toBe("Ctrl+Shift+F6");
+    expect(handleShortcut(single, key({ key: "F6", ctrlKey: true }))).toBe(
+      "ignored",
+    );
+    expect(handleShortcut(single, key({ key: "\\", ctrlKey: true }))).toBe(
+      "ran",
+    );
+    expect(single.actions.splitEditor).toHaveBeenCalledOnce();
+
+    const split = context({ groupCount: 2, canMoveEditorToNextGroup: true });
+    expect(
+      handleShortcut(split, key({ key: "F6", ctrlKey: true, shiftKey: true })),
+    ).toBe("ran");
+    expect(split.actions.focusEditorGroup).toHaveBeenCalledWith(-1);
+    expect(dispatch(split, "closeGroup", { source: "menu" })).toBe("ran");
+    expect(split.actions.closeEditorGroup).toHaveBeenCalledOnce();
+    expect(
+      dispatch(split, "moveEditorToNextGroup", { source: "palette" }),
+    ).toBe("ran");
+    const busy = context({ groupCount: 2, editorBusy: true });
+    expect(dispatch(busy, "closeGroup", { source: "menu" })).toBe("ignored");
+    expect(dispatch(busy, "splitEditor", { source: "menu" })).toBe("ignored");
   });
 
   it("does not run hidden commands", () => {

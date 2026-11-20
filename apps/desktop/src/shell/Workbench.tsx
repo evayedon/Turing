@@ -1,3 +1,4 @@
+import { canMoveDocumentToNextGroup } from "../editor/editor-groups";
 import { isDirty } from "../editor/use-draft-recovery";
 import {
   CircleDot,
@@ -332,6 +333,8 @@ export function Workbench() {
     canSave: editor.canSave,
     autoSave: editor.autoSave,
     tabCount: editor.tabs.length,
+    groupCount: editor.groups.groups.length,
+    canMoveEditorToNextGroup: canMoveDocumentToNextGroup(editor.groups),
     hasWorkspace: !!explorer.workspace,
     workspaceBusy,
     recentCount: recents.length,
@@ -367,6 +370,10 @@ export function Workbench() {
       if (active) void editor.close(active);
     },
     closeAllEditors: editor.closeAll,
+    splitEditor: () => editor.splitEditor(),
+    moveEditorToNextGroup: editor.moveEditorToNextGroup,
+    focusEditorGroup: editor.focusNextGroup,
+    closeEditorGroup: () => void editor.closeGroup(),
     selectSidebar,
     toggleSidebar: toggleSidebarFromMenu,
     toggleSourceControl: () => toggleSidebar("git"),

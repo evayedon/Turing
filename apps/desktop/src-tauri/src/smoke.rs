@@ -8,6 +8,13 @@
 //! IPC path, closes every window through its normal close flow, verifies that
 //! the per-window resources were released, prints a JSON summary and exits.
 
+#[cfg(feature = "perf")]
+mod memory;
+#[cfg(feature = "perf")]
+mod perf;
+#[cfg(feature = "perf")]
+pub use perf::{configure_perf, fixture_for};
+
 use crate::windows::{self, Kind, Windows};
 use serde::Serialize;
 use std::{
@@ -97,6 +104,8 @@ pub struct Probe {
     started: Instant,
     marks: Mutex<HashMap<String, Marks>>,
     changed: Condvar,
+    #[cfg(feature = "perf")]
+    perf: Option<perf::Probe>,
 }
 
 impl Probe {
@@ -105,6 +114,8 @@ impl Probe {
             started,
             marks: Mutex::default(),
             changed: Condvar::new(),
+            #[cfg(feature = "perf")]
+            perf: None,
         }
     }
 
@@ -171,6 +182,9 @@ struct Summary {
     #[serde(skip_serializing_if = "Option::is_none")]
     main_page_loaded_ms: Option<f64>,
     windows: Vec<WindowTiming>,
+    #[cfg(feature = "perf")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    perf: Option<perf::Capture>,
     total_ms: f64,
 }
 
@@ -185,6 +199,8 @@ impl Summary {
             arch: std::env::consts::ARCH,
             main_page_loaded_ms: None,
             windows: Vec::new(),
+            #[cfg(feature = "perf")]
+            perf: None,
             total_ms: 0.,
         }
     }
@@ -271,6 +287,10 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     if std::env::var_os(ENABLE_ENV).is_none_or(|value| value != "1") {
         return builder;
     }
+    #[cfg(feature = "perf")]
+    if perf::enabled() {
+        return builder;
+    }
     let started = Instant::now();
     builder.manage(Probe::new(started)).setup(move |app| {
         let handle = app.handle().clone();
@@ -295,16 +315,36 @@ pub fn page_event(webview: &Webview<Wry>, event: PageLoadEvent) {
 pub fn instrument<'a>(
     manager: &AppHandle<Wry>,
     builder: WebviewWindowBuilder<'a, Wry, AppHandle<Wry>>,
+    _label: &str,
 ) -> WebviewWindowBuilder<'a, Wry, AppHandle<Wry>> {
-    if manager.try_state::<Probe>().is_none() {
+    let Some(_probe) = manager.try_state::<Probe>() else {
         return builder;
-    }
+    };
+    #[cfg(feature = "perf")]
+    let builder = if _probe.perf.is_some() {
+        // Measurements must not depend on whether the window happens to be
+        // in front: an occluded WebView throttles timers and rendering.
+        let builder = builder
+            .incognito(true)
+            .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+        if _label.starts_with("workbench-") {
+            builder.initialization_script(perf::EDITOR_SCRIPT)
+        } else {
+            builder
+        }
+    } else {
+        builder
+    };
     builder
         .initialization_script(READY_SCRIPT)
         .on_document_title_changed(|window, title| {
-            if title == READY_TITLE {
-                if let Some(probe) = window.try_state::<Probe>() {
+            if let Some(probe) = window.try_state::<Probe>() {
+                if title == READY_TITLE {
                     probe.record(window.label(), Mark::Ready);
+                }
+                #[cfg(feature = "perf")]
+                if let Some(perf) = &probe.perf {
+                    perf.record(window.label(), &title);
                 }
             }
         })
@@ -360,6 +400,12 @@ fn run(app: &AppHandle<Wry>, summary: &mut Summary) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or("main window is missing")?;
 
+    #[cfg(feature = "perf")]
+    if probe.perf.is_some() {
+        let ready = probe.wait("main", Mark::Ready, Instant::now() + STEP_TIMEOUT)?;
+        summary.perf = Some(perf::Capture::new(ms(ready - probe.started)));
+    }
+
     let mut opened = Vec::new();
     for kind in PLAN {
         let name = kind_name(kind);
@@ -404,6 +450,12 @@ fn run(app: &AppHandle<Wry>, summary: &mut Summary) -> Result<(), String> {
         ));
     }
 
+    #[cfg(feature = "perf")]
+    if let (Some(perf), Some(capture)) = (&probe.perf, &mut summary.perf) {
+        capture.after_open_rss_bytes = memory::resident();
+        perf.exercise(app, &opened[0].0, &opened[2].0, capture)?;
+    }
+
     for (index, (label, resources)) in opened.into_iter().enumerate() {
         let window = app
             .get_webview_window(&label)
@@ -438,6 +490,10 @@ fn run(app: &AppHandle<Wry>, summary: &mut Summary) -> Result<(), String> {
     native.sort();
     if native != ["main"] {
         return Err(format!("native windows remain open: {native:?}"));
+    }
+    #[cfg(feature = "perf")]
+    if let Some(capture) = &mut summary.perf {
+        capture.after_close_rss_bytes = memory::resident();
     }
     Ok(())
 }

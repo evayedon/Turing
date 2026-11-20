@@ -161,7 +161,7 @@ pub(crate) fn build(window: WebviewWindow, kind: Kind) -> Result<String, Workspa
         .min_inner_size(min_width, min_height)
         .theme(Some(tauri::Theme::Dark));
     #[cfg(feature = "smoke")]
-    let builder = crate::smoke::instrument(manager, builder);
+    let builder = crate::smoke::instrument(manager, builder, &label);
     if builder.build().is_err() {
         windows.remove(&label);
         return Err(WorkspaceError::IoError);
