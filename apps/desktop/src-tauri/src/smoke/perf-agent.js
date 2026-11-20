@@ -82,10 +82,17 @@
   }
 
   function activeTab() {
-    var tab = document.querySelector(
-      '[role="tablist"][aria-label="Open files"] [role="tab"][aria-selected="true"]',
+    // The tablist owns its tabs through aria-owns; they are not descendants.
+    var list = document.querySelector(
+      '[role="tablist"][aria-label="Open files"]',
     );
-    return tab ? tab.getAttribute("aria-label") : null;
+    var ids = list ? (list.getAttribute("aria-owns") || "").split(" ") : [];
+    for (var i = 0; i < ids.length; i++) {
+      var tab = ids[i] && document.getElementById(ids[i]);
+      if (tab && tab.getAttribute("aria-selected") === "true")
+        return tab.getAttribute("aria-label");
+    }
+    return null;
   }
 
   function viewText() {
