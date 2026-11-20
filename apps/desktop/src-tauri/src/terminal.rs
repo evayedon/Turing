@@ -717,8 +717,22 @@ mod tests {
     #[test]
     fn shell_round_trips_input_and_output_and_reports_exit() {
         let service = TerminalService::default();
+        // This test covers the PTY round trip, not a particular shell. On
+        // Windows, PowerShell can start slowly and drop early input on loaded
+        // CI runners, so use cmd.exe there.
+        let profile = if cfg!(windows) {
+            Profile::Cmd
+        } else {
+            Profile::System
+        };
         let started = service
-            .start("main", dimensions(24, 80).unwrap(), None)
+            .start_with(
+                "main",
+                uuid::Uuid::new_v4().to_string(),
+                dimensions(24, 80).unwrap(),
+                None,
+                profile,
+            )
             .unwrap();
         assert!(!started.workspace_directory);
         for (owner, id) in [("other", started.id.as_str()), ("main", "stale")] {
