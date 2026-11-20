@@ -8,6 +8,7 @@ import type { Problem } from "../language/problems";
 import type { EditorInfo } from "./editor-info";
 import { openDocuments } from "./editor-groups";
 import type { EditorGroup } from "./editor-groups";
+import { LiveStatus } from "../shell/LiveStatus";
 import { EditorTabStrip } from "./EditorTabStrip";
 import { ModelRegistry } from "./model-registry";
 import type { TextModels } from "./MonacoHost";
@@ -31,6 +32,26 @@ function Breadcrumbs({ tab, label }: { tab: EditorTab; label: string }) {
       ))}
     </nav>
   );
+}
+
+function recoveryNotice(tab: EditorTab) {
+  return tab.changedOnDisk
+    ? "The file on disk changed since this draft was saved. Use Save As to keep a separate copy."
+    : tab.source.kind === "untitled"
+      ? "Recovered copy. Use Save As to choose where to save it."
+      : "Recovered draft. Save when you are ready to write it to disk.";
+}
+
+function diskNotice(tab: EditorTab) {
+  return tab.deletedOnDisk
+    ? tab.source.kind === "workspace"
+      ? "Deleted on disk. Save can recreate this file after confirmation."
+      : "Deleted on disk. Use Save As to keep a copy."
+    : tab.draft !== tab.content
+      ? tab.keptDraft
+        ? "Draft kept. The disk conflict is still unresolved."
+        : "This file changed on disk. Keep your draft, compare it with disk, or reload and discard your edits."
+      : "This file changed on disk.";
 }
 
 /**
@@ -186,28 +207,12 @@ export function EditorWorkspace({
           </p>
         )}
         {shown?.recovered && (
-          <p className="editor-notice" role="status">
-            {shown.changedOnDisk
-              ? "The file on disk changed since this draft was saved. Use Save As to keep a separate copy."
-              : shown.source.kind === "untitled"
-                ? "Recovered copy. Use Save As to choose where to save it."
-                : "Recovered draft. Save when you are ready to write it to disk."}
-          </p>
+          <p className="editor-notice">{recoveryNotice(shown)}</p>
         )}
         {shown?.changedOnDisk && (
           <>
             <div className="editor-notice editor-conflict">
-              <span role="status">
-                {shown.deletedOnDisk
-                  ? shown.source.kind === "workspace"
-                    ? "Deleted on disk. Save can recreate this file after confirmation."
-                    : "Deleted on disk. Use Save As to keep a copy."
-                  : shown.draft !== shown.content
-                    ? shown.keptDraft
-                      ? "Draft kept. The disk conflict is still unresolved."
-                      : "This file changed on disk. Keep your draft, compare it with disk, or reload and discard your edits."
-                    : "This file changed on disk."}
-              </span>
+              <span>{diskNotice(shown)}</span>
               {!shown.deletedOnDisk && (
                 <>
                   {shown.draft !== shown.content && !shown.keptDraft && (
@@ -280,6 +285,9 @@ export function EditorWorkspace({
               <MonacoHost
                 models={models}
                 group={group.id}
+                ariaLabel={
+                  multiple ? `File editor, group ${number}` : "File editor"
+                }
                 primary={index === 0}
                 focused={isActive}
                 active={shown}
@@ -315,6 +323,17 @@ export function EditorWorkspace({
           {recoveryError}
         </p>
       )}
+      <LiveStatus
+        message={
+          active &&
+          [
+            active.recovered && recoveryNotice(active),
+            active.changedOnDisk && diskNotice(active),
+          ]
+            .filter(Boolean)
+            .join(" ")
+        }
+      />
       {recoveryDrafts.length > 0 && (
         <details className="editor-recovery">
           <summary>Recover unsaved drafts ({recoveryDrafts.length})</summary>

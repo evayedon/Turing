@@ -61,6 +61,7 @@ export function Explorer({
     value: string;
   }>();
   const [context, setContext] = useState<string>();
+  const [current, setCurrent] = useState<string>();
   const focusPath = useRef<string | undefined>(undefined);
   const root = useRef<HTMLDivElement>(null);
   const submitInProgress = useRef(false);
@@ -153,6 +154,20 @@ export function Explorer({
   );
   const disabled = !!busy || editorBusy;
 
+  // One tree row is in the Tab order; arrows move between the others.
+  function visibleRows(path: string): string[] {
+    return (folders.get(path) ?? []).flatMap(({ kind, relativePath: row }) =>
+      kind === "directory" &&
+      (relativePath === row || relativePath.startsWith(`${row}/`))
+        ? [row, ...visibleRows(row)]
+        : [row],
+    );
+  }
+  const rows = visibleRows("");
+  const tabStop =
+    [current, activeFile].find((path) => path && rows.includes(path)) ??
+    rows[0];
+
   if (!native)
     return (
       <div className="pane-empty">
@@ -196,11 +211,15 @@ export function Explorer({
                     aria-expanded={folder ? expanded : undefined}
                     aria-current={selected ? "true" : undefined}
                     aria-label={folder ? `${name}/` : name}
+                    tabIndex={entryPath === tabStop ? 0 : -1}
                     disabled={editorBusy}
                     data-parent={path}
                     data-path={entryPath}
                     style={{ paddingInlineStart: 8 + depth * 13 }}
-                    onFocus={() => onSelectEntry?.(entry)}
+                    onFocus={() => {
+                      setCurrent(entryPath);
+                      onSelectEntry?.(entry);
+                    }}
                     onContextMenu={(event) => {
                       if (!renameEntry || !entry.identity || disabled) return;
                       event.preventDefault();
@@ -426,15 +445,18 @@ export function Explorer({
           </button>
         </div>
       )}
-      {busy && (
-        <p className="panel-message" role="status">
-          {busy === "selecting folder"
-            ? "Waiting for folder selection…"
-            : busy === "closing workspace"
-              ? "Closing workspace…"
-              : "Loading folder…"}
-        </p>
-      )}
+      {/* Stays mounted: WebKit ignores live regions inserted with text. */}
+      <div role="status">
+        {busy && (
+          <p className="panel-message">
+            {busy === "selecting folder"
+              ? "Waiting for folder selection…"
+              : busy === "closing workspace"
+                ? "Closing workspace…"
+                : "Loading folder…"}
+          </p>
+        )}
+      </div>
       {error && (
         <div className="explorer-error">
           <p className="panel-message" role="alert">

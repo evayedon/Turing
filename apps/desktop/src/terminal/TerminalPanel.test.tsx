@@ -189,7 +189,13 @@ describe("TerminalPanel", () => {
     await expectAccessible(document.body);
     await user.keyboard("{Escape}");
     expect(document.activeElement).toBe(profile);
-    screen.getByRole("tab", { name: "Terminal 2" }).focus();
+    const secondTab = screen.getByRole("tab", { name: "Terminal 2" });
+    // Position is explicit because WebKit does not reliably map aria-owns.
+    expect([
+      secondTab.getAttribute("aria-posinset"),
+      secondTab.getAttribute("aria-setsize"),
+    ]).toEqual(["2", "2"]);
+    secondTab.focus();
     await user.keyboard("{Home}");
     expect(document.activeElement).toBe(
       screen.getByRole("tab", { name: "Terminal 1", selected: true }),
@@ -489,11 +495,14 @@ describe("TerminalPanel", () => {
       .mockResolvedValueOnce({ id: "session", workspaceDirectory: false })
       .mockResolvedValueOnce({ bytes: [65], finished: true, exitCode: 7 });
     render(<TerminalPanel native />);
+    // Mounted before the shell starts, so WebKit announces the exit later.
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
     await userEvent.click(
       screen.getByRole("button", { name: "Start terminal" }),
     );
-    expect((await screen.findByRole("status")).textContent).toBe(
-      "Shell exited with code 7.",
+    await waitFor(() =>
+      expect(status.textContent).toBe("Shell exited with code 7."),
     );
     expect(view.write).toHaveBeenCalledWith([65]);
     expect(view.dispose).not.toHaveBeenCalled();

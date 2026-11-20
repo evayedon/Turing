@@ -339,6 +339,9 @@ export function TerminalSessions({
               ref={active === id ? activeTab : undefined}
               tabIndex={active === id ? 0 : -1}
               aria-selected={active === id}
+              // WebKit does not reliably map aria-owns, so give the position.
+              aria-posinset={slots.indexOf(id) + 1}
+              aria-setsize={slots.length}
               aria-controls={`terminal-session-${id}`}
               onClick={() => select(id)}
               onDoubleClick={() => startRename(id)}

@@ -115,6 +115,7 @@ export default function MonacoHost({
   group,
   primary = true,
   focused = true,
+  ariaLabel = "File editor",
 }: {
   active: EditorTab;
   reveal?: EditorReveal;
@@ -134,6 +135,8 @@ export default function MonacoHost({
   primary?: boolean;
   /** This view belongs to the active group and drives workbench commands. */
   focused?: boolean;
+  /** Accessible name of the editor text area, unique per editor group. */
+  ariaLabel?: string;
 }) {
   const clangdCapabilities = language?.capabilities;
   const typescriptCapabilities = language?.servers?.typescript.capabilities;
@@ -660,6 +663,11 @@ export default function MonacoHost({
   useLayoutEffect(
     () => editor.current?.updateOptions({ readOnly }),
     [readOnly],
+  );
+
+  useLayoutEffect(
+    () => editor.current?.updateOptions({ ariaLabel }),
+    [ariaLabel],
   );
 
   return <div ref={container} className="monaco-host" />;

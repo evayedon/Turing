@@ -180,6 +180,17 @@ describe("editor groups", () => {
       group(2).getByRole("tab", { name: "main.ts", selected: true }),
     ).toBeTruthy();
     expect(screen.getByRole("tablist", { name: "Open files, group 2" }));
+    // Each group's text area has its own name, and owned tabs carry their
+    // position because WebKit does not reliably map aria-owns.
+    expect([left.options.ariaLabel, right.options.ariaLabel]).toEqual([
+      "File editor, group 1",
+      "File editor, group 2",
+    ]);
+    const tab = group(2).getByRole("tab", { name: "main.ts" });
+    expect([
+      tab.getAttribute("aria-posinset"),
+      tab.getAttribute("aria-setsize"),
+    ]).toEqual(["1", "1"]);
     // The new group is active and has keyboard focus.
     expect(document.activeElement).toBe(right.input);
     expect(group(2).getByRole("button", { name: "Save" })).toBeTruthy();

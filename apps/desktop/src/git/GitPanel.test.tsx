@@ -88,7 +88,17 @@ describe("source control panel", () => {
       await screen.findByRole("region", { name: "Staged changes" }),
     ).toBeTruthy();
     expect(screen.getByRole("region", { name: "Changes" })).toBeTruthy();
-    expect(screen.getByText("↑1 ↓0")).toBeTruthy();
+    expect(screen.getByText("↑1 ↓0").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("1 ahead, 0 behind upstream")).toBeTruthy();
+    // The change state is part of each file's name, not a title-only badge.
+    expect(
+      screen.getByRole("button", { name: "src/app.ts, Modified" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "notes.txt, Untracked" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("");
+    await expectAccessible(document.body);
 
     await user.click(screen.getByRole("button", { name: "Stage README.md" }));
     expect(stage).toHaveBeenCalledWith({

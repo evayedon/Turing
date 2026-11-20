@@ -213,21 +213,23 @@ function WorkspaceSearch({
       {state.kind === "idle" && (
         <p className="panel-message">Enter text to search files on disk.</p>
       )}
-      {state.kind === "running" && (
-        <p className="panel-message" role="status">
-          Searching workspace…
-        </p>
-      )}
-      {state.kind === "cancelled" && (
-        <p className="panel-message" role="status">
-          Search canceled.
-        </p>
-      )}
       {state.kind === "failed" && (
         <p className="panel-message search-error" role="alert">
           {state.message}
         </p>
       )}
+      {/* Stays mounted: WebKit ignores live regions inserted with text. */}
+      <div role="status">
+        {state.kind === "running" && (
+          <p className="panel-message">Searching workspace…</p>
+        )}
+        {state.kind === "cancelled" && (
+          <p className="panel-message">Search canceled.</p>
+        )}
+        {state.kind === "finished" && (
+          <p className="panel-message">{summary(state.response)}</p>
+        )}
+      </div>
       {state.kind === "finished" && (
         <SearchResults
           response={state.response}
@@ -236,6 +238,24 @@ function WorkspaceSearch({
         />
       )}
     </>
+  );
+}
+
+function summary(response: SearchResponse) {
+  const count = response.files.reduce(
+    (sum, file) => sum + file.matches.length,
+    0,
+  );
+  return (
+    (count === 0
+      ? "No matches found."
+      : `${count} ${count === 1 ? "match" : "matches"} in ${response.files.length} ${response.files.length === 1 ? "file" : "files"}.`) +
+    (response.truncated
+      ? " Search reached a scan limit. Refine your query for more targeted results."
+      : "") +
+    (response.skippedFiles > 0
+      ? ` Skipped ${response.skippedFiles} unreadable, changed, or unsupported entries.`
+      : "")
   );
 }
 
@@ -248,11 +268,6 @@ function SearchResults({
   editorBusy: boolean;
   open: (path: string, location: EditorLocation) => void;
 }) {
-  const count = response.files.reduce(
-    (sum, file) => sum + file.matches.length,
-    0,
-  );
-
   function hit(path: string, match: SearchMatch) {
     const { line, column, before, text, after } = match;
     return (
@@ -278,15 +293,6 @@ function SearchResults({
 
   return (
     <>
-      <p className="panel-message" role="status">
-        {count === 0
-          ? "No matches found."
-          : `${count} ${count === 1 ? "match" : "matches"} in ${response.files.length} ${response.files.length === 1 ? "file" : "files"}.`}
-        {response.truncated &&
-          " Search reached a scan limit. Refine your query for more targeted results."}
-        {response.skippedFiles > 0 &&
-          ` Skipped ${response.skippedFiles} unreadable, changed, or unsupported entries.`}
-      </p>
       {response.files.map(({ relativePath, matches }) => (
         <details className="search-file" key={relativePath} open>
           <summary title={relativePath}>

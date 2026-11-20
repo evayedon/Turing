@@ -227,9 +227,12 @@ it("groups severities, keeps compiler identity separate, and opens a keyboard-se
   expect(screen.getByRole("region", { name: "Warnings" })).toBeTruthy();
   const first = screen.getByRole("button", { name: /Undeclared/ });
   const second = screen.getByRole("button", { name: /Compiler warning/ });
+  expect(screen.getByRole("status").textContent).toBe("Errors: 1, Warnings: 1");
+  expect([first.tabIndex, second.tabIndex]).toEqual([0, -1]);
   first.focus();
   fireEvent.keyDown(first, { key: "ArrowDown" });
   expect(document.activeElement).toBe(second);
+  expect([first.tabIndex, second.tabIndex]).toEqual([-1, 0]);
   fireEvent.click(second);
   expect(open).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -237,8 +240,12 @@ it("groups severities, keeps compiler identity separate, and opens a keyboard-se
       start: { line: 2, character: 1 },
     }),
   );
+  const status = screen.getByRole("status");
   rerender(<ProblemsPanel problems={problems} filter="warning" open={open} />);
   expect(screen.queryByRole("button", { name: /Undeclared/ })).toBeNull();
+  // The count updates in the region that was already mounted.
+  expect(screen.getByRole("status")).toBe(status);
+  expect(status.textContent).toBe("Warnings: 1");
 });
 
 it("waits for the current draft before requesting a completion", async () => {

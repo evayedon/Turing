@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { LanguageController } from "./use-language";
 import { problemGroups, type Problem } from "./problems";
+import { LiveStatus } from "../shell/LiveStatus";
 
 export function ProblemsPanel({
   problems,
@@ -18,6 +20,11 @@ export function ProblemsPanel({
       ...group,
       items: problems.filter(({ severity }) => severity === group.severity),
     }));
+  const total = filtered.reduce((sum, { items }) => sum + items.length, 0);
+  // One problem is in the Tab order; arrows, Home and End move between them.
+  const [current, setCurrent] = useState<string>();
+  const shown = filtered.flatMap(({ items }) => items.map(({ id }) => id));
+  const tabStop = current && shown.includes(current) ? current : shown[0];
   return (
     <div className="problems-panel">
       {servers && (
@@ -60,14 +67,22 @@ export function ProblemsPanel({
                   Allow Cargo build scripts and procedural macros
                 </label>
               )}
-              {server.message && <small role="status">{server.message}</small>}
+              <small role="status">{server.message}</small>
             </div>
           ))}
         </div>
       )}
-      {filtered.every(({ items }) => items.length === 0) && (
-        <p>No problems to show.</p>
-      )}
+      {total === 0 && <p>No problems to show.</p>}
+      <LiveStatus
+        message={
+          total === 0
+            ? "No problems"
+            : filtered
+                .filter(({ items }) => items.length)
+                .map(({ title, items }) => `${title}: ${items.length}`)
+                .join(", ")
+        }
+      />
       <div
         onKeyDown={(event) => {
           if (!(event.target instanceof HTMLButtonElement)) return;
@@ -100,7 +115,12 @@ export function ProblemsPanel({
                 <ul>
                   {items.map((problem) => (
                     <li key={problem.id}>
-                      <button type="button" onClick={() => open(problem)}>
+                      <button
+                        type="button"
+                        tabIndex={problem.id === tabStop ? 0 : -1}
+                        onFocus={() => setCurrent(problem.id)}
+                        onClick={() => open(problem)}
+                      >
                         <span>{problem.message}</span>{" "}
                         <small>
                           {problem.filename}:{problem.start.line + 1}:

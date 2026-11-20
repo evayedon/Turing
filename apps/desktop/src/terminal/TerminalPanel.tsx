@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import type { TerminalProfile, TerminalSize } from "@turing/contracts";
+import { LiveStatus } from "../shell/LiveStatus";
 import { invokeTerminal, terminalErrorMessage } from "./terminal-ipc";
 import type { createTerminalView } from "./terminal-view";
 
@@ -527,7 +528,7 @@ export function TerminalPanel({
             <span>Started outside the workspace</span>
           )}
         {status.phase === "exited" && status.exitCode !== null && (
-          <span role="status">Shell exited with code {status.exitCode}.</span>
+          <span>Shell exited with code {status.exitCode}.</span>
         )}
       </div>
       {search && (
@@ -557,7 +558,7 @@ export function TerminalPanel({
               setNoMatch(false);
             }}
           />
-          {noMatch && <span role="status">No matches</span>}
+          {noMatch && <span>No matches</span>}
           <button type="submit">Next match</button>
           <button
             type="button"
@@ -576,6 +577,15 @@ export function TerminalPanel({
           </button>
         </form>
       )}
+      <LiveStatus
+        message={
+          search && noMatch
+            ? "No matches"
+            : status.phase === "exited" && status.exitCode !== null
+              ? `Shell exited with code ${status.exitCode}.`
+              : undefined
+        }
+      />
       {error && (
         <p className="terminal-error" role="alert">
           {error}

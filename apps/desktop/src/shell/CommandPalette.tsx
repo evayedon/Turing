@@ -159,21 +159,16 @@ export function CommandPalette<Action extends PaletteEntry>({
             </li>
           ))}
         </ul>
-        {!matches.length && !notice && (
-          <p className="panel-message" role="status">
-            {emptyMessage}
-          </p>
-        )}
-        {matching.length > matches.length && (
-          <p className="panel-message" role="status">
-            Keep typing to narrow the results.
-          </p>
-        )}
-        {notice && (
-          <p className="panel-message" role="status">
-            {notice}
-          </p>
-        )}
+        {/* Stays mounted: WebKit ignores live regions inserted with text. */}
+        <div role="status">
+          {!matches.length && !notice && (
+            <p className="panel-message">{emptyMessage}</p>
+          )}
+          {matching.length > matches.length && (
+            <p className="panel-message">Keep typing to narrow the results.</p>
+          )}
+          {notice && <p className="panel-message">{notice}</p>}
+        </div>
         <footer>
           <span>
             <kbd>↑</kbd> <kbd>↓</kbd> Navigate

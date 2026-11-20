@@ -110,7 +110,8 @@ describe("workspace symbol picker", () => {
       />,
     );
     await tick(150);
-    expect(screen.getByRole("status").textContent).toContain("Indexing");
+    const status = screen.getByRole("status");
+    expect(status.textContent).toContain("Indexing");
     await tick(150);
     rerender(
       <WorkspaceSymbolPicker
@@ -124,7 +125,12 @@ describe("workspace symbol picker", () => {
     expect(
       screen.queryByRole("option", { name: /old registration/ }),
     ).toBeNull();
-    expect(screen.getByRole("option", { name: /fresh/ })).toBeTruthy();
+    expect(
+      screen.getByRole("option", { name: "fresh function · src/example.ts:4" }),
+    ).toBeTruthy();
+    // The same mounted region is updated, so WebKit can announce the change.
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toBe("");
     unmount();
     await tick(1000);
     expect(ipc).toHaveBeenCalledTimes(3);
