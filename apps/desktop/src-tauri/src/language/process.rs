@@ -12,7 +12,9 @@ use std::{
 /// Budget for the server to answer `shutdown`, then separately to exit
 /// after `exit`. Revocation and window destruction skip this and kill.
 const SHUTDOWN_REPLY: Duration = Duration::from_millis(750);
-const SHUTDOWN_EXIT: Duration = Duration::from_millis(750);
+// A real clangd joins its worker threads on exit, which can take seconds
+// while a preamble is still building (seen with clangd 18 on Linux CI).
+const SHUTDOWN_EXIT: Duration = Duration::from_secs(3);
 const SHUTDOWN_ID: u64 = 2;
 
 /// How an explicit stop ended. Anything but `Graceful` falls back to the

@@ -733,7 +733,7 @@ action. Requests that are cancelled, or that expire after 10 seconds, send
 `$/cancelRequest`; late replies are dropped. Server messages pass through a
 bounded queue with backpressure, so a burst slows the server instead of
 ending the session. Explicit Stop sends `shutdown` and waits up to 750 ms for
-the reply, then sends `exit` and waits up to 750 ms for the server to close its
+the reply, then sends `exit` and waits up to 3 s for the server to close its
 output. The result is reported as graceful, already exited, no reply or no
 exit, and anything but graceful falls through to forced cleanup. Workspace
 replacement, workspace close and window destruction revoke the session and
