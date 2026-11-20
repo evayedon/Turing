@@ -199,6 +199,8 @@ fn literal(language: Language, rest: &[u8]) -> Option<(usize, Vec<u8>, bool)> {
     None
 }
 
+pub(super) const MAX_LINE_BYTES: usize = 16 * 1024;
+
 pub(super) fn declarations(
     language: Language,
     text: &str,
@@ -207,6 +209,7 @@ pub(super) fn declarations(
     deadline: Instant,
 ) -> Result<IndexedFile> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut slice_started = Instant::now();
     let mut mask = Mask::default();
     let mut file = IndexedFile {
         declarations: Vec::new(),
@@ -217,10 +220,14 @@ pub(super) fn declarations(
         .flat_map(|line| line.strip_suffix('\r').unwrap_or(line).split('\r'))
         .enumerate()
     {
+        if Instant::now().duration_since(slice_started) >= super::SLICE_TIME {
+            std::thread::park_timeout(super::SLICE_PAUSE);
+            slice_started = Instant::now();
+        }
         if cancelled.load(Ordering::Relaxed) {
             return Err(WorkspaceError::SearchCancelled);
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline || source.len() > MAX_LINE_BYTES {
             file.truncated = true;
             break;
         }

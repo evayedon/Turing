@@ -58,6 +58,19 @@ jobs:
       - name: Test native workspace authorization
         run: cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
+      # The managed clangd pilot against a real server (opt-in elsewhere
+      # because it needs an installed, trusted clangd).
+      - name: Install clangd for the language-server integration test
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends clangd
+
+      - name: Test managed clangd against a real server
+        if: runner.os == 'Linux'
+        run: |
+          export TURING_TEST_CLANGD="$(readlink -f "$(command -v clangd)")"
+          "$TURING_TEST_CLANGD" --version
+          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml installed_clangd -- --ignored
+
       # Native lifecycle smoke harness: the real app opens and closes two
       # workbench and two terminal windows. The non-default `smoke` feature is
       # never part of the shipped build above. See docs/architecture.md.

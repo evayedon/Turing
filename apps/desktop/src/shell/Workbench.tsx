@@ -1,3 +1,4 @@
+import { isLargeDocument } from "../editor/performance-budget";
 import { canMoveDocumentToNextGroup } from "../editor/editor-groups";
 import { isDirty } from "../editor/use-draft-recovery";
 import {
@@ -110,6 +111,8 @@ function Panel({
   );
 }
 
+const NO_PROBLEMS: Problem[] = [];
+
 export function Workbench() {
   const explorer = useExplorer();
   const editor = useEditor(
@@ -132,13 +135,19 @@ export function Workbench() {
     explorer.native,
     editor.tabs,
   );
+  const compiledTab = editor.tabs.find(
+    ({ key }) => key === execution.run?.document.key,
+  );
+  const compiler = useMemo(
+    () => compilerBatches(execution.run, compiledTab ? [compiledTab] : []),
+    [execution.run, compiledTab],
+  );
   const problems = useMemo(
     () =>
-      currentProblems(
-        [...language.batches, ...compilerBatches(execution.run, editor.tabs)],
-        editor.tabs,
-      ),
-    [language.batches, execution.run, editor.tabs],
+      language.batches.length || compiler.length
+        ? currentProblems([...language.batches, ...compiler], editor.tabs)
+        : NO_PROBLEMS,
+    [language.batches, compiler, editor.tabs],
   );
   const tabOrder = editor.tabs.map(({ key }) => key);
   const navigable = orderProblems(problems, tabOrder);
@@ -806,6 +815,11 @@ export function Workbench() {
           )}
         </div>
         <div className="status-detail">
+          {active && isLargeDocument(active.draft) && (
+            <span title="Syntax highlighting, suggestions, folding, inline diagnostics and draft recovery are off. Save edits to keep them.">
+              Large file: some features off
+            </span>
+          )}
           {editor.autoSave && <span>Auto Save</span>}
           {live && (
             <>

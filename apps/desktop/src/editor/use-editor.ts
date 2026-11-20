@@ -75,6 +75,7 @@ export interface EditorTab {
   content: string;
   draft: string;
   editRevision?: number;
+  editedAt?: number;
   savedVersion?: string;
   changedOnDisk: boolean;
   languageOverride?: string;
@@ -667,6 +668,7 @@ export function useEditor(
           ? {
               ...item,
               draft,
+              editedAt: performance.now(),
               editRevision: (item.editRevision ?? 0) + 1,
               saveError: undefined,
             }

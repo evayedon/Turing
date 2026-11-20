@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LARGE_DOCUMENT_LENGTH } from "../editor/performance-budget";
 import type { EditorTab } from "../editor/use-editor";
 import { compilerProblems } from "./problems";
 
@@ -21,7 +22,7 @@ const tab: EditorTab = {
   changedOnDisk: false,
 };
 
-function build(...lines: string[]) {
+function buildFor(document: EditorTab, ...lines: string[]) {
   return compilerProblems(
     {
       document: { key: tab.key, version: "a" },
@@ -34,11 +35,22 @@ function build(...lines: string[]) {
       truncated: false,
       output: [{ stream: "buildStderr", text: lines.join("\n") }],
     },
-    [tab],
+    [document],
   );
 }
 
+const build = (...lines: string[]) => buildFor(tab, ...lines);
+
 describe("compilerProblems", () => {
+  it("skips inline compiler diagnostics for a large saved file", () => {
+    const text = source.padEnd(LARGE_DOCUMENT_LENGTH, " ");
+    expect(
+      buildFor(
+        { ...tab, content: text, draft: text },
+        "/tmp/turing-run-1/main.cpp:2:21: error: missing",
+      ),
+    ).toEqual([]);
+  });
   it("converts compiler byte columns to editor UTF-16 columns", () => {
     // Line 2 bytes: tab(1) + `auto s = "`(10) + é(2) + 😀(4) + `"; `(3) = 20,
     // so `missing` is byte column 21. In UTF-16 units: 1 + 10 + 1 + 2 + 3 = 17.

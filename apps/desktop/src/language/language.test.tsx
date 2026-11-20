@@ -10,6 +10,8 @@ import {
 } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { LanguageAction, LanguageEvent } from "@turing/contracts";
+import { LARGE_DOCUMENT_LENGTH } from "../editor/performance-budget";
+
 import type { EditorTab } from "../editor/use-editor";
 import { ProblemsPanel } from "./ProblemsPanel";
 import { clangdProblems, compilerProblems } from "./problems";
@@ -270,4 +272,33 @@ it("waits for the current draft before requesting a completion", async () => {
   });
   events.push({ kind: "response", requestId: 3, value: { items: [] } });
   await expect(pending).resolves.toEqual({ items: [] });
+});
+
+it("coalesces typing before sending text to clangd and closes large documents", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const { result, rerender, unmount } = renderHook(
+    ({ document }: { document: EditorTab }) =>
+      useLanguage("one", true, [document]),
+    { initialProps: { document: tab } },
+  );
+  try {
+    await act(() => result.current.start());
+    expect(actions).toHaveLength(1);
+    for (const draft of ["xy", "xyz", "xyzw"]) {
+      rerender({ document: { ...tab, draft, editedAt: performance.now() } });
+      await act(() => vi.advanceTimersByTimeAsync(120));
+      expect(actions).toHaveLength(1);
+    }
+    await act(() => vi.advanceTimersByTimeAsync(240));
+    expect(actions).toHaveLength(2);
+    expect(actions[1]).toMatchObject({ kind: "sync", text: "xyzw" });
+    rerender({
+      document: { ...tab, draft: "x".repeat(LARGE_DOCUMENT_LENGTH) },
+    });
+    await act(() => vi.advanceTimersByTimeAsync(120));
+    expect(actions.slice(2)).toEqual([{ kind: "close", path: "main.cpp" }]);
+  } finally {
+    unmount();
+    vi.useRealTimers();
+  }
 });

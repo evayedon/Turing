@@ -1,4 +1,4 @@
-/* global window, document, performance, requestAnimationFrame, setTimeout, TextUpdateEvent */
+/* global window, document, performance, requestAnimationFrame, setTimeout, clearTimeout, cancelAnimationFrame, KeyboardEvent, TextUpdateEvent */
 // Installed only in native performance harness windows.
 (function () {
   "use strict";
@@ -12,9 +12,14 @@
 
   function nextPaint() {
     return new Promise(function (resolve) {
-      requestAnimationFrame(function () {
-        setTimeout(resolve, 0);
+      const frame = requestAnimationFrame(function () {
+        clearTimeout(deadline);
+        setTimeout(() => resolve(true), 0);
       });
+      const deadline = setTimeout(() => {
+        cancelAnimationFrame(frame);
+        resolve(false);
+      }, 250);
     });
   }
 
@@ -152,8 +157,34 @@
           ")",
       );
     });
-    await nextPaint();
+    if (!(await nextPaint())) throw new Error("no frame after opening " + path);
     return round(performance.now() - started);
+  }
+
+  const text = "quick brown fox jumps over the lazy dog ".repeat(4).trimEnd();
+
+  async function typeBurst(path) {
+    const input = editorInput();
+    input.element.focus();
+    await waitFor(
+      "editor focus",
+      // Only the page's active element matters for scripted input; OS window
+      // focus is not guaranteed for a background launch.
+      () => document.activeElement === input.element,
+    );
+    const started = performance.now();
+    for (const char of text) insert(input, char);
+    const dispatchMs = round(performance.now() - started);
+    const painted = await nextPaint();
+    const elapsedMs = round(performance.now() - started);
+    await waitFor(
+      "the typed text in Monaco",
+      () =>
+        cursorText()?.column === text.length + 1 && viewText().includes(text),
+    );
+    await runMenu("File", "Save");
+    await waitFor("the saved " + path, () => activeTab() === path);
+    return { dispatchMs, elapsedMs, painted };
   }
 
   async function editorTask() {
@@ -163,24 +194,32 @@
       "Turing large document",
     );
     await openTimed("typing.txt", "");
-    const input = editorInput();
-    input.element.focus();
-    const text = "quick brown fox jumps over the lazy dog ".repeat(4).trimEnd();
-    const started = performance.now();
-    for (const char of text) insert(input, char);
-    await nextPaint();
-    const typingBurstMs = round(performance.now() - started);
-    await waitFor(
-      "the typed text in Monaco",
-      () =>
-        cursorText()?.column === text.length + 1 && viewText().includes(text),
+    const plain = await typeBurst("typing.txt");
+    await openTimed("large.txt", "Turing large document");
+
+    await runMenu("Go", "Go to Symbol in Workspace…");
+    const picker = await waitFor("a confirmed in-progress symbol scan", () => {
+      const dialog = document.querySelector(
+        'dialog[aria-label="Go to Symbol in Workspace"]',
+      );
+      return (
+        dialog?.querySelector('[role="status"]')?.textContent ===
+          "Indexing workspace symbols…" && dialog
+      );
+    });
+    picker.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
     );
-    await runMenu("File", "Save");
-    await waitFor(
-      "the typing document to save",
-      () => activeTab() === "typing.txt",
-    );
-    return { largeFileOpenMs, typingBurstMs };
+    const loaded = await typeBurst("large.txt");
+
+    return {
+      largeFileOpenMs,
+      typingBurstMs: plain.elapsedMs,
+      typingDispatchMs: plain.dispatchMs,
+      typingUnderLoadMs: loaded.elapsedMs,
+      typingUnderLoadDispatchMs: loaded.dispatchMs,
+      typingFrameTimeouts: Number(!plain.painted) + Number(!loaded.painted),
+    };
   }
 
   window.addEventListener(

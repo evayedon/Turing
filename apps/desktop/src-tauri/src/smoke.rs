@@ -454,6 +454,7 @@ fn run(app: &AppHandle<Wry>, summary: &mut Summary) -> Result<(), String> {
     if let (Some(perf), Some(capture)) = (&probe.perf, &mut summary.perf) {
         capture.after_open_rss_bytes = memory::resident();
         perf.exercise(app, &opened[0].0, &opened[2].0, capture)?;
+        capture.before_close_rss_bytes = memory::resident();
     }
 
     for (index, (label, resources)) in opened.into_iter().enumerate() {
@@ -478,6 +479,15 @@ fn run(app: &AppHandle<Wry>, summary: &mut Summary) -> Result<(), String> {
             request,
         )?;
         summary.windows[index].close_ms = Some(ms(closed - close));
+        let weak = Arc::downgrade(&resources);
+        drop(resources);
+        drop(window);
+        wait_until(
+            &format!("all native resource owners for {label} to release"),
+            close + STEP_TIMEOUT,
+            || weak.strong_count() == 0,
+            || {},
+        )?;
     }
 
     let labels = registry.labels();

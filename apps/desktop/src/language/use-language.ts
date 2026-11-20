@@ -7,6 +7,10 @@ import type {
   LanguagePosition,
 } from "@turing/contracts";
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import {
+  isLargeDocument,
+  languageEditPending,
+} from "../editor/performance-budget";
 import type { EditorTab } from "../editor/use-editor";
 import { clangdProblems, record } from "./problems";
 import type { Problem } from "./problems";
@@ -54,7 +58,8 @@ const failure = (error: unknown) =>
         : "clangd could not start or stopped responding. Enable it again to retry.";
 
 export function languagePath(tab: EditorTab, workspaceId?: string) {
-  return tab.source.kind === "workspace" &&
+  return !isLargeDocument(tab.draft) &&
+    tab.source.kind === "workspace" &&
     tab.source.workspaceId === workspaceId &&
     /\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/i.test(tab.name)
     ? tab.source.relativePath
@@ -224,10 +229,12 @@ export function useLanguage(
             });
           }
           let budget = 3;
+          const now = performance.now();
           for (const [path, tab] of next) {
             const previous = session.docs.get(path);
             const rejected = session.rejected.get(path);
             if (
+              languageEditPending(tab.editedAt, now) ||
               (previous && unchanged(previous.tab, tab)) ||
               (rejected && unchanged(rejected, tab))
             )

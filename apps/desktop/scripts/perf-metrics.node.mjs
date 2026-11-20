@@ -103,3 +103,27 @@ test("compares signed deltas and guards against an unsupported comparison", () =
     /same OS and architecture/,
   );
 });
+
+test("reports typing under load p95 when comparing with the original capture", () => {
+  const old = {
+    schema: SCHEMA,
+    harness: HARNESS,
+    os: "macos",
+    arch: "aarch64",
+    runs: [run],
+  };
+  const runs = [40, 64, 81].map((typingUnderLoadMs) => ({
+    ...run,
+    perf: { ...run.perf, editor: { ...run.perf.editor, typingUnderLoadMs } },
+  }));
+  const row = summarize(runs).find(
+    ({ metric }) => metric === "Monaco typing burst under load",
+  );
+  assert.equal(row.p50, 64);
+  assert.equal(row.p95, 81);
+  assert.equal(
+    compare(old, { ...old, runs }).find(({ metric }) => metric === row.metric)
+      .oldCount,
+    0,
+  );
+});

@@ -137,6 +137,7 @@ impl Workspace {
 
 #[derive(Default)]
 pub struct Registry {
+    closed: bool,
     generation: u64,
     namespace: Option<String>,
     active: Option<Workspace>,
@@ -379,11 +380,18 @@ impl WorkspaceService {
     }
 
     pub fn registry(&self) -> Result<MutexGuard<'_, Registry>> {
-        self.registry.lock().map_err(|_| WorkspaceError::IoError)
+        let registry = self.registry.lock().map_err(|_| WorkspaceError::IoError)?;
+        if registry.closed {
+            return Err(WorkspaceError::PermissionDenied);
+        }
+        Ok(registry)
     }
 
     pub fn shutdown(&self) {
         if let Ok(mut registry) = self.registry.lock() {
+            // A picker can retain the window resources while its native dialog
+            // finishes. It must not register a new grant after destruction.
+            registry.closed = true;
             registry.revoke_search();
             registry.active = None;
             registry.selected.clear();

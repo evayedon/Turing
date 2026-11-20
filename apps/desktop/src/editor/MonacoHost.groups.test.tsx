@@ -8,6 +8,7 @@ import { attachLanguage } from "../language/monaco-language";
 import MonacoHost from "./MonacoHost";
 import type { TextModels } from "./MonacoHost";
 import { created, resetFakeMonaco } from "./fake-monaco";
+import { LARGE_DOCUMENT_LENGTH } from "./performance-budget";
 import { ModelRegistry } from "./model-registry";
 import type { EditorReveal, EditorTab } from "./use-editor";
 
@@ -116,4 +117,37 @@ it("gives two groups one model while reveal, info and commands follow the active
   expect(created.models[0].disposed).toBe(false);
   expect(models.retain(new Set())).toEqual(["doc"]);
   expect(created.models[0].disposed).toBe(true);
+});
+
+it("applies large document keystrokes without reading or replacing the model text", () => {
+  const models: TextModels = new ModelRegistry();
+  const content = "x".repeat(LARGE_DOCUMENT_LENGTH);
+  let active = { ...tab, draft: content, content };
+  const onChange = vi.fn((_: EditorTab, draft: string) => {
+    active = { ...active, draft };
+  });
+  const view = () => (
+    <MonacoHost
+      models={models}
+      group="1"
+      active={active}
+      tabs={[active]}
+      readOnly={false}
+      onChange={onChange}
+      onInfo={() => {}}
+    />
+  );
+  const { rerender } = render(view());
+  const [model] = created.models;
+  const read = vi.spyOn(model, "getValue");
+  const replace = vi.spyOn(model, "setValue");
+  expect(model.getLanguageId()).toBe("plaintext");
+  for (const char of "typing") {
+    act(() => model.replace(1, 0, char));
+    rerender(view());
+  }
+  expect(onChange).toHaveBeenCalledTimes(6);
+  expect(active.draft).toBe("xgnipyt" + content.slice(1));
+  expect(read).not.toHaveBeenCalled();
+  expect(replace).not.toHaveBeenCalled();
 });

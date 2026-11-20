@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isLargeDocument } from "./performance-budget";
 import type { EditorTab } from "./use-editor";
 
 const prefix = "turing:draft:v1:";
@@ -74,6 +75,7 @@ export function useDraftRecovery(enabled: boolean) {
   );
   const [error, setError] = useState<string>();
   const ids = useRef(new Map<string, string>());
+  const retained = useRef(new Map<string, RecoveryDraft>());
   const queued = useRef(new Map<string, RecoveryDraft>());
   const timer = useRef<number | undefined>(undefined);
 
@@ -85,6 +87,11 @@ export function useDraftRecovery(enabled: boolean) {
       try {
         localStorage.setItem(prefix + id, JSON.stringify(entry));
         queued.current.delete(id);
+        const original = retained.current.get(id);
+        if (original) {
+          retained.current.delete(id);
+          remove(original.id, original);
+        }
       } catch {
         failed = true;
       }
@@ -143,6 +150,11 @@ export function useDraftRecovery(enabled: boolean) {
         forget(tab.key);
         continue;
       }
+      if (isLargeDocument(tab.draft)) {
+        const id = ids.current.get(tab.key);
+        if (id) queued.current.delete(id);
+        continue;
+      }
       if (
         prior?.draft === tab.draft &&
         prior.source === tab.source &&
@@ -176,16 +188,27 @@ export function useDraftRecovery(enabled: boolean) {
 
   function forget(key: string) {
     const id = ids.current.get(key);
-    if (!id) return;
-    ids.current.delete(key);
-    remove(id);
+    if (id) {
+      ids.current.delete(key);
+      const original = retained.current.get(id);
+      retained.current.delete(id);
+      if (original) remove(original.id, original);
+      remove(id);
+    }
   }
 
   function recovered(entry: RecoveryDraft, key: string) {
     // Keep the original when storage cannot durably accept the new copy.
     flush();
     const id = ids.current.get(key);
-    if (!id || !queued.current.has(id)) remove(entry.id, entry);
+    if (id && !queued.current.has(id)) {
+      remove(entry.id, entry);
+    } else if (!id) {
+      const replacement = crypto.randomUUID();
+      ids.current.set(key, replacement);
+      retained.current.set(replacement, entry);
+      setAvailable((drafts) => drafts.filter((draft) => draft.id !== entry.id));
+    }
   }
 
   return { available, error, track, remove, recovered };

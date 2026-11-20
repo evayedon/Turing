@@ -26,6 +26,36 @@ const metrics = [
   ],
   ["Monaco typing burst", "ms", (run) => run.perf.editor.typingBurstMs],
   [
+    "App RSS before closing windows",
+    "MiB",
+    (run) => mib(run.perf.beforeCloseRssBytes),
+    true,
+  ],
+  [
+    "Monaco typing dispatch",
+    "ms",
+    (run) => run.perf.editor.typingDispatchMs,
+    true,
+  ],
+  [
+    "Monaco typing burst under load",
+    "ms",
+    (run) => run.perf.editor.typingUnderLoadMs,
+    true,
+  ],
+  [
+    "Monaco typing dispatch under load",
+    "ms",
+    (run) => run.perf.editor.typingUnderLoadDispatchMs,
+    true,
+  ],
+  [
+    "Monaco typing frame timeouts",
+    "count",
+    (run) => run.perf.editor.typingFrameTimeouts,
+    true,
+  ],
+  [
     "Monaco large document open",
     "ms",
     (run) => run.perf.editor.largeFileOpenMs,
@@ -44,7 +74,7 @@ const metrics = [
 ];
 
 function mib(bytes) {
-  return bytes === null ? null : bytes / 1024 ** 2;
+  return bytes == null ? bytes : bytes / 1024 ** 2;
 }
 
 // Nearest rank. In particular, p95 is the maximum for the default ten launches.
@@ -58,8 +88,9 @@ export function percentiles(samples) {
 }
 
 export function summarize(runs) {
-  return metrics.map(([metric, unit, read]) => {
+  return metrics.flatMap(([metric, unit, read, optional]) => {
     const values = runs.map(read);
+    if (optional && values.every((value) => value === undefined)) return [];
     const samples = values.filter((value) => value !== null);
     if (
       samples.some((value) => !Number.isFinite(value) || value < 0) ||
@@ -85,18 +116,20 @@ export function compare(before, after) {
     );
   }
   // Recompute from the raw runs so rounding and stale aggregate values cannot affect deltas.
-  const oldRows = summarize(before.runs);
-  return summarize(after.runs).map((row, index) => {
-    const old = oldRows[index];
+  const oldRows = new Map(
+    summarize(before.runs).map((row) => [row.metric, row]),
+  );
+  return summarize(after.runs).map((row) => {
+    const old = oldRows.get(row.metric);
     return {
       metric: row.metric,
       unit: row.unit,
-      oldCount: old.count,
+      oldCount: old?.count ?? 0,
       newCount: row.count,
       ...Object.fromEntries(
         ["p50", "p95"].flatMap((key) => {
           const delta =
-            row[key] === undefined || old[key] === undefined
+            row[key] === undefined || old?.[key] === undefined
               ? null
               : row[key] - old[key];
           return [
