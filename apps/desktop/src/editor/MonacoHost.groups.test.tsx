@@ -7,6 +7,7 @@ import type { LanguageController } from "../language/use-language";
 import { attachLanguage } from "../language/monaco-language";
 import MonacoHost from "./MonacoHost";
 import type { TextModels } from "./MonacoHost";
+import { applyModelEdit } from "./apply-model-edit";
 import { created, resetFakeMonaco } from "./fake-monaco";
 import { LARGE_DOCUMENT_LENGTH } from "./performance-budget";
 import { ModelRegistry } from "./model-registry";
@@ -150,4 +151,69 @@ it("applies large document keystrokes without reading or replacing the model tex
   expect(active.draft).toBe("xgnipyt" + content.slice(1));
   expect(read).not.toHaveBeenCalled();
   expect(replace).not.toHaveBeenCalled();
+});
+
+it("keeps a hidden open document's model and draft in sync through rename, undo and redo", () => {
+  const models: TextModels = new ModelRegistry();
+  const original = "int old; old++;";
+  const renamed = "int renamed; renamed++;";
+  let hidden: EditorTab = {
+    ...tab,
+    key: "hidden",
+    source: { kind: "untitled" },
+    content: original,
+    draft: original,
+  };
+  const onChange = vi.fn((document: EditorTab, draft: string) => {
+    expect(document.key).toBe(hidden.key);
+    hidden = { ...hidden, draft };
+  });
+  const view = (active = tab) => (
+    <MonacoHost
+      models={models}
+      group="1"
+      active={active}
+      tabs={[tab, hidden]}
+      readOnly={false}
+      onChange={onChange}
+      onInfo={() => {}}
+    />
+  );
+  const { rerender } = render(view());
+  const model = created.models[1];
+  expect(created.editors[0].getModel()).not.toBe(model);
+  act(() => {
+    expect(
+      applyModelEdit(
+        models,
+        hidden,
+        [4, 9].map((start) => ({
+          start,
+          end: start + 3,
+          position: { line: 0, character: start },
+          before: "old",
+          after: "renamed",
+        })),
+        renamed,
+      ),
+    ).toBe(true);
+    hidden = { ...hidden, draft: renamed };
+  });
+  rerender(view());
+  expect(model.getValue()).toBe(renamed);
+  expect(onChange).not.toHaveBeenCalled();
+
+  act(() => model.undo());
+  expect(model.getValue()).toBe(original);
+  expect(hidden.draft).toBe(original);
+  expect(model.canUndo()).toBe(false);
+  rerender(view());
+
+  act(() => model.redo());
+  expect(model.getValue()).toBe(renamed);
+  expect(hidden.draft).toBe(renamed);
+  expect(onChange).toHaveBeenCalledTimes(2);
+  rerender(view(hidden));
+  expect(created.editors[0].input.value).toBe(renamed);
+  expect(model.canUndo()).toBe(true);
 });

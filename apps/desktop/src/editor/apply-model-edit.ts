@@ -17,9 +17,12 @@ export function applyModelEdit(
   if (edits.some(({ after }) => after.replace(/\r\n|\r|\n/g, eol) !== after))
     return false;
 
+  const bom = Number(tab.draft.charCodeAt(0) === 0xfeff);
+  if (edits.some(({ start }) => start < bom)) return false;
+
   const operations = edits.map(({ start, end, after }) => {
-    const from = model.getPositionAt(start);
-    const to = model.getPositionAt(end);
+    const from = model.getPositionAt(start - bom);
+    const to = model.getPositionAt(end - bom);
     return {
       range: {
         startLineNumber: from.lineNumber,
@@ -35,5 +38,7 @@ export function applyModelEdit(
     model.pushEditOperations(null, operations, () => null);
     model.pushStackElement();
   });
+  // The caller commits the rename draft while model notifications are suppressed.
+  models.remember(tab.key, next, next, bom);
   return true;
 }

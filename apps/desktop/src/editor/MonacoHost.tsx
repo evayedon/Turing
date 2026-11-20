@@ -111,26 +111,27 @@ export default function MonacoHost({
   const lastReveal = useRef<typeof reveal>(undefined);
   const change = useEffectEvent(
     (
+      key: string,
       model: monaco.editor.ITextModel,
       event: monaco.editor.IModelContentChangedEvent,
     ) => {
-      // Every view of a shared model hears the edit; only one reports it.
-      if (models.get(active.key) !== model) return;
-      if (!models.claimChange(active.key, model.getVersionId())) return;
-      const snapshot = models.snapshot(active.key);
+      if (models.syncing) return;
+      const tab = tabs.find((item) => item.key === key);
+      if (!tab || !models.claimChange(key, event.versionId)) return;
+      const snapshot = models.snapshot(key);
       const value =
         snapshot && !event.isFlush && !event.isEolChange
           ? applyTextChanges(snapshot.text, snapshot.bom, event.changes)
           : model.getValue(undefined, true);
       models.remember(
-        active.key,
+        key,
         value,
         value,
         event.isFlush
           ? Number(value.charCodeAt(0) === 0xfeff)
           : (snapshot?.bom ?? 0),
       );
-      onChange(active, value);
+      onChange(tab, value);
     },
   );
   const isFocused = useEffectEvent(() => focused);
@@ -321,16 +322,11 @@ export default function MonacoHost({
     lastReveal.current = undefined;
     shownKey.current = undefined;
     const states = viewStates.current;
-    const subscription = instance.onDidChangeModelContent((event) => {
-      const model = instance.getModel();
-      if (!models.syncing && model) change(model, event);
-    });
     const cursor = instance.onDidChangeCursorPosition(() => {
       if (!models.syncing) report(instance);
     });
     return () => {
       cursor.dispose();
-      subscription.dispose();
       opener?.dispose();
       if (isFocused()) reportCommands(undefined);
       detachView();
@@ -411,6 +407,18 @@ export default function MonacoHost({
     });
     report(instance);
   }, [active, tabs, models, primary]);
+
+  useLayoutEffect(() => {
+    // The primary view observes all open models, including hidden tabs.
+    const subscriptions = (
+      primary ? tabs.map(({ key }) => key) : [active.key]
+    ).map((key) => {
+      const model = models.get(key);
+      return model?.onDidChangeContent((event) => change(key, model, event));
+    });
+    return () =>
+      subscriptions.forEach((subscription) => subscription?.dispose());
+  }, [active.key, models, primary, tabs]);
 
   useLayoutEffect(() => {
     const instance = editor.current;

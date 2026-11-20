@@ -150,6 +150,7 @@ function Harness() {
       <button onClick={() => void editor.open("main.cpp")}>Open source</button>
       <button onClick={() => editor.splitEditor()}>Split</button>
       <button onClick={() => commands?.run("undo")}>Undo edit</button>
+      <button onClick={() => commands?.run("redo")}>Redo edit</button>
       <button
         onClick={() =>
           editor.active &&
@@ -246,6 +247,12 @@ it("previews each change, excludes files, and applies a shared undoable draft an
     expect(view).toHaveProperty("value", "int old;\n// existing draft\n");
   fireEvent.click(screen.getByRole("button", { name: "Undo edit" }));
   expect(original).toHaveProperty("value", content);
+  fireEvent.click(screen.getByRole("button", { name: "Redo edit" }));
+  for (const view of screen.getAllByRole("textbox", { name: "File editor" }))
+    expect(view).toHaveProperty("value", "int old;\n// existing draft\n");
+  fireEvent.click(screen.getByRole("button", { name: "Redo edit" }));
+  for (const view of screen.getAllByRole("textbox", { name: "File editor" }))
+    expect(view).toHaveProperty("value", "int renamed;\n// existing draft\n");
 });
 
 it("preserves drafts on edit, revision, watcher, recovered-draft and write-race conflicts", async () => {
