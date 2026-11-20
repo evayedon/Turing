@@ -3,7 +3,7 @@ use crate::workspace::{
     validate_save_content, DirectoryEntry, PickedFile, SelectedFileSnapshot, SelectedFileVersion,
     TextFile, WorkspaceChanges, WorkspaceDescriptor, WorkspaceError,
 };
-use tauri::WebviewWindow;
+use tauri::{Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
@@ -356,6 +356,10 @@ pub async fn editor_confirm_discard(window: WebviewWindow, action: DiscardAction
 #[tauri::command]
 pub fn editor_exit(window: WebviewWindow) -> Result<()> {
     workbench(&window)?;
+    window
+        .state::<crate::drafts::DraftJournal>()
+        .clear(window.label())
+        .map_err(|_| WorkspaceError::IoError)?;
     window.destroy().map_err(|_| WorkspaceError::IoError)
 }
 

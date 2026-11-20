@@ -4,7 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { autoSaveKey } from "../editor/use-editor";
 import { useLayout } from "../state/layout";
 import { Workbench } from "./Workbench";
@@ -37,6 +37,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 
+  vi.mocked(invoke).mockReset();
   vi.mocked(isTauri).mockReturnValue(false);
   useLayout.setState(useLayout.getInitialState(), true);
 });
@@ -54,20 +55,28 @@ describe("workbench panels", () => {
 
   it("offers a saved recovery snapshot from the editor pane", async () => {
     vi.mocked(isTauri).mockReturnValue(true);
-    window.localStorage.setItem(
-      "turing:draft:v1:previous",
-      JSON.stringify({
-        id: "previous",
-        name: "Untitled-1",
-        title: "Untitled-1",
-        draft: "recover me",
-        source: { kind: "copy" },
-        timestamp: 1,
-      }),
-    );
+    const entry = {
+      id: "previous",
+      name: "Untitled-1",
+      title: "Untitled-1",
+      draft: "recover me",
+      source: { kind: "copy" },
+      timestamp: 1,
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "draft_recovery" && args && "request" in args) {
+        const request = args.request;
+        if (request && typeof request === "object" && "action" in request) {
+          if (request.action === "list")
+            return { kind: "list", entries: [entry], skipped: false };
+          if (request.action === "snapshot")
+            return { kind: "written", id: "restored" };
+        }
+      }
+    });
     const user = userEvent.setup();
     render(<Workbench />);
-    screen.getByText("Recover unsaved drafts (1)").focus();
+    (await screen.findByText("Recover unsaved drafts (1)")).focus();
     await user.keyboard("{Enter}");
     await expectAccessible(document.body);
     await user.tab();

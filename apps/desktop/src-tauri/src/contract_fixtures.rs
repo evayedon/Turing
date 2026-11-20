@@ -14,7 +14,7 @@ fn fixture() -> &'static Value {
     PARSED.get_or_init(|| serde_json::from_str(FIXTURE).expect("contract fixture is valid JSON"))
 }
 
-fn at(pointer: &str) -> &'static Value {
+pub(crate) fn at(pointer: &str) -> &'static Value {
     fixture()
         .pointer(pointer)
         .unwrap_or_else(|| panic!("contract fixture has no entry at {pointer}"))

@@ -42,7 +42,8 @@
             "allow-git",
             "allow-run-build",
             "allow-managed-clangd",
-            "allow-turing-windows"
+            "allow-turing-windows",
+            "allow-draft-recovery"
           ]
         },
         {

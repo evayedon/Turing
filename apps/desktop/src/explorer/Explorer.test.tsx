@@ -15,6 +15,7 @@ import { Workbench } from "../shell/Workbench";
 import { useLayout } from "../state/layout";
 import { pollWorkspaceChanges } from "./watch-ipc";
 
+vi.mock("../editor/draft-ipc", () => import("../test/mock-draft-ipc"));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
   isTauri: vi.fn(),

@@ -190,7 +190,8 @@ export function EditorWorkspace({
             {shown.changedOnDisk
               ? "The file on disk changed since this draft was saved. Use Save As to keep a separate copy."
               : shown.source.kind === "untitled"
-                ? "Recovered copy. Use Save As to choose where to save it."
+                ? (shown.recoveryNote ??
+                  "Recovered copy. Use Save As to choose where to save it.")
                 : "Recovered draft. Save when you are ready to write it to disk."}
           </p>
         )}
