@@ -8,6 +8,9 @@ publish = false
 # Native lifecycle smoke harness (see docs/architecture.md). Never enabled in
 # normal or release builds.
 smoke = []
+# Performance baseline on top of the smoke harness (see docs/architecture.md).
+# Also never enabled in normal or release builds.
+perf = ["smoke"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

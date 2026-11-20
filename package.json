@@ -16,7 +16,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "pnpm --filter @turing/desktop test"
+    "test": "node --test apps/desktop/scripts/perf-metrics.node.mjs && pnpm --filter @turing/desktop test"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

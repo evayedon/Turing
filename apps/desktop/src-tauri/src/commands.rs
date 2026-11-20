@@ -28,6 +28,12 @@ pub async fn workspace_open(
         let resources = workbench(&window)?;
         let service = &resources.workspace;
         let _picker = service.begin_picker()?;
+        #[cfg(feature = "perf")]
+        if let Some(path) = crate::smoke::fixture_for(&window) {
+            let workspace = service.registry()?.register(window.label(), &path)?;
+            resources.language.revoke(false);
+            return Ok(Some(workspace));
+        }
         let mut dialog = window
             .dialog()
             .file()
