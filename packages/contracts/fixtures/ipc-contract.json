@@ -93,6 +93,7 @@
         "DENIED",
         "UNAVAILABLE",
         "START_FAILED",
+        "INCOMPATIBLE",
         "SERVER_EXITED",
         "BUSY",
         "INVALID_DOCUMENT",
@@ -104,6 +105,7 @@
     }
   },
   "enums": {
+    "LanguageServer": ["clangd", "typescript", "pyright", "rust-analyzer"],
     "WorkspaceSymbolKind": [
       "class",
       "constant",
@@ -393,7 +395,11 @@
           "completion": true,
           "definition": false,
           "rename": true,
-          "prepareRename": true
+          "prepareRename": true,
+          "references": false,
+          "implementation": false,
+          "declaration": false,
+          "workspaceSymbol": false
         },
         "events": [
           {
@@ -405,7 +411,13 @@
           { "kind": "response", "requestId": 7, "value": null }
         ]
       },
-      { "capabilities": null, "events": [] }
+      { "capabilities": null, "events": [] },
+      {
+        "capabilities": null,
+        "events": [],
+        "stderr": ["[redacted]"],
+        "error": "SERVER_EXITED"
+      }
     ],
     "RenameAction": [
       {

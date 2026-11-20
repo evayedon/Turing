@@ -55,21 +55,49 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:desktop --no-bundle -- --locked
 
+      - name: Report installed Windows execution toolchains
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Command python.exe, clang++.exe, g++.exe, rustc.exe, dotnet.exe -All -ErrorAction SilentlyContinue |
+            Select-Object Name, Source | Format-Table
+          rustc -vV
+          dotnet --list-sdks
+
       - name: Test native workspace authorization
+        if: runner.os != 'Windows'
         run: cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
-      # The managed clangd pilot against a real server (opt-in elsewhere
-      # because it needs an installed, trusted clangd).
-      - name: Install clangd for the language-server integration test
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y --no-install-recommends clangd
+      # Keep cold toolchain launches from competing with one another and with
+      # filesystem stress tests on the hosted Windows runner.
+      - name: Test Windows execution toolchains
+        if: runner.os == 'Windows'
+        env:
+          TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS: "1"
+        run: |
+          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml execution:: -- --test-threads=1
 
-      - name: Test managed clangd against a real server
+      - name: Test remaining Windows native coverage
+        if: runner.os == 'Windows' && !cancelled()
+        run: |
+          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml -- --skip execution::
+
+      - name: Install managed language servers for integration tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends clangd
+          npm i -g typescript-language-server@6.1.0 typescript@~5.9.0 pyright@1.1.414
+          rustup component add rust-analyzer
+
+      - name: Test managed language servers against real projects
         if: runner.os == 'Linux'
         run: |
           export TURING_TEST_CLANGD="$(readlink -f "$(command -v clangd)")"
           "$TURING_TEST_CLANGD" --version
-          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml installed_clangd -- --ignored
+          export TURING_TEST_TSLS="$(command -v typescript-language-server)"
+          export TURING_TEST_PYRIGHT="$(command -v pyright-langserver)"
+          export TURING_TEST_RUST_ANALYZER="$(rustup which rust-analyzer)"
+          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml language:: -- --ignored
 
       # Native lifecycle smoke harness: the real app opens and closes two
       # workbench and two terminal windows. The non-default `smoke` feature is

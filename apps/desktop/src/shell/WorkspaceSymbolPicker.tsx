@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import type { SymbolsResponse, WorkspaceSymbol } from "@turing/contracts";
 import {
   invokeWorkspace,
@@ -14,12 +14,36 @@ export function WorkspaceSymbolPicker({
   workspaceId,
   dismiss,
   navigate,
+  managedSymbols,
 }: {
   workspaceId: string;
   dismiss: () => void;
   navigate: (symbol: WorkspaceSymbol) => void;
+  managedSymbols?: (
+    query: string,
+    signal: AbortSignal,
+  ) => Promise<WorkspaceSymbol[]>;
 }) {
   const [query, setQuery] = useState({ text: "" });
+  const [managed, setManaged] = useState<{
+    query: typeof query;
+    symbols: WorkspaceSymbol[];
+  }>();
+  const searchManaged = useEffectEvent((text: string, signal: AbortSignal) =>
+    managedSymbols?.(text, signal),
+  );
+  useEffect(() => {
+    const abort = new AbortController();
+    const timer = window.setTimeout(() => {
+      void searchManaged(query.text, abort.signal)?.then((symbols) => {
+        if (!abort.signal.aborted) setManaged({ query, symbols });
+      });
+    }, DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timer);
+      abort.abort();
+    };
+  }, [query, workspaceId]);
   const [reply, setReply] = useState<{
     workspaceId: string;
     query: typeof query;
@@ -59,12 +83,24 @@ export function WorkspaceSymbolPicker({
     reply?.workspaceId === workspaceId && reply.query === query
       ? reply
       : undefined;
-  const actions =
-    result?.response?.symbols.map((symbol) => ({
-      label: symbol.name,
-      detail: `${symbol.kind} · ${symbol.relativePath}:${symbol.line + 1}`,
-      symbol,
-    })) ?? [];
+  const merged = new Map<string, WorkspaceSymbol>();
+  for (const symbol of [
+    ...(managed?.query === query ? managed.symbols : []),
+    ...(result?.response?.symbols ?? []),
+  ]) {
+    const id = JSON.stringify([
+      symbol.relativePath,
+      symbol.line,
+      symbol.character,
+      symbol.name,
+    ]);
+    if (!merged.has(id)) merged.set(id, symbol);
+  }
+  const actions = [...merged.values()].slice(0, RESULT_LIMIT).map((symbol) => ({
+    label: symbol.name,
+    detail: `${symbol.kind} · ${symbol.relativePath}:${symbol.line + 1}`,
+    symbol,
+  }));
 
   return (
     <CommandPalette

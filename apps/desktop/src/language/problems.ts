@@ -18,7 +18,13 @@ export type Problem = {
   tabKey: string;
   filename: string;
   severity: Severity;
-  source: "clangd" | "compiler" | "monaco";
+  source:
+    | "clangd"
+    | "typescript"
+    | "pyright"
+    | "rust-analyzer"
+    | "compiler"
+    | "monaco";
   message: string;
   start: LanguagePosition;
   end: LanguagePosition;

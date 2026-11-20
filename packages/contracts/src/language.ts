@@ -2,15 +2,22 @@ export type LanguageError =
   | "DENIED"
   | "UNAVAILABLE"
   | "START_FAILED"
+  | "INCOMPATIBLE"
   | "SERVER_EXITED"
   | "BUSY"
   | "INVALID_DOCUMENT"
   | "INVALID_WORKSPACE_EDIT"
   | "NOT_READY"
   | "INTERNAL";
-export type LanguageFeature =
+export type LanguageServer =
+  "clangd" | "typescript" | "pyright" | "rust-analyzer";
+type BaseFeature =
   "hover" | "completion" | "definition" | "prepareRename" | "rename";
-export type LanguageCapabilities = Record<LanguageFeature, boolean>;
+type AdditionalFeature =
+  "references" | "implementation" | "declaration" | "workspaceSymbol";
+export type LanguageFeature = BaseFeature | AdditionalFeature;
+export type LanguageCapabilities = Record<BaseFeature, boolean> &
+  Partial<Record<AdditionalFeature, boolean>>;
 export type LanguagePosition = { line: number; character: number };
 export type LanguageAction =
   | {
@@ -42,11 +49,20 @@ export type LanguageEvent =
 export type LanguageUpdate = {
   capabilities: LanguageCapabilities | null;
   events: LanguageEvent[];
+  stderr?: string[];
+  error?: LanguageError;
 };
 
 type Session = { workspaceId: string; sessionId: string };
 export type LanguageCommands = {
-  language_start: [{ workspaceId: string }, string | null];
+  language_start: [
+    {
+      workspaceId: string;
+      server?: LanguageServer;
+      rustBuildScripts?: boolean;
+    },
+    string | null,
+  ];
   language_apply: [Session & { action: LanguageAction }, void];
   language_poll: [Session, LanguageUpdate];
   language_stop: [Session, void];

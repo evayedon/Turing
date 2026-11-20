@@ -26,12 +26,19 @@ import { LARGE_DOCUMENT_LENGTH } from "./performance-budget";
 import { ModelRegistry } from "./model-registry";
 import type { EditorReveal, EditorTab } from "./use-editor";
 
+vi.mock("monaco-editor/languages/definitions/typescript/typescript.js", () => ({
+  conf: {},
+  language: {},
+}));
 vi.mock("monaco-editor", () => import("./fake-monaco"));
 vi.mock("../language/monaco-language", () => ({
   attachLanguage: vi.fn(() => () => {}),
 }));
 
-beforeEach(resetFakeMonaco);
+beforeEach(() => {
+  resetFakeMonaco();
+  vi.mocked(attachLanguage).mockClear();
+});
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -233,6 +240,84 @@ it("keeps a hidden open document's model and draft in sync through rename, undo 
   rerender(view(hidden));
   expect(created.editors[0].input.value).toBe(renamed);
   expect(model.canUndo()).toBe(true);
+});
+
+it("switches only managed TypeScript workspace models and uses their negotiated Go commands", () => {
+  const models: TextModels = new ModelRegistry();
+  const active: EditorTab = {
+    ...tab,
+    name: "main.tsx",
+    source: {
+      ...tab.source,
+      kind: "workspace",
+      workspaceId: "project",
+      relativePath: "main.tsx",
+      version: "v1",
+    },
+  };
+  const standalone: EditorTab = {
+    ...active,
+    key: "standalone",
+    name: "standalone.ts",
+    languageOverride: "typescript",
+    source: { kind: "untitled" },
+  };
+  const ready = vi.fn<(commands: EditorCommands | undefined) => void>();
+  const server = {
+    ...language,
+    capabilities: language.capabilities && {
+      ...language.capabilities,
+      references: true,
+      declaration: false,
+    },
+    logs: [],
+    rustBuildScripts: false,
+    setRustBuildScripts: () => {},
+  };
+  const managed: LanguageController = {
+    ...language,
+    capabilities: null,
+    servers: {
+      clangd: { ...server, capabilities: null },
+      typescript: server,
+      pyright: { ...server, capabilities: null },
+      "rust-analyzer": { ...server, capabilities: null },
+    },
+    forTab: () => server,
+  };
+  const view = (language?: LanguageController) => (
+    <MonacoHost
+      models={models}
+      group="1"
+      active={active}
+      tabs={[active, standalone]}
+      readOnly={false}
+      onChange={() => {}}
+      onInfo={() => {}}
+      onCommandsReady={ready}
+      workspaceId="project"
+      language={language}
+    />
+  );
+  const { rerender } = render(view());
+  expect(created.models.map((model) => model.getLanguageId())).toEqual([
+    "typescript",
+    "typescript",
+  ]);
+  rerender(view(managed));
+  expect(created.models.map((model) => model.getLanguageId())).toEqual([
+    "turing-typescript",
+    "typescript",
+  ]);
+  expect(vi.mocked(attachLanguage).mock.lastCall?.[6]).toBe("typescript");
+  const commands = ready.mock.lastCall?.[0];
+  expect(commands?.supports("references")).toBe(true);
+  expect(commands?.supports("declaration")).toBe(false);
+  rerender(view());
+  expect(created.models.map((model) => model.getLanguageId())).toEqual([
+    "typescript",
+    "typescript",
+  ]);
 });
 
 it("mounts separate fixed, themed widget hosts above both split panes and removes them with the views", () => {

@@ -58,16 +58,12 @@ fn configure(_: &impl Read) -> io::Result<()> {
 
 #[cfg(unix)]
 fn available(pipe: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
-    match pipe.read(buffer) {
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(0)
+    loop {
+        match pipe.read(buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(0),
+            result => return result,
         }
-        result => result,
     }
 }
 
@@ -144,7 +140,7 @@ pub(super) fn probe(
     cwd: &Dir,
     staging: &Path,
     progress: &Progress,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let captured = Progress::new(None);
     let status = supervise(
         command,
@@ -154,21 +150,33 @@ pub(super) fn probe(
         &progress.stopped,
         false,
         Duration::from_secs(5),
-    )
-    .ok()??;
-    if !status.success() {
-        return None;
+    )?;
+    if !status.is_some_and(|status| status.success()) {
+        return Ok(None);
     }
     let state = captured.state();
     if state.truncated {
-        return None;
+        return Ok(None);
     }
-    let output: Vec<_> = state
+    // Keep warnings on stderr from corrupting a version printed on stdout.
+    // Some tools (including Java 8) print the version to stderr instead.
+    let stdout: Vec<_> = state
         .output
         .iter()
+        .filter(|chunk| matches!(chunk.stream, Stream::Stdout))
         .flat_map(|chunk| chunk.bytes.iter().copied())
         .collect();
-    Some(String::from_utf8_lossy(&output).into_owned())
+    let output = if stdout.iter().all(u8::is_ascii_whitespace) {
+        state
+            .output
+            .iter()
+            .filter(|chunk| matches!(chunk.stream, Stream::Stderr))
+            .flat_map(|chunk| chunk.bytes.iter().copied())
+            .collect()
+    } else {
+        stdout
+    };
+    Ok(Some(String::from_utf8_lossy(&output).into_owned()))
 }
 
 fn supervise(
@@ -194,7 +202,7 @@ fn supervise(
     #[cfg(windows)]
     let guard = match crate::terminal::platform::guard(&child) {
         Ok(guard) => Some(guard),
-        Err(_) if matches!(child.try_wait(), Ok(Some(_))) => None,
+        Err(_) if exited_during_job_assignment(&child) => None,
         Err(_) => {
             terminate(&mut child);
             return Err(ExecutionError::ProcessUnavailable);
@@ -207,6 +215,17 @@ fn supervise(
         terminate(&mut child);
     }
     result
+}
+
+#[cfg(windows)]
+fn exited_during_job_assignment(child: &Child) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject};
+
+    // Assignment can lose a race to a short-lived child that has begun
+    // exiting but whose process handle is not yet signalled. Do not continue
+    // with a live process outside the job.
+    unsafe { WaitForSingleObject(child.as_raw_handle(), 50) == WAIT_OBJECT_0 }
 }
 
 fn collect(
@@ -263,6 +282,27 @@ fn collect(
 mod tests {
     use super::super::{toolchain, Language};
     use super::*;
+
+    #[test]
+    fn version_probe_keeps_stdout_and_stderr_separate() {
+        let path = std::env::var_os("PATH");
+        let python = toolchain::tool(Language::Python, path.as_deref()).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+        let progress = Progress::new(None);
+        for (source, expected) in [
+            (
+                "import sys; print('warning', file=sys.stderr); print('version')",
+                "version",
+            ),
+            ("import sys; print('version', file=sys.stderr)", "version"),
+        ] {
+            let mut command = Command::new(&python);
+            command.args(["-I", "-c", source]);
+            let output = probe(&mut command, &cwd, temp.path(), &progress).unwrap();
+            assert_eq!(output.as_deref().map(str::trim), Some(expected));
+        }
+    }
 
     #[test]
     fn timeout_terminates_a_live_process() {

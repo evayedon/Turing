@@ -1,13 +1,16 @@
+import type { LanguageController } from "./use-language";
 import { problemGroups, type Problem } from "./problems";
 
 export function ProblemsPanel({
   problems,
   filter,
   open,
+  servers,
 }: {
   problems: Problem[];
   filter: string;
   open: (problem: Problem) => void;
+  servers?: LanguageController["servers"];
 }) {
   const filtered = problemGroups
     .filter(({ severity }) => filter === "all" || severity === filter)
@@ -17,6 +20,51 @@ export function ProblemsPanel({
     }));
   return (
     <div className="problems-panel">
+      {servers && (
+        <div role="group" aria-label="Language servers">
+          {Object.entries(servers).map(([kind, server]) => (
+            <div key={kind}>
+              <span>
+                {kind} · {server.status === "idle" ? "Off" : server.status}
+              </span>{" "}
+              <button
+                type="button"
+                className="quiet-button"
+                disabled={server.status === "starting"}
+                onClick={() =>
+                  server.status === "ready"
+                    ? server.stop()
+                    : void server.start()
+                }
+              >
+                {server.status === "ready"
+                  ? "Stop"
+                  : server.status === "failed" ||
+                      server.status === "unavailable"
+                    ? "Retry"
+                    : "Enable"}{" "}
+                {kind}
+              </button>
+              {kind === "rust-analyzer" && (
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={server.rustBuildScripts}
+                    disabled={
+                      server.status === "starting" || server.status === "ready"
+                    }
+                    onChange={(event) =>
+                      server.setRustBuildScripts(event.target.checked)
+                    }
+                  />
+                  Allow Cargo build scripts and procedural macros
+                </label>
+              )}
+              {server.message && <small role="status">{server.message}</small>}
+            </div>
+          ))}
+        </div>
+      )}
       {filtered.every(({ items }) => items.length === 0) && (
         <p>No problems to show.</p>
       )}

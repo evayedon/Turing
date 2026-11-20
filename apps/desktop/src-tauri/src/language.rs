@@ -1,5 +1,10 @@
 mod framing;
+#[cfg(test)]
+mod installed_tests;
+
 mod process;
+mod server;
+mod typescript_diagnostics;
 mod workspace_edit;
 
 use crate::{
@@ -9,6 +14,7 @@ use crate::{
 use process::Process;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use server::{Executable, Kind};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -29,6 +35,7 @@ pub enum Error {
     Denied,
     Unavailable,
     StartFailed,
+    Incompatible,
     ServerExited,
     Busy,
     InvalidDocument,
@@ -44,6 +51,10 @@ pub enum Feature {
     Hover,
     Completion,
     Definition,
+    WorkspaceSymbol,
+    Declaration,
+    Implementation,
+    References,
     PrepareRename,
     Rename,
 }
@@ -54,6 +65,10 @@ impl Feature {
             Self::Hover => "textDocument/hover",
             Self::Completion => "textDocument/completion",
             Self::Definition => "textDocument/definition",
+            Self::WorkspaceSymbol => "workspace/symbol",
+            Self::Declaration => "textDocument/declaration",
+            Self::Implementation => "textDocument/implementation",
+            Self::References => "textDocument/references",
             Self::PrepareRename => "textDocument/prepareRename",
             Self::Rename => "textDocument/rename",
         }
@@ -66,6 +81,10 @@ pub struct Capabilities {
     hover: bool,
     completion: bool,
     definition: bool,
+    workspace_symbol: bool,
+    declaration: bool,
+    implementation: bool,
+    references: bool,
     prepare_rename: bool,
     rename: bool,
 }
@@ -76,6 +95,10 @@ impl Capabilities {
             Feature::Hover => self.hover,
             Feature::Completion => self.completion,
             Feature::Definition => self.definition,
+            Feature::WorkspaceSymbol => self.workspace_symbol,
+            Feature::Declaration => self.declaration,
+            Feature::Implementation => self.implementation,
+            Feature::References => self.references,
             Feature::PrepareRename => self.prepare_rename,
             Feature::Rename => self.rename,
         }
@@ -86,6 +109,16 @@ impl Capabilities {
 pub struct Position {
     line: u32,
     character: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Range {
+    start: Position,
+    end: Position,
+}
+
+fn checked_range(value: &Value) -> Option<Range> {
+    serde_json::from_value(value.clone()).ok()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -141,6 +174,10 @@ pub enum Event {
 pub struct Update {
     capabilities: Option<Capabilities>,
     events: Vec<Event>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stderr: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Error>,
 }
 
 struct Document {
@@ -157,13 +194,20 @@ struct Request {
     started: Instant,
     position: Position,
     revision: u64,
+    snapshots: HashMap<String, workspace_edit::Snapshot>,
 }
 
 struct Session {
     id: String,
     workspace_id: String,
     process: Process,
-    staging: tempfile::TempDir,
+    _temporary: Option<tempfile::TempDir>,
+    root: PathBuf,
+    kind: Kind,
+    incremental_sync: bool,
+    typescript_pull: bool,
+    settings: Value,
+    typescript_diagnostics: typescript_diagnostics::Diagnostics,
     documents: HashMap<String, Document>,
     neighbors: HashMap<String, workspace_edit::Snapshot>,
     pending: HashMap<u32, Request>,
@@ -175,15 +219,7 @@ struct Session {
 }
 
 fn supported(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx"
-            )
-        })
+    Kind::Clangd.language(path).is_some()
 }
 
 fn executable() -> Result<PathBuf> {
@@ -250,10 +286,19 @@ fn notify(method: &str, params: Value) -> Value {
 }
 
 fn did_open(path: &str, uri: &str, version: u32, text: &str) -> Value {
+    open_document(
+        Kind::Clangd.language(path).unwrap_or("cpp"),
+        uri,
+        version,
+        text,
+    )
+}
+
+fn open_document(language: &str, uri: &str, version: u32, text: &str) -> Value {
     notify(
         "textDocument/didOpen",
         json!({
-            "textDocument":{"uri":uri,"version":version,"languageId":if path.to_ascii_lowercase().ends_with(".c") {"c"} else {"cpp"},"text":text}
+            "textDocument":{"uri":uri,"version":version,"languageId":language,"text":text}
         }),
     )
 }
@@ -272,10 +317,50 @@ fn did_close(uri: &str) -> Value {
 }
 
 impl Session {
+    #[cfg(test)]
     fn start(workspace_id: String, executable: &Path) -> Result<Self> {
+        Self::launch(
+            workspace_id,
+            &Executable::new(executable, Kind::Clangd)?,
+            Kind::Clangd,
+            Path::new(""),
+            false,
+        )
+    }
+
+    fn launch(
+        workspace_id: String,
+        executable: &Executable,
+        kind: Kind,
+        root: &Path,
+        rust_build_scripts: bool,
+    ) -> Result<Self> {
         let staging = Self::staging()?;
-        let process = Process::start(executable, staging.path())?;
-        Self::begin(workspace_id, staging, process)
+        let process = Process::start(executable, staging.path(), kind)?;
+        let directory = if kind == Kind::Clangd {
+            staging.path()
+        } else {
+            root
+        }
+        .to_path_buf();
+        let mut options = kind.initialization();
+        if let Some(tsserver) = &executable.tsserver {
+            options["tsserver"] = json!({"path":tsserver});
+        }
+        if rust_build_scripts {
+            options["cargo"]["buildScripts"]["enable"] = json!(true);
+            options["procMacro"]["enable"] = json!(true);
+        }
+        let settings = kind.settings(&directory, Some(staging.path()), &options);
+        Self::initialize(
+            workspace_id,
+            Some(staging),
+            directory,
+            kind,
+            process,
+            options,
+            settings,
+        )
     }
 
     fn staging() -> Result<tempfile::TempDir> {
@@ -283,7 +368,7 @@ impl Session {
             .canonicalize()
             .map_err(|_| Error::StartFailed)?;
         let mut builder = tempfile::Builder::new();
-        builder.prefix("turing-clangd-");
+        builder.prefix("turing-lsp-");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -296,9 +381,31 @@ impl Session {
 
     /// Sends `initialize` over an already connected transport. Capabilities
     /// are accepted later by `poll`; until then every action is `NotReady`.
+    #[cfg(test)]
     fn begin(workspace_id: String, staging: tempfile::TempDir, process: Process) -> Result<Self> {
-        let root_uri = Url::from_directory_path(staging.path()).map_err(|_| Error::StartFailed)?;
-        process.send(json!({
+        let root = staging.path().to_path_buf();
+        Self::initialize(
+            workspace_id,
+            Some(staging),
+            root,
+            Kind::Clangd,
+            process,
+            json!({}),
+            json!({}),
+        )
+    }
+
+    fn initialize(
+        workspace_id: String,
+        staging: Option<tempfile::TempDir>,
+        root: PathBuf,
+        kind: Kind,
+        process: Process,
+        options: Value,
+        settings: Value,
+    ) -> Result<Self> {
+        let root_uri = Url::from_directory_path(&root).map_err(|_| Error::StartFailed)?;
+        let mut initialize = json!({
             "jsonrpc":"2.0","id":1,"method":"initialize","params":{
                 "processId":std::process::id(), "rootUri":root_uri.as_str(),
                 "capabilities":{
@@ -312,12 +419,26 @@ impl Session {
                     }
                 }
             }
-        }))?;
+        });
+        if kind != Kind::Clangd {
+            initialize["params"]["workspaceFolders"] = json!([{"uri":root_uri,"name":root.file_name().and_then(|name| name.to_str()).unwrap_or("Workspace")}]);
+            initialize["params"]["initializationOptions"] = options;
+            initialize["params"]["capabilities"]["workspace"]["configuration"] = json!(true);
+            initialize["params"]["capabilities"]["workspace"]["workspaceFolders"] = json!(true);
+            initialize["params"]["capabilities"]["window"]["workDoneProgress"] = json!(true);
+        }
+        process.send(initialize)?;
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string(),
             workspace_id,
             process,
-            staging,
+            _temporary: staging,
+            root,
+            kind,
+            incremental_sync: false,
+            typescript_pull: false,
+            settings,
+            typescript_diagnostics: Default::default(),
             documents: HashMap::new(),
             neighbors: HashMap::new(),
             pending: HashMap::new(),
@@ -331,15 +452,16 @@ impl Session {
 
     fn mirror(&self, path: &str) -> Result<(PathBuf, String)> {
         let parts = relative_parts(path).map_err(|_| Error::InvalidDocument)?;
-        if !supported(path) || path.len() > 4096 || parts.len() > 32 {
+        if self.kind.language(path).is_none() || path.len() > 4096 || parts.len() > 32 {
             return Err(Error::InvalidDocument);
         }
-        let file = self.staging.path().join(PathBuf::from_iter(parts));
+        let file = self.root.join(PathBuf::from_iter(parts));
         let uri = Url::from_file_path(&file).map_err(|_| Error::InvalidDocument)?;
         Ok((file, uri.to_string()))
     }
 
     fn apply(&mut self, registry: &Registry, owner: &str, action: Action) -> Result<()> {
+        self.verify_root(registry, owner)?;
         let capabilities = self.capabilities.ok_or(Error::NotReady)?;
         match action {
             Action::Sync {
@@ -373,9 +495,11 @@ impl Session {
                     let disk = registry
                         .read(owner, &self.workspace_id, &path)
                         .map_err(|_| Error::InvalidDocument)?;
-                    std::fs::create_dir_all(file.parent().ok_or(Error::InvalidDocument)?)
-                        .map_err(|_| Error::Internal)?;
-                    std::fs::write(file, &disk.content).map_err(|_| Error::Internal)?;
+                    if self.kind == Kind::Clangd {
+                        std::fs::create_dir_all(file.parent().ok_or(Error::InvalidDocument)?)
+                            .map_err(|_| Error::Internal)?;
+                        std::fs::write(file, &disk.content).map_err(|_| Error::Internal)?;
+                    }
                     Some(disk.version)
                 } else {
                     registry
@@ -384,13 +508,42 @@ impl Session {
                     None
                 };
                 let mut messages = Vec::new();
-                if opened {
-                    messages.push(did_change(&uri, version, &text));
+                if let Some(previous) = self.documents.get(&path) {
+                    if self.incremental_sync {
+                        let mut end = Position {
+                            line: 0,
+                            character: 0,
+                        };
+                        let mut chars = previous.text.chars().peekable();
+                        while let Some(ch) = chars.next() {
+                            match ch {
+                                '\r' | '\n' => {
+                                    if ch == '\r' && chars.peek() == Some(&'\n') {
+                                        chars.next();
+                                    }
+                                    end.line += 1;
+                                    end.character = 0;
+                                }
+                                _ => end.character += ch.len_utf16() as u32,
+                            }
+                        }
+                        messages.push(notify("textDocument/didChange", json!({
+                            "textDocument":{"uri":uri,"version":version},
+                            "contentChanges":[{"range":{"start":{"line":0,"character":0},"end":end},"text":text}]
+                        })));
+                    } else {
+                        messages.push(did_change(&uri, version, &text));
+                    }
                 } else {
                     if self.neighbors.contains_key(&path) {
                         messages.push(did_close(&uri));
                     }
-                    messages.push(did_open(&path, &uri, version, &text));
+                    messages.push(open_document(
+                        self.kind.language(&path).ok_or(Error::InvalidDocument)?,
+                        &uri,
+                        version,
+                        &text,
+                    ));
                 }
                 if saved {
                     messages.push(notify(
@@ -421,7 +574,9 @@ impl Session {
                     self.documents.remove(&path);
                     self.revision += 1;
                     self.pending.retain(|_, req| req.path != path);
-                    let _ = std::fs::remove_file(self.mirror(&path)?.0);
+                    if self.kind == Kind::Clangd {
+                        let _ = std::fs::remove_file(self.mirror(&path)?.0);
+                    }
                 }
             }
             Action::Request {
@@ -450,6 +605,7 @@ impl Session {
                     return Err(Error::NotReady);
                 }
                 let mut params = json!({"textDocument":{"uri":doc.uri},"position":position});
+                let mut snapshots = HashMap::new();
                 match (feature, new_name) {
                     (Feature::Rename, Some(name))
                         if !name.is_empty()
@@ -457,11 +613,32 @@ impl Session {
                             && !name.chars().any(|ch| ch.is_control() || ch.is_whitespace()) =>
                     {
                         params["newName"] = json!(name);
-                        self.stage_rename_neighbors(registry, owner, &path)?;
+                        if self.kind == Kind::Clangd {
+                            self.stage_rename_neighbors(registry, owner, &path)?;
+                        } else {
+                            if self
+                                .pending
+                                .values()
+                                .any(|request| matches!(request.feature, Feature::Rename))
+                            {
+                                return Err(Error::Busy);
+                            }
+                            snapshots = self.snapshot_project(registry, owner, &path)?;
+                        }
+                    }
+                    (Feature::WorkspaceSymbol, query) => {
+                        let query = query.unwrap_or_default();
+                        if query.len() > 256 || query.chars().any(char::is_control) {
+                            return Err(Error::InvalidDocument);
+                        }
+                        params = json!({"query":query});
+                    }
+                    (Feature::References, None) => {
+                        params["context"] = json!({"includeDeclaration":true});
                     }
                     (Feature::Rename, _) | (_, Some(_)) => return Err(Error::InvalidDocument),
-                    (Feature::PrepareRename, None) => {
-                        self.stage_rename_neighbors(registry, owner, &path)?
+                    (Feature::PrepareRename, None) if self.kind == Kind::Clangd => {
+                        self.stage_rename_neighbors(registry, owner, &path)?;
                     }
                     _ => {}
                 }
@@ -478,6 +655,7 @@ impl Session {
                         position,
                         started: Instant::now(),
                         revision: self.revision,
+                        snapshots,
                     },
                 );
             }
@@ -491,7 +669,72 @@ impl Session {
         Ok(())
     }
 
+    fn verify_root(&self, registry: &Registry, owner: &str) -> Result<()> {
+        if self.kind != Kind::Clangd
+            && registry.language_root(owner, &self.workspace_id).ok() != Some(self.root.as_path())
+        {
+            return Err(Error::Denied);
+        }
+        Ok(())
+    }
+
+    fn target_path(&self, uri: &str, registry: &Registry, owner: &str) -> Option<String> {
+        let path = if self.kind == Kind::Clangd {
+            self.documents
+                .iter()
+                .find(|(_, doc)| same_uri(&doc.uri, uri))?
+                .0
+                .clone()
+        } else {
+            let lower = uri.to_ascii_lowercase();
+            if !lower.starts_with("file:///")
+                || lower.contains(['\\', '\r', '\n', '\t'])
+                || lower.contains("%2f")
+                || lower.contains("%5c")
+                || lower
+                    .split('/')
+                    .any(|segment| matches!(segment.replace("%2e", ".").as_str(), "." | ".."))
+            {
+                return None;
+            }
+            let url = Url::parse(uri).ok()?;
+            if url.query().is_some() || url.fragment().is_some() || url.host_str().is_some() {
+                return None;
+            }
+            let file = url.to_file_path().ok()?;
+            // The URL round trip normalizes Windows verbatim drive prefixes.
+            let root = Url::from_directory_path(&self.root)
+                .ok()?
+                .to_file_path()
+                .ok()?;
+            if cfg!(windows) {
+                let mut target = file.components();
+                for parent in root.components() {
+                    if !parent
+                        .as_os_str()
+                        .to_str()?
+                        .eq_ignore_ascii_case(target.next()?.as_os_str().to_str()?)
+                    {
+                        return None;
+                    }
+                }
+                target.as_path()
+            } else {
+                file.strip_prefix(root).ok()?
+            }
+            .iter()
+            .map(|part| part.to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/")
+        };
+        registry
+            .language_file(owner, &self.workspace_id, &path)
+            .ok()?;
+        Some(path)
+    }
+
     fn poll(&mut self, registry: &Registry, owner: &str) -> Result<Update> {
+        self.verify_root(registry, owner)?;
         let mut events = Vec::new();
         if self.capabilities.is_none() && self.started.elapsed() > Duration::from_secs(8) {
             return Err(Error::StartFailed);
@@ -502,8 +745,36 @@ impl Session {
             };
             let id = message.get("id");
             let method = message.get("method").and_then(Value::as_str);
-            if let (Some(id), Some(_)) = (id, method) {
-                self.process.send(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported request"}}))?;
+            if let (Some(id), Some(method)) = (id, method) {
+                let response = match (self.kind, method) {
+                    (kind, "workspace/configuration") if kind != Kind::Clangd => {
+                        let items = message.pointer("/params/items").and_then(Value::as_array);
+                        let result = items
+                            .into_iter()
+                            .flatten()
+                            .take(128)
+                            .map(|item| {
+                                let Some(section) = item.get("section").and_then(Value::as_str)
+                                else {
+                                    return self.settings.clone();
+                                };
+                                section
+                                    .split('.')
+                                    .try_fold(&self.settings, |settings, part| settings.get(part))
+                                    .cloned()
+                                    .unwrap_or(Value::Null)
+                            })
+                            .collect::<Vec<_>>();
+                        json!({"jsonrpc":"2.0","id":id,"result":result})
+                    }
+                    (kind, "window/workDoneProgress/create") if kind != Kind::Clangd => {
+                        json!({"jsonrpc":"2.0","id":id,"result":null})
+                    }
+                    _ => {
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported request"}})
+                    }
+                };
+                self.process.send(response)?;
                 continue;
             }
             if id.and_then(Value::as_u64) == Some(1) && self.capabilities.is_none() {
@@ -522,15 +793,47 @@ impl Session {
                         .get(feature)
                         .is_some_and(|value| value == true || value.is_object())
                 };
+                self.incremental_sync = self.kind != Kind::Clangd
+                    && result.get("textDocumentSync").is_some_and(|sync| {
+                        sync.as_u64() == Some(2)
+                            || sync.get("change").and_then(Value::as_u64) == Some(2)
+                    });
+                self.typescript_pull = self.kind == Kind::Typescript
+                    && result
+                        .pointer("/executeCommandProvider/commands")
+                        .and_then(Value::as_array)
+                        .is_some_and(|commands| {
+                            commands
+                                .iter()
+                                .any(|command| command == "typescript.tsserverRequest")
+                        });
                 self.process.send(notify("initialized", json!({})))?;
                 self.capabilities = Some(Capabilities {
                     hover: supports("hoverProvider"),
                     completion: supports("completionProvider"),
                     definition: supports("definitionProvider"),
+                    workspace_symbol: supports("workspaceSymbolProvider"),
+                    declaration: supports("declarationProvider"),
+                    implementation: supports("implementationProvider"),
+                    references: supports("referencesProvider"),
                     rename: supports("renameProvider"),
                     prepare_rename: result.pointer("/renameProvider/prepareProvider")
                         == Some(&Value::Bool(true)),
                 });
+            } else if let Some(id) = id.and_then(Value::as_i64).filter(|id| *id < 0) {
+                if let Some(event) =
+                    self.typescript_diagnostics
+                        .receive(id, &message, &self.documents)
+                {
+                    if let Event::Diagnostics { path, .. } = &event {
+                        if registry
+                            .language_file(owner, &self.workspace_id, path)
+                            .is_ok()
+                        {
+                            events.push(event);
+                        }
+                    }
+                }
             } else if method == Some("textDocument/publishDiagnostics") {
                 if let Some((event, path)) = self.diagnostics(&message["params"]) {
                     if registry
@@ -556,14 +859,22 @@ impl Session {
                             .is_err()
                     {
                         Value::Null
-                    } else if matches!(req.feature, Feature::Definition) {
+                    } else if matches!(
+                        req.feature,
+                        Feature::Definition
+                            | Feature::References
+                            | Feature::Implementation
+                            | Feature::Declaration
+                    ) {
                         self.definitions(&message["result"], registry, owner)
+                    } else if matches!(req.feature, Feature::WorkspaceSymbol) {
+                        self.symbols(&message["result"], registry, owner)
                     } else if matches!(req.feature, Feature::Rename | Feature::PrepareRename) {
                         let result = &message["result"];
                         if result.is_null() {
                             Value::Null
                         } else if matches!(req.feature, Feature::Rename) {
-                            match self.workspace_edit(result, registry, owner) {
+                            match self.workspace_edit(result, registry, owner, &req.snapshots) {
                                 Ok(files) => json!(workspace_edit::Preview { files }),
                                 Err(error) => json!(workspace_edit::Failure { error }),
                             }
@@ -597,9 +908,15 @@ impl Session {
                 .process
                 .send(notify("$/cancelRequest", json!({"id":request_id})));
         }
+        if self.typescript_pull {
+            self.typescript_diagnostics
+                .schedule(&self.process, &self.documents)?;
+        }
         Ok(Update {
             capabilities: self.capabilities,
             events,
+            stderr: self.process.logs(),
+            error: None,
         })
     }
 
@@ -619,11 +936,36 @@ impl Session {
                     .as_array()?
                     .iter()
                     .take(200)
-                    .cloned()
+                    .filter_map(|diagnostic| {
+                        let message: String = diagnostic
+                            .get("message")?
+                            .as_str()?
+                            .chars()
+                            .take(2000)
+                            .collect();
+                        let mut result = json!({"message":message});
+                        if let Some(severity) = diagnostic.get("severity").and_then(Value::as_u64) {
+                            result["severity"] = json!(severity);
+                        }
+                        if let Some(range) = diagnostic.get("range").and_then(checked_range) {
+                            result["range"] = json!(range);
+                        }
+                        Some(result)
+                    })
                     .collect(),
             },
             path,
         ))
+    }
+
+    fn symbols(&self, result: &Value, registry: &Registry, owner: &str) -> Value {
+        Value::Array(result.as_array().into_iter().flatten().take(80).filter_map(|symbol| {
+            let name = symbol.get("name")?.as_str()?;
+            let uri = symbol.pointer("/location/uri")?.as_str()?;
+            let path = self.target_path(uri, registry, owner)?;
+            let range = checked_range(symbol.pointer("/location/range")?)?;
+            Some(json!({"name":name.chars().take(256).collect::<String>(),"path":path,"range":range,"kind":symbol.get("kind").and_then(Value::as_u64)}))
+        }).collect())
     }
 
     fn definitions(&self, result: &Value, registry: &Registry, owner: &str) -> Value {
@@ -639,16 +981,11 @@ impl Session {
                         .get("targetUri")
                         .or_else(|| item.get("uri"))?
                         .as_str()?;
-                    let (path, _) = self
-                        .documents
-                        .iter()
-                        .find(|(_, doc)| same_uri(&doc.uri, uri))?;
-                    registry
-                        .language_file(owner, &self.workspace_id, path)
-                        .ok()?;
-                    let range = item
-                        .get("targetSelectionRange")
-                        .or_else(|| item.get("range"))?;
+                    let path = self.target_path(uri, registry, owner)?;
+                    let range = checked_range(
+                        item.get("targetSelectionRange")
+                            .or_else(|| item.get("range"))?,
+                    )?;
                     Some(json!({"path":path,"range":range}))
                 })
                 .collect(),
@@ -656,10 +993,26 @@ impl Session {
     }
 }
 
+#[derive(PartialEq, Eq)]
+struct Approval {
+    workspace_id: String,
+    executable: Executable,
+    fingerprint: [[u8; 32]; 4],
+    rust_build_scripts: bool,
+}
+
 #[derive(Default)]
 struct State {
     destroyed: bool,
-    session: Option<Session>,
+    sessions: HashMap<Kind, Session>,
+    approved: HashMap<Kind, (Approval, String)>,
+}
+
+impl State {
+    fn cached_version(&self, kind: Kind, candidate: &Approval) -> Option<&str> {
+        let (approved, version) = self.approved.get(&kind)?;
+        (kind != Kind::Clangd && approved == candidate).then_some(version.as_str())
+    }
 }
 
 #[derive(Default)]
@@ -672,7 +1025,8 @@ impl LanguageService {
     pub fn revoke(&self, destroy: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.destroyed |= destroy;
-            state.session.take();
+            state.sessions.clear();
+            state.approved.clear();
         }
     }
 }
@@ -686,24 +1040,64 @@ async fn blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub async fn language_start(window: WebviewWindow, workspace_id: String) -> Result<Option<String>> {
+pub async fn language_start(
+    window: WebviewWindow,
+    workspace_id: String,
+    server: Option<Kind>,
+    rust_build_scripts: Option<bool>,
+) -> Result<Option<String>> {
     blocking(move || {
         let resources = workbench(&window).map_err(|_| Error::Denied)?;
         let service = &resources.language;
         let _approval = service.approval.try_lock().map_err(|_| Error::Busy)?;
-        resources.workspace.registry().map_err(|_| Error::Denied)?.authorize(window.label(), &workspace_id).map_err(|_| Error::Denied)?;
-        let path = executable()?;
-        let identity = fingerprint(&path)?;
-        let approved = window.dialog().message(format!(
-            "Start clangd for this workspace? The tool runs with your OS privileges and receives the contents of supported files you open and may read copies of nearby C/C++ files when you use Rename Symbol.\n\n{}",
-            path.display()
-        )).title("Enable C/C++ Language Intelligence")
-            .parent(&window)
-            .buttons(MessageDialogButtons::OkCancel).blocking_show();
-        if !approved {
-            return Ok(None);
+        resources.workspace.registry().map_err(|_| Error::Denied)?
+            .authorize(window.label(), &workspace_id).map_err(|_| Error::Denied)?;
+        let kind = server.unwrap_or_default();
+        let rust_build_scripts = rust_build_scripts.unwrap_or(false);
+        if rust_build_scripts && kind != Kind::RustAnalyzer {
+            return Err(Error::Denied);
         }
-        if identity != fingerprint(&path)? {
+        let executable = Executable::new(&kind.discover()?, kind)?;
+        let approval = Approval {
+            workspace_id: workspace_id.clone(),
+            fingerprint: executable.identity()?,
+            executable,
+            rust_build_scripts,
+        };
+        let cached_version = {
+            let state = service.state.lock().map_err(|_| Error::Internal)?;
+            if state.destroyed {
+                return Err(Error::Denied);
+            }
+            if state.sessions.contains_key(&kind) {
+                return Err(Error::Busy);
+            }
+            state.cached_version(kind, &approval).map(String::from)
+        };
+        let version = if let Some(version) = cached_version {
+            version
+        } else {
+            let access = match (kind, rust_build_scripts) {
+                (Kind::Clangd, _) => "Turing shares a temporary copy of supported files you open and may share copies of nearby C/C++ files for Rename Symbol.",
+                (Kind::RustAnalyzer, true) => "Turing shares the approved workspace root. Cargo build scripts and procedural macros can execute workspace and dependency code.",
+                _ => "Turing shares the approved workspace root. Only enable this server for a workspace you trust.",
+            };
+            let approved = window.dialog().message(format!(
+                "Start {} for this workspace? It runs with your OS privileges. {access}\n\n{}",
+                kind.names()[0], approval.executable.description()
+            )).title("Enable Language Intelligence")
+                .parent(&window)
+                .buttons(MessageDialogButtons::OkCancel).blocking_show();
+            if !approved {
+                return Ok(None);
+            }
+            if approval.fingerprint != approval.executable.identity()? {
+                return Err(Error::StartFailed);
+            }
+            let probe_directory = Session::staging()?;
+            Process::probe(&approval.executable, probe_directory.path(), kind)?
+        };
+        if approval.fingerprint != approval.executable.identity()? {
             return Err(Error::StartFailed);
         }
         let registry = resources.workspace.registry().map_err(|_| Error::Denied)?;
@@ -712,9 +1106,15 @@ pub async fn language_start(window: WebviewWindow, workspace_id: String) -> Resu
         if state.destroyed {
             return Err(Error::Denied);
         }
-        let session = Session::start(workspace_id, &path)?;
+        let root = if kind == Kind::Clangd { Path::new("") } else {
+            registry.language_root(window.label(), &workspace_id).map_err(|_| Error::Denied)?
+        };
+        let session = Session::launch(workspace_id, &approval.executable, kind, root, rust_build_scripts)?;
+        session.verify_root(&registry, window.label())?;
         let id = session.id.clone();
-        state.session = Some(session);
+        session.process.record_version(version.clone());
+        state.sessions.insert(kind, session);
+        state.approved.insert(kind, (approval, version));
         Ok(Some(id))
     }).await
 }
@@ -735,14 +1135,17 @@ fn with_session<T>(
         .state
         .lock()
         .map_err(|_| Error::Internal)?;
-    let session = state
-        .session
-        .as_mut()
-        .filter(|session| session.workspace_id == workspace_id && session.id == session_id)
+    let (&kind, session) = state
+        .sessions
+        .iter_mut()
+        .find(|(_, session)| session.workspace_id == workspace_id && session.id == session_id)
         .ok_or(Error::Denied)?;
     let result = run(session, &registry);
-    if matches!(result, Err(Error::ServerExited | Error::StartFailed)) {
-        state.session.take();
+    if matches!(
+        result,
+        Err(Error::ServerExited | Error::StartFailed | Error::Denied)
+    ) {
+        state.sessions.remove(&kind);
     }
     result
 }
@@ -769,9 +1172,23 @@ pub async fn language_poll(
     session_id: String,
 ) -> Result<Update> {
     blocking(move || {
-        with_session(&window, &workspace_id, &session_id, |session, registry| {
-            session.poll(registry, window.label())
-        })
+        let mut stderr = Vec::new();
+        let result = with_session(&window, &workspace_id, &session_id, |session, registry| {
+            let result = session.poll(registry, window.label());
+            if matches!(result, Err(Error::ServerExited | Error::StartFailed)) {
+                stderr = session.process.logs();
+            }
+            result
+        });
+        match result {
+            Err(error) if !stderr.is_empty() => Ok(Update {
+                capabilities: None,
+                events: Vec::new(),
+                stderr,
+                error: Some(error),
+            }),
+            other => other,
+        }
     })
     .await
 }
@@ -790,12 +1207,15 @@ pub async fn language_stop(
                 .state
                 .lock()
                 .map_err(|_| Error::Internal)?;
-            if !state.session.as_ref().is_some_and(|session| {
-                session.workspace_id == workspace_id && session.id == session_id
-            }) {
-                return Err(Error::Denied);
-            }
-            state.session.take()
+            let kind = state
+                .sessions
+                .iter()
+                .find(|(_, session)| {
+                    session.workspace_id == workspace_id && session.id == session_id
+                })
+                .map(|(kind, _)| *kind)
+                .ok_or(Error::Denied)?;
+            state.sessions.remove(&kind)
         };
         if let Some(mut session) = session {
             session.process.shutdown();
@@ -1156,6 +1576,8 @@ mod lifecycle_tests {
         hold_hover: bool,
         flood: usize,
         ignore_shutdown: bool,
+        shutdown_delay: Duration,
+        reject_shutdown: bool,
         linger_after_exit: bool,
         crash_on_open: bool,
         rename: bool,
@@ -1266,9 +1688,19 @@ mod lifecycle_tests {
                     send(reply(&params["id"], json!({"contents": "too late"})));
                 }
                 Some("shutdown") if !script.ignore_shutdown => {
-                    send(reply(&id, Value::Null));
+                    thread::sleep(script.shutdown_delay);
+                    if script.reject_shutdown {
+                        send(
+                            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"failed"}}),
+                        );
+                    } else {
+                        send(reply(&id, Value::Null));
+                    }
                 }
-                Some("exit") if !script.linger_after_exit => return,
+                Some("exit") if script.linger_after_exit => {
+                    thread::sleep(Duration::from_secs(4));
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1288,20 +1720,43 @@ mod lifecycle_tests {
         registry: Registry,
         session: Session,
         log: Log,
+        path: &'static str,
     }
 
     fn fixture(script: Script) -> Fixture {
+        fixture_for(script, Kind::Clangd, "hello.cpp")
+    }
+
+    fn fixture_for(script: Script, kind: Kind, path: &'static str) -> Fixture {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("hello.cpp"), "int main() {}\n").unwrap();
+        std::fs::write(root.path().join(path), "int main() {}\n").unwrap();
         let mut registry = Registry::default();
         let workspace = registry.register("owner", root.path()).unwrap();
         let (process, log) = connect(script);
-        let session = Session::begin(workspace.id, Session::staging().unwrap(), process).unwrap();
+        let session = if kind == Kind::Clangd {
+            Session::begin(workspace.id, Session::staging().unwrap(), process).unwrap()
+        } else {
+            let path = registry
+                .language_root("owner", &workspace.id)
+                .unwrap()
+                .to_path_buf();
+            Session::initialize(
+                workspace.id,
+                None,
+                path,
+                kind,
+                process,
+                kind.initialization(),
+                json!({}),
+            )
+            .unwrap()
+        };
         Fixture {
             _root: root,
             registry,
             session,
             log,
+            path,
         }
     }
 
@@ -1335,7 +1790,7 @@ mod lifecycle_tests {
 
         fn sync(&mut self, version: u32, saved: bool) -> Result<()> {
             self.apply(Action::Sync {
-                path: "hello.cpp".into(),
+                path: self.path.into(),
                 version,
                 text: format!("int main() {{ return {version}; }}\n"),
                 saved,
@@ -1344,7 +1799,7 @@ mod lifecycle_tests {
 
         fn request(&mut self, request_id: u32, version: u32, feature: Feature) -> Result<()> {
             self.apply(Action::Request {
-                path: "hello.cpp".into(),
+                path: self.path.into(),
                 version,
                 position: Position {
                     line: 0,
@@ -1386,6 +1841,133 @@ mod lifecycle_tests {
             Event::Response { request_id, value } if *request_id == id => Some(value),
             _ => None,
         })
+    }
+
+    #[test]
+    fn managed_descriptors_use_the_expected_root_language_and_version() {
+        for (kind, path, language) in [
+            (Kind::Clangd, "hello.cpp", "cpp"),
+            (Kind::Typescript, "hello.tsx", "typescriptreact"),
+            (Kind::Pyright, "hello.py", "python"),
+            (Kind::RustAnalyzer, "hello.rs", "rust"),
+        ] {
+            let mut test = fixture_for(
+                Script {
+                    hold_hover: true,
+                    server_request: true,
+                    ..Script::default()
+                },
+                kind,
+                path,
+            );
+            assert!(test.ready().definition);
+            let root = Url::from_directory_path(&test.session.root).unwrap();
+            assert!(test.received(|message| message
+                .pointer("/params/rootUri")
+                .and_then(Value::as_str)
+                == Some(root.as_str())));
+            test.sync(1, false).unwrap();
+            assert!(
+                test.received(|message| message.pointer("/params/textDocument/languageId")
+                    == Some(&json!(language)))
+            );
+            test.request(3, 1, Feature::Hover).unwrap();
+            test.apply(Action::Cancel { request_id: 3 }).unwrap();
+            test.sync(2, false).unwrap();
+            let result = test.until(|update| diagnostic_versions(update).contains(&2));
+            assert!(response(&result, 3).is_none());
+            assert!(!diagnostic_versions(&result).contains(&1));
+            test.request(4, 2, Feature::Definition).unwrap();
+            let result = test.until(|update| response(update, 4).is_some());
+            assert_eq!(
+                response(&result, 4).and_then(|value| value.pointer("/0/path")),
+                Some(&json!(path))
+            );
+            assert_eq!(test.session.process.shutdown(), Shutdown::Graceful);
+        }
+    }
+
+    #[test]
+    fn real_root_results_refuse_outside_other_workspace_traversal_and_symlink_targets() {
+        let mut test = fixture_for(Script::default(), Kind::Typescript, "hello.ts");
+        test.ready();
+        let other = tempfile::tempdir().unwrap();
+        let outside = other.path().join("secret.ts");
+        std::fs::write(&outside, "secret").unwrap();
+        let mut another_window = Registry::default();
+        another_window.register("other", other.path()).unwrap();
+        let uri = |path: &Path| Url::from_file_path(path).unwrap().to_string();
+        let inside = uri(&test.session.root.join("hello.ts"));
+        assert_eq!(
+            test.session
+                .target_path(&inside, &test.registry, "owner")
+                .as_deref(),
+            Some("hello.ts")
+        );
+        for bad in [
+            uri(&outside),
+            inside.replace("hello.ts", "nested/%2e%2e/hello.ts"),
+        ] {
+            assert!(test
+                .session
+                .target_path(&bad, &test.registry, "owner")
+                .is_none());
+        }
+        assert!(test
+            .session
+            .target_path(&inside, &test.registry, "other")
+            .is_none());
+        #[cfg(unix)]
+        {
+            let link = test.session.root.join("alias.ts");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(test
+                .session
+                .target_path(&uri(&link), &test.registry, "owner")
+                .is_none());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_real_workspace_root_revokes_language_session() {
+        let mut test = fixture_for(Script::default(), Kind::Pyright, "hello.py");
+        test.ready();
+        let parent = tempfile::tempdir().unwrap();
+        let moved = parent.path().join("moved");
+        std::fs::rename(&test.session.root, &moved).unwrap();
+        std::fs::create_dir(&test.session.root).unwrap();
+        std::fs::write(test.session.root.join("hello.py"), "replacement").unwrap();
+        assert!(matches!(test.poll(), Err(Error::Denied)));
+        assert_eq!(test.sync(1, false), Err(Error::Denied));
+    }
+
+    #[test]
+    fn new_descriptors_report_process_exit() {
+        for (kind, path) in [
+            (Kind::Typescript, "hello.js"),
+            (Kind::Pyright, "hello.py"),
+            (Kind::RustAnalyzer, "hello.rs"),
+        ] {
+            let mut test = fixture_for(
+                Script {
+                    crash_on_open: true,
+                    ..Script::default()
+                },
+                kind,
+                path,
+            );
+            test.ready();
+            test.sync(1, false).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if matches!(test.poll(), Err(Error::ServerExited)) {
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
     }
 
     fn diagnostic_versions(update: &Update) -> Vec<u32> {
@@ -1486,7 +2068,7 @@ mod lifecycle_tests {
         let edit = test_edit(0, 4, 8, "name");
         let validate = |value: &Value, owner| {
             test.session
-                .workspace_edit(value, &test.registry, owner)
+                .workspace_edit(value, &test.registry, owner, &HashMap::new())
                 .is_ok()
         };
         for target in [
@@ -1554,7 +2136,10 @@ mod lifecycle_tests {
         })
         .unwrap();
         let uri = &test.session.documents["hello.cpp"].uri;
-        let validate = |value: &Value| test.session.workspace_edit(value, &test.registry, "owner");
+        let validate = |value: &Value| {
+            test.session
+                .workspace_edit(value, &test.registry, "owner", &HashMap::new())
+        };
         let edit = test_edit(0, 1, 3, "z");
         let result =
             json!(validate(&json!({"changes":{uri:[test_edit(1,0,3,"fin"),edit]}})).unwrap());
@@ -1605,7 +2190,7 @@ mod lifecycle_tests {
         test.sync(1, false).unwrap();
         let first = test.until(|update| !diagnostic_versions(update).is_empty());
         assert_eq!(diagnostic_versions(&first), vec![1]);
-        assert!(test.session.staging.path().join("hello.cpp").is_file());
+        assert!(test.session.root.join("hello.cpp").is_file());
         test.sync(2, true).unwrap();
         let second = test.until(|update| !diagnostic_versions(update).is_empty());
         assert_eq!(diagnostic_versions(&second), vec![2]);
@@ -1651,7 +2236,7 @@ mod lifecycle_tests {
         })
         .unwrap();
         assert!(test.session.documents.is_empty());
-        assert!(!test.session.staging.path().join("hello.cpp").exists());
+        assert!(!test.session.root.join("hello.cpp").exists());
 
         // Shutdown: request, reply, exit, and the server closes its output.
         assert_eq!(test.session.process.shutdown(), Shutdown::Graceful);
@@ -1675,6 +2260,35 @@ mod lifecycle_tests {
                 "exit",
             ]
         );
+    }
+
+    #[test]
+    fn shutdown_drains_document_activity_and_waits_for_a_delayed_reply() {
+        let mut test = fixture(Script {
+            shutdown_delay: Duration::from_millis(100),
+            ..Script::default()
+        });
+        test.ready();
+        for version in 1..=7 {
+            test.sync(version, false).unwrap();
+        }
+        assert_eq!(test.session.process.shutdown(), Shutdown::Graceful);
+        let methods = test.methods();
+        assert_eq!(
+            &methods[methods.len() - 3..],
+            ["textDocument/didChange", "shutdown", "exit"]
+        );
+    }
+
+    #[test]
+    fn shutdown_rejects_an_error_response_without_sending_exit() {
+        let mut test = fixture(Script {
+            reject_shutdown: true,
+            ..Script::default()
+        });
+        test.ready();
+        assert_eq!(test.session.process.shutdown(), Shutdown::Rejected);
+        assert_eq!(test.methods().last().map(String::as_str), Some("shutdown"));
     }
 
     #[test]
@@ -1807,12 +2421,71 @@ mod contract_tests {
     use serde_json::json;
 
     #[test]
+    fn launch_approval_is_scoped_to_descriptor_workspace_executable_and_rust_options() {
+        let service = LanguageService::default();
+        let make_approval = || Approval {
+            workspace_id: "first".into(),
+            executable: Executable {
+                entry: "rust-analyzer".into(),
+                node: None,
+                version_entry: "rust-analyzer".into(),
+                tsserver: None,
+            },
+            fingerprint: [[2; 32]; 4],
+            rust_build_scripts: false,
+        };
+        {
+            let mut state = service.state.lock().unwrap();
+            let kind = Kind::RustAnalyzer;
+            assert!(state.cached_version(kind, &make_approval()).is_none());
+            state
+                .approved
+                .insert(kind, (make_approval(), "rust-analyzer 1.100.0".into()));
+            assert!(state.cached_version(kind, &make_approval()).is_some());
+            assert!(state
+                .cached_version(Kind::Pyright, &make_approval())
+                .is_none());
+            let mut changed = make_approval();
+            changed.fingerprint[1][0] = 5;
+            assert!(state.cached_version(kind, &changed).is_none());
+            let mut changed = make_approval();
+            changed.workspace_id = "second".into();
+            assert!(state.cached_version(kind, &changed).is_none());
+            let mut changed = make_approval();
+            changed.rust_build_scripts = true;
+            assert!(state.cached_version(kind, &changed).is_none());
+        }
+        service.revoke(false);
+        assert!(service
+            .state
+            .lock()
+            .unwrap()
+            .cached_version(Kind::RustAnalyzer, &make_approval())
+            .is_none());
+    }
+
+    #[test]
+    fn server_kinds_match_contract_and_exclude_executable_paths() {
+        fixture::assert_enum_values(
+            "LanguageServer",
+            &[
+                Kind::Clangd,
+                Kind::Typescript,
+                Kind::Pyright,
+                Kind::RustAnalyzer,
+            ],
+        );
+        assert!(serde_json::from_value::<Kind>(json!("/tmp/executable")).is_err());
+    }
+
+    #[test]
     fn error_codes_match_contract() {
         use Error::*;
         let all = [
             Denied,
             Unavailable,
             StartFailed,
+            Incompatible,
             ServerExited,
             Busy,
             InvalidDocument,
@@ -1822,8 +2495,8 @@ mod contract_tests {
         ];
         for error in &all {
             match error {
-                Denied | Unavailable | StartFailed | ServerExited | Busy | InvalidDocument
-                | InvalidWorkspaceEdit | NotReady | Internal => {}
+                Denied | Unavailable | StartFailed | Incompatible | ServerExited | Busy
+                | InvalidDocument | InvalidWorkspaceEdit | NotReady | Internal => {}
             }
         }
         fixture::assert_error_codes("language", &all);
@@ -1884,7 +2557,10 @@ mod contract_tests {
                     definition: false,
                     rename: true,
                     prepare_rename: true,
+                    ..Capabilities::default()
                 }),
+                stderr: Vec::new(),
+                error: None,
                 events: vec![
                     Event::Diagnostics {
                         path: "src/main.cpp".into(),
@@ -1904,8 +2580,20 @@ mod contract_tests {
             &Update {
                 capabilities: None,
                 events: Vec::new(),
+                stderr: Vec::new(),
+                error: None,
             },
         );
-        fixture::assert_case_count("LanguageUpdate", 2);
+        fixture::assert_payload(
+            "LanguageUpdate",
+            2,
+            &Update {
+                capabilities: None,
+                events: Vec::new(),
+                stderr: vec!["[redacted]".into()],
+                error: Some(Error::ServerExited),
+            },
+        );
+        fixture::assert_case_count("LanguageUpdate", 3);
     }
 }
