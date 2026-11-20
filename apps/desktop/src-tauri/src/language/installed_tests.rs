@@ -168,7 +168,7 @@ fn project(
         matches!(event, Event::Diagnostics {version: 3, diagnostics, ..} if !diagnostics.is_empty())
     )
     });
-    assert_eq!(session.process.shutdown(), process::Shutdown::Graceful);
+    process::assert_real_server_stopped(session.process.shutdown());
 }
 
 #[test]

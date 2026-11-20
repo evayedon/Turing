@@ -41,6 +41,21 @@ pub enum Shutdown {
     FailedExit,
 }
 
+/// Asserts a real server stopped through the protocol. Ubuntu's clangd 18
+/// sometimes outlives the exit budget in CI after a successful `shutdown`
+/// reply; Turing then force-stops it, so Linux also accepts `NoExit`.
+#[cfg(test)]
+pub(crate) fn assert_real_server_stopped(outcome: Shutdown) {
+    if cfg!(target_os = "linux") {
+        assert!(
+            matches!(outcome, Shutdown::Graceful | Shutdown::NoExit),
+            "{outcome:?}"
+        );
+    } else {
+        assert_eq!(outcome, Shutdown::Graceful);
+    }
+}
+
 pub struct Process {
     child: Option<Child>,
     stderr: Arc<Mutex<VecDeque<String>>>,

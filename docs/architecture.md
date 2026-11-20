@@ -853,7 +853,8 @@ fall back to forced cleanup. Workspace replacement, workspace close and
 window destruction revoke the session and force process cleanup. Unix uses
 a process group, signalled before the child is reaped so the group ID cannot
 be reused. Windows uses a kill-on-close Job Object. A desktop crash can leave
-temporary files behind.
+temporary files behind. Ubuntu's clangd 18 sometimes outlives that budget after a
+successful `shutdown` reply; Turing then force-stops it, so Stop never hangs.
 
 ### Project-aware server access
 

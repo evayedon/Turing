@@ -1549,10 +1549,7 @@ mod tests {
         });
         let bad = json!({"uri":"file:///outside.hpp","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}});
         assert_eq!(session.definitions(&bad, &registry, "owner"), json!([]));
-        assert_eq!(
-            session.process.shutdown(),
-            super::process::Shutdown::Graceful
-        );
+        super::process::assert_real_server_stopped(session.process.shutdown());
     }
 }
 
