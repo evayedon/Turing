@@ -114,6 +114,7 @@ export function EditorWorkspace({
           <div className="editor-toolbar">
             <EditorTabStrip
               label={multiple ? `Open files, group ${number}` : "Open files"}
+              panelId={`editor-document-${group.id}`}
               tabs={groupTabs}
               active={shown}
               busy={busy}
@@ -199,31 +200,38 @@ export function EditorWorkspace({
           </div>
         )}
         {shown ? (
-          <Suspense
-            fallback={
-              <p className="panel-message" role="status">
-                Loading editor…
-              </p>
-            }
+          <div
+            id={`editor-document-${group.id}`}
+            role="tabpanel"
+            aria-label={shown.name}
+            className="editor-document"
           >
-            <MonacoHost
-              models={models}
-              group={group.id}
-              primary={index === 0}
-              focused={isActive}
-              active={shown}
-              reveal={reveal}
-              tabs={tabs}
-              readOnly={readOnly}
-              onChange={edit}
-              onInfo={onInfo}
-              onCommandsReady={onCommandsReady}
-              workspaceId={workspaceId}
-              onNavigate={navigate}
-              language={language}
-              problems={problems}
-            />
-          </Suspense>
+            <Suspense
+              fallback={
+                <p className="panel-message" role="status">
+                  Loading editor…
+                </p>
+              }
+            >
+              <MonacoHost
+                models={models}
+                group={group.id}
+                primary={index === 0}
+                focused={isActive}
+                active={shown}
+                reveal={reveal}
+                tabs={tabs}
+                readOnly={readOnly}
+                onChange={edit}
+                onInfo={onInfo}
+                onCommandsReady={onCommandsReady}
+                workspaceId={workspaceId}
+                onNavigate={navigate}
+                language={language}
+                problems={problems}
+              />
+            </Suspense>
+          </div>
         ) : busy ? (
           <p className="panel-message" role="status">
             Working…

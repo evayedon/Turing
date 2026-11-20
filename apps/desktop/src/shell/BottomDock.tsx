@@ -55,9 +55,11 @@ export function BottomDock({
       id="bottom-dock"
       className="panel bottom-dock"
       aria-label={active}
+      data-focus-region=""
+      tabIndex={-1}
       hidden={!visible}
     >
-      <header className="dock-header">
+      <div className="dock-header">
         <div role="tablist" aria-label="Bottom dock" className="dock-tabs">
           {dockViews.map((name, index) => {
             const Icon = icons[name];
@@ -120,7 +122,7 @@ export function BottomDock({
         >
           <X size={15} aria-hidden="true" />
         </button>
-      </header>
+      </div>
       {dockViews.map((name) => (
         <div
           key={name}

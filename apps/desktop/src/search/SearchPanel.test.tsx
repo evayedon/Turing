@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchPanel } from "./SearchPanel";
@@ -27,6 +28,37 @@ function setup(workspaceId = "project") {
 }
 
 describe("workspace search", () => {
+  it("announces matches and opens a result by keyboard", async () => {
+    const { user, open, container } = setup();
+    ipc.mockResolvedValueOnce("search").mockResolvedValueOnce({
+      files: [
+        {
+          relativePath: "main.ts",
+          matches: [
+            { line: 2, column: 3, before: "  ", text: "needle", after: "()" },
+          ],
+        },
+      ],
+      truncated: false,
+      skippedFiles: 0,
+    });
+    const query = screen.getByRole("searchbox", { name: "Search text" });
+    query.focus();
+    await user.keyboard("needle{Enter}");
+    const match = await screen.findByRole("button", {
+      name: /main.ts, line 2, column 3/,
+    });
+    expect(screen.getByRole("status").textContent).toContain(
+      "1 match in 1 file",
+    );
+    await expectAccessible(container);
+    screen.getByText("main.ts").focus();
+    await user.tab();
+    expect(document.activeElement).toBe(match);
+    await user.keyboard("{Enter}");
+    expect(open).toHaveBeenCalledWith("main.ts", { line: 2, column: 3 });
+  });
+
   it("distinguishes empty, scan limit, and failure states", async () => {
     const { user } = setup();
     const submit = screen.getByRole("button", { name: "Search" });

@@ -10,6 +10,7 @@ import {
 import type { SymbolsResponse } from "@turing/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { expectAccessible } from "../test/axe";
 import { WorkspaceSymbolPicker } from "./WorkspaceSymbolPicker";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -85,6 +86,8 @@ describe("workspace symbol picker", () => {
     await act(async () => resolveOld(response("outdated")));
     expect(screen.queryByRole("option", { name: /outdated/ })).toBeNull();
     expect(screen.getByRole("option", { name: /current/ })).toBeTruthy();
+    vi.useRealTimers();
+    await expectAccessible(document.body);
     fireEvent.keyDown(input, { key: "Enter" });
     expect(navigate).toHaveBeenCalledWith(response("current").symbols[0]);
   });

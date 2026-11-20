@@ -10,6 +10,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Workbench } from "../shell/Workbench";
@@ -52,6 +53,21 @@ beforeEach(() => {
           encoding: "utf-8",
         };
       }
+      case "workspace_symbols_query":
+        return {
+          generation: 1,
+          complete: true,
+          truncated: false,
+          symbols: [
+            {
+              name: "main",
+              kind: "function",
+              relativePath: "main.ts",
+              line: 0,
+              character: 0,
+            },
+          ],
+        };
       case "editor_confirm_discard":
         return true;
       case "workspace_close":
@@ -103,6 +119,55 @@ async function editAction(
 }
 
 describe("editor groups", () => {
+  it("qualifies open workspaces with tabs and split groups", async () => {
+    const user = await openMain();
+    await user.click(screen.getByRole("button", { name: "notes.md" }));
+    await screen.findByRole("tab", { name: "notes.md" });
+    await expectAccessible(document.body);
+    const treeRow = screen.getByRole("button", { name: "notes.md" });
+    treeRow.focus();
+    await user.keyboard("{F2}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("textbox", { name: "Rename entry" }),
+    );
+    await expectAccessible(document.body);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "notes.md" }),
+    );
+    screen.getByRole("tab", { name: "notes.md" }).focus();
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("tab", { name: "main.ts", selected: true }),
+    );
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("tab", { name: "notes.md", selected: true }),
+    );
+    await splitRight();
+    await expectAccessible(document.body);
+  });
+
+  it("opens the symbol picker from the workspace and restores keyboard focus on Escape", async () => {
+    const user = await openMain();
+    const tab = screen.getByRole("tab", { name: "main.ts" });
+    tab.focus();
+    await user.keyboard("{Control>}t{/Control}");
+    const input = screen.getByRole("combobox", {
+      name: "Search workspace symbols",
+    });
+    expect(document.activeElement).toBe(input);
+    await user.keyboard("main");
+    const option = await screen.findByRole("option", {
+      name: /main.*function/,
+    });
+    await user.keyboard("{ArrowDown}");
+    expect(input.getAttribute("aria-activedescendant")).toBe(option.id);
+    await expectAccessible(document.body, true);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(tab);
+  });
+
   it("splits one document into two views of a single shared model", async () => {
     await openMain();
     await splitRight();

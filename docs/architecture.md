@@ -833,3 +833,32 @@ before proceeding to the Run console. Later slices follow the existing
 [roadmap](research/rea-vscode-xcode/11_Prioritized_Implementation_Roadmap.md)
 for managed language tooling, shared project context, editor workflows,
 Git, testing and debugging, extension isolation, and supervised AI.
+
+## Accessibility
+
+The workbench exposes named title, activity, sidebar, editor, dock, and status
+regions. F6 and Shift+F6 move between visible regions, including when Monaco
+or xterm owns keyboard input. Ctrl+F6 and Ctrl+Shift+F6 still switch editor
+groups. Tab moves among controls, and arrow keys operate menus, Explorer rows,
+and editor, dock, and terminal tabs. Dialogs use the webview's modal dialog
+behavior. The command and symbol pickers expose the active result through the
+combobox, and Escape restores opener focus. Live status text includes save
+state and the severity, index, message, and location reached with F8.
+
+The Vitest integration suites use axe-core against rendered jsdom states,
+including the empty shell, workspace Explorer, Search results, Source Control,
+editor tabs and groups, Problems and Output, terminal sessions and splits,
+menu and dialog states, symbol results, inline rename, and draft recovery.
+Keyboard tests exercise focus order, region cycling, composite navigation,
+dismissal, and status text. The Nebula contrast unit tests read the actual CSS
+token values and check 4.5:1 for body text and 3:1 for large text and focus
+indicators. Axe color contrast is disabled because jsdom cannot paint. The
+landmark containment rule runs on full-workbench scans and is skipped for
+isolated component fixtures.
+
+jsdom does not provide the platform accessibility tree, rendered focus
+indicators, native dialogs, or screen-reader speech. Monaco and xterm use
+test doubles for the app integration checks. Contrast tests cover specified
+token pairs rather than rendered syntax highlighting, terminal ANSI colors,
+or OS overrides. Roadmap qualification requires a human to complete all three
+platform runs in the [screen-reader smoke checklist](accessibility/screen-reader-smoke.md).

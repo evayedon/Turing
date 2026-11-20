@@ -10,6 +10,8 @@
   --nebula-accent: #c6b5ff;
   --nebula-cyan: #88dce9;
   --nebula-danger: #ffabb5;
+  --nebula-terminal-failure: #d13036;
+  --nebula-terminal-failure-text: #ffffff;
   --nebula-accent-border: #51456d;
   --nebula-active: #302945;
   --nebula-active-indicator: 2px;

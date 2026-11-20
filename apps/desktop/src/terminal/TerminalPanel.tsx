@@ -96,10 +96,12 @@ export function TerminalPanel({
   profile = "system",
   onShell,
   chrome = "full",
+  sessionName,
 }: {
   /** "minimal" hides the per-terminal toolbar when a session runs; the host
    * supplies those actions (for example in the bottom panel header). */
   chrome?: "full" | "minimal";
+  sessionName?: string;
   native: boolean;
   workspaceId?: string;
   profile?: TerminalProfile;
@@ -118,6 +120,7 @@ export function TerminalPanel({
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   const [error, setError] = useState("");
   const [search, setSearch] = useState(false);
+  const searchOpener = useRef<HTMLElement>(null);
   const [query, setQuery] = useState("");
   const [noMatch, setNoMatch] = useState(false);
 
@@ -203,13 +206,24 @@ export function TerminalPanel({
     void end(current.current);
   }
 
+  function openSearch() {
+    if (!lastView.current || search) return;
+    const opener = host.current?.ownerDocument.activeElement;
+    searchOpener.current = opener instanceof HTMLElement ? opener : null;
+    setSearch(true);
+  }
+
+  function closeSearch() {
+    setSearch(false);
+    if (searchOpener.current?.isConnected) searchOpener.current.focus();
+    else lastView.current?.focus();
+  }
+
   useImperativeHandle(actionsRef, () => ({
     close: () =>
       closeSession(host.current?.ownerDocument.activeElement ?? null),
     clear: () => current.current?.view?.clear(),
-    find: () => {
-      if (lastView.current) setSearch(true);
-    },
+    find: openSearch,
     copy: () => {
       void lastView.current
         ?.copy?.()
@@ -425,7 +439,7 @@ export function TerminalPanel({
         ) {
           event.preventDefault();
           event.stopPropagation();
-          setSearch(true);
+          openSearch();
         }
       }}
     >
@@ -520,6 +534,9 @@ export function TerminalPanel({
         <form
           className="terminal-find"
           role="search"
+          aria-label={
+            sessionName ? `Find in ${sessionName}` : "Find in terminal"
+          }
           onSubmit={(event) => {
             event.preventDefault();
             setNoMatch(!!query && !lastView.current?.find?.(query));
@@ -527,8 +544,7 @@ export function TerminalPanel({
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.stopPropagation();
-              setSearch(false);
-              lastView.current?.focus();
+              closeSearch();
             }
           }}
         >
@@ -554,10 +570,7 @@ export function TerminalPanel({
           <button
             type="button"
             aria-label="Close terminal search"
-            onClick={() => {
-              setSearch(false);
-              lastView.current?.focus();
-            }}
+            onClick={closeSearch}
           >
             ×
           </button>

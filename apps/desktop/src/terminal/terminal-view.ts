@@ -96,6 +96,8 @@ export function createTerminalView(
     input(Uint8Array.from(data, (char) => char.charCodeAt(0))),
   );
   terminal.attachCustomKeyEventHandler((event) => {
+    // A handled workbench shortcut must not also write bytes to the PTY.
+    if (event.defaultPrevented) return false;
     // With a selection, let the normal clipboard shortcut copy. Without a
     // selection, Ctrl+C must reach the PTY so it can interrupt the shell.
     return !(

@@ -97,6 +97,10 @@ export function ToolbarMenu({
             role="menu"
             aria-label={label}
             className="toolbar-menu-list"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget))
+                setOpen(false);
+            }}
             onKeyDown={(event) => {
               const items = entries();
               const index = items.indexOf(event.target as HTMLButtonElement);
@@ -118,7 +122,7 @@ export function ToolbarMenu({
                 event.stopPropagation();
                 close(true);
               } else if (event.key === "Tab") {
-                close(false);
+                close(true);
               }
             }}
           >
@@ -130,6 +134,7 @@ export function ToolbarMenu({
                   key={item.label}
                   type="button"
                   role="menuitem"
+                  tabIndex={-1}
                   disabled={item.disabled}
                   onClick={() => {
                     close(true);

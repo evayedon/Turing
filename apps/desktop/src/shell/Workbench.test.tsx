@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isTauri } from "@tauri-apps/api/core";
@@ -66,10 +67,14 @@ describe("workbench panels", () => {
     );
     const user = userEvent.setup();
     render(<Workbench />);
-    await user.click(screen.getByText("Recover unsaved drafts (1)"));
-    await user.click(
+    screen.getByText("Recover unsaved drafts (1)").focus();
+    await user.keyboard("{Enter}");
+    await expectAccessible(document.body);
+    await user.tab();
+    expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Restore Untitled-1" }),
     );
+    await user.keyboard("{Enter}");
     expect(
       screen.getByRole("tab", { name: "Recovered-1-Untitled-1 (unsaved)" }),
     ).toBeTruthy();

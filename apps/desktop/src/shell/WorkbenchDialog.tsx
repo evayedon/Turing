@@ -14,6 +14,7 @@ export function WorkbenchDialog({
   useLayoutEffect(() => {
     const element = dialog.current;
     if (!element) return;
+    const opener = element.ownerDocument.activeElement;
     if (typeof element.showModal === "function") element.showModal();
     else element.open = true;
     (
@@ -23,6 +24,7 @@ export function WorkbenchDialog({
     return () => {
       if (typeof element.close === "function") element.close();
       else element.open = false;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
   }, []);
   return (
@@ -30,6 +32,7 @@ export function WorkbenchDialog({
       ref={dialog}
       className="workbench-dialog"
       aria-label={title}
+      aria-modal="true"
       onCancel={(event) => {
         event.preventDefault();
         dialog.current?.close?.();

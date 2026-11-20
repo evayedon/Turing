@@ -20,6 +20,8 @@ button:disabled {
   cursor: default;
 }
 button:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible,
 [role="separator"]:focus-visible,
 input:focus-visible {
   outline: var(--nebula-focus);
@@ -390,6 +392,12 @@ svg {
   justify-content: space-between;
   background: var(--nebula-rail);
   border-bottom: 1px solid var(--nebula-border);
+}
+.editor-document {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 .editor-tabs {
   display: flex;
@@ -879,11 +887,15 @@ svg {
 }
 .palette footer {
   display: flex;
+  align-items: center;
   gap: var(--nebula-s4);
   padding: 6px var(--nebula-s3);
   border-top: 1px solid var(--nebula-border);
   color: var(--nebula-muted);
   font-size: var(--nebula-xs);
+}
+.palette footer button {
+  margin-inline-start: auto;
 }
 @media (max-width: 760px) {
   .titlebar {
@@ -1340,6 +1352,12 @@ svg {
   padding-inline-start: var(--nebula-s4);
 }
 
+.terminal-screen:focus-within,
+.editor-document:focus-within {
+  outline: var(--nebula-focus);
+  outline-offset: -2px;
+}
+
 .terminal-screen .xterm:not([data-command-indicators]) .xterm-screen::before,
 .terminal-command-indicator::before {
   position: absolute;
@@ -1371,8 +1389,8 @@ svg {
   display: grid;
   place-items: center;
   border: 0;
-  background: #e83c40;
-  color: #fff;
+  background: var(--nebula-terminal-failure);
+  color: var(--nebula-terminal-failure-text);
   content: "×";
   font: 700 10px/1 var(--nebula-font);
 }
@@ -1885,7 +1903,10 @@ svg {
 .toolbar-menu-list [role="menuitem"]:hover:not(:disabled),
 .toolbar-menu-list [role="menuitem"]:focus-visible {
   background: var(--nebula-active);
-  outline: none;
+}
+.toolbar-menu-list [role="menuitem"]:focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: -2px;
 }
 .toolbar-menu-list [role="menuitem"]:disabled {
   color: var(--nebula-muted);

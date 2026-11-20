@@ -77,6 +77,7 @@ export function CommandPalette<Action extends PaletteEntry>({
       ref={dialog}
       className="palette"
       aria-label={title}
+      aria-modal="true"
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -98,6 +99,7 @@ export function CommandPalette<Action extends PaletteEntry>({
             ref={input}
             role="combobox"
             aria-label={inputLabel}
+            aria-autocomplete="list"
             aria-expanded="true"
             aria-controls="palette-results"
             aria-activedescendant={
@@ -111,10 +113,6 @@ export function CommandPalette<Action extends PaletteEntry>({
               setIndex(0);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Tab") {
-                event.preventDefault();
-                return;
-              }
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
                 if (matches.length)
@@ -134,7 +132,6 @@ export function CommandPalette<Action extends PaletteEntry>({
               }
             }}
           />
-          <kbd>Esc</kbd>
         </label>
         <ul id="palette-results" role="listbox" aria-label={title}>
           {matches.map((action, i) => (
@@ -184,6 +181,9 @@ export function CommandPalette<Action extends PaletteEntry>({
           <span>
             <kbd>Enter</kbd> {actionLabel}
           </span>
+          <button type="button" className="quiet-button" onClick={close}>
+            Close <kbd aria-hidden="true">Esc</kbd>
+          </button>
         </footer>
       </div>
     </dialog>

@@ -282,12 +282,18 @@ export function TerminalSessions({
   }
 
   const tabs = (
-    <div
-      className="terminal-session-tabs"
-      role="tablist"
-      aria-label="Terminal sessions"
-      aria-orientation={slots.length > 1 ? "vertical" : "horizontal"}
-    >
+    <div className="terminal-session-tabs">
+      {/* Session removal and rename controls are outside the ARIA tablist. */}
+      <div
+        role="tablist"
+        aria-label="Terminal sessions"
+        aria-orientation={slots.length > 1 ? "vertical" : "horizontal"}
+        aria-owns={slots
+          .filter((id) => rename?.id !== id)
+          .map((id) => `terminal-tab-${id}`)
+          .join(" ")}
+        hidden={slots.length === 1 && !!rename}
+      />
       {slots.map((id) => (
         <div
           key={id}
@@ -348,9 +354,16 @@ export function TerminalSessions({
                     : event.key === "ArrowUp" || event.key === "ArrowLeft"
                       ? slots.length - 1
                       : 0;
-                if (!step) return;
+                const next =
+                  event.key === "Home"
+                    ? slots[0]
+                    : event.key === "End"
+                      ? slots.at(-1)
+                      : step
+                        ? slots[(slots.indexOf(id) + step) % slots.length]
+                        : undefined;
+                if (next === undefined) return;
                 event.preventDefault();
-                const next = slots[(slots.indexOf(id) + step) % slots.length];
                 select(next);
                 event.currentTarget.ownerDocument
                   .getElementById(`terminal-tab-${next}`)
@@ -383,7 +396,7 @@ export function TerminalSessions({
   const actions = (
     <div
       className="terminal-actions"
-      role="toolbar"
+      role="group"
       aria-label="Terminal actions"
     >
       {slots.length === 1 && tabs}
@@ -493,7 +506,7 @@ export function TerminalSessions({
             key={id}
             id={`terminal-session-${id}`}
             role="tabpanel"
-            aria-labelledby={`terminal-tab-${id}`}
+            aria-label={label(id)}
             hidden={!visible.includes(id)}
             className="terminal-session-pane"
             style={(() => {
@@ -508,6 +521,7 @@ export function TerminalSessions({
             <TerminalPanel
               native={native}
               chrome="minimal"
+              sessionName={label(id)}
               workspaceId={workspaceId}
               activation={activations[id]}
               profile={profiles[id]}
@@ -550,6 +564,7 @@ export function TerminalSessions({
                   ? { gridColumn: track, gridRow: 1 }
                   : { gridColumn: 1, gridRow: track }
               }
+              aria-controls={`terminal-session-${visible[index]}`}
               aria-valuemin={20}
               aria-valuemax={80}
               aria-valuenow={dividerShare(group, index)}

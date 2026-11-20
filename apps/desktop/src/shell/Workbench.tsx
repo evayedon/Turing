@@ -96,11 +96,13 @@ function Panel({
       id={id}
       className={`panel ${className}`}
       aria-label={title}
+      data-focus-region=""
+      tabIndex={-1}
       hidden={hidden}
     >
-      <header className="panel-heading">
+      <div className="panel-heading">
         <h2>{title}</h2>
-      </header>
+      </div>
       {children}
     </section>
   );
@@ -147,7 +149,10 @@ export function Workbench() {
   const tabOrder = editor.tabs.map(({ key }) => key);
   const navigable = orderProblems(problems, tabOrder);
   const lastProblem = useRef<string>(undefined);
-  const [problemAnnouncement, setProblemAnnouncement] = useState("");
+  const [problemAnnouncement, setProblemAnnouncement] = useState({
+    message: "",
+    revision: 0,
+  });
   function revealProblem(problem: Problem) {
     const tab = editor.tabs.find(({ key }) => key === problem.tabKey);
     if (!tab) return;
@@ -162,9 +167,10 @@ export function Workbench() {
         : problem.severity === "warning"
           ? "Warning"
           : "Info";
-    setProblemAnnouncement(
-      `${severity} ${order + 1} of ${navigable.length}: ${problem.message} (${problem.filename}:${line}:${column})`,
-    );
+    setProblemAnnouncement(({ revision }) => ({
+      message: `${severity} ${order + 1} of ${navigable.length}: ${problem.message} (${problem.filename}:${line}:${column})`,
+      revision: revision + 1,
+    }));
   }
   function goToProblem(direction: 1 | -1) {
     const position = active && editorCommandsReady?.position();
@@ -449,6 +455,37 @@ export function Workbench() {
   }
 
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (
+      event.key === "F6" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !settings &&
+      !popup
+    ) {
+      const regions = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          ".workbench [data-focus-region]",
+        ),
+      ).filter((region) => !region.closest("[hidden], [inert]"));
+      const current = document.activeElement;
+      const order = event.shiftKey ? regions.reverse() : regions;
+      const direction = event.shiftKey
+        ? Node.DOCUMENT_POSITION_PRECEDING
+        : Node.DOCUMENT_POSITION_FOLLOWING;
+      const next =
+        order.find(
+          (region) =>
+            current &&
+            !region.contains(current) &&
+            (current.compareDocumentPosition(region) & direction) !== 0,
+        ) ?? order[0];
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
+      return;
+    }
     handleShortcut(commandContext, event);
   });
 
@@ -477,7 +514,12 @@ export function Workbench() {
 
   return (
     <div className="workbench">
-      <header className="titlebar">
+      <header
+        className="titlebar"
+        aria-label="Title bar"
+        data-focus-region=""
+        tabIndex={-1}
+      >
         <div className="titlebar-brand">
           <h1>
             <span className="brand-mark">
@@ -757,7 +799,12 @@ export function Workbench() {
           </>
         )}
       </div>
-      <footer className="statusbar" aria-label="Workbench status">
+      <footer
+        className="statusbar"
+        aria-label="Workbench status"
+        data-focus-region=""
+        tabIndex={-1}
+      >
         <div className="status-main">
           <span title={explorer.workspace?.name}>
             <Folder size={13} aria-hidden="true" />
@@ -778,12 +825,14 @@ export function Workbench() {
             </span>
           )}
           {active && <span title={active.title}>{active.name}</span>}
-          {saveState && (
-            <span className={changed ? "status-dirty" : ""}>
-              <CircleDot size={11} aria-hidden="true" />
-              {saveState}
-            </span>
-          )}
+          <span
+            role="status"
+            aria-label="Document save state"
+            className={changed ? "status-dirty" : ""}
+          >
+            {saveState && <CircleDot size={11} aria-hidden="true" />}
+            {saveState}
+          </span>
         </div>
         <div className="status-detail">
           {active && isLargeDocument(active.draft) && (
@@ -808,6 +857,15 @@ export function Workbench() {
             />
           )}
         </div>
+        <p
+          className="visually-hidden"
+          role="status"
+          aria-label="Problem navigation"
+        >
+          <span key={problemAnnouncement.revision}>
+            {problemAnnouncement.message}
+          </span>
+        </p>
       </footer>
       {settings && (
         <SettingsDialog
@@ -939,6 +997,10 @@ export function Workbench() {
       )}
       {popup === "shortcuts" && (
         <WorkbenchDialog title="Keyboard Shortcuts" close={dismissPopup}>
+          <p>
+            Use F6 or Shift+F6 to move between workbench regions, including when
+            the editor or terminal has focus.
+          </p>
           <dl className="shortcut-list">
             {paletteActions
               .filter((command) => command.hint)
@@ -962,13 +1024,6 @@ export function Workbench() {
           </p>
         </WorkbenchDialog>
       )}
-      <p
-        className="visually-hidden"
-        role="status"
-        aria-label="Problem navigation"
-      >
-        {problemAnnouncement}
-      </p>
     </div>
   );
 }

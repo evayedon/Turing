@@ -8,6 +8,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { useEffect } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -136,6 +137,13 @@ it("moves between problems with F8 and Shift+F8 and announces each one", async (
   fireEvent.keyDown(input, { key: "F5" });
   // Output shows the raw build log once the failed run has been read.
   await screen.findAllByText(/second problem/);
+  await expectAccessible(document.body);
+  screen.getByRole("tab", { name: "Output" }).focus();
+  await userEvent.setup().keyboard("{ArrowLeft}");
+  expect(screen.getByRole("tab", { name: "Problems", selected: true })).toBe(
+    document.activeElement,
+  );
+  await expectAccessible(document.body);
   const announcer = screen.getByRole("status", { name: "Problem navigation" });
 
   fireEvent.keyDown(input, { key: "F8" });

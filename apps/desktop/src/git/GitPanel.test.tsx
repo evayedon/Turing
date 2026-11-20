@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import type { GitStatus } from "@turing/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,6 +104,7 @@ describe("source control panel", () => {
     render(<Harness />);
 
     const box = await screen.findByRole("textbox", { name: "Commit message" });
+    await expectAccessible(document.body);
     await user.type(box, "Add git panel");
     await user.keyboard("{Control>}{Enter}{/Control}");
 

@@ -1,6 +1,14 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
@@ -145,6 +153,12 @@ describe("TerminalPanel", () => {
       if (command === "terminal_read") return pending.promise;
       return Promise.resolve();
     });
+    mocks.create.mockImplementation((host: HTMLDivElement) => {
+      const textarea = document.createElement("textarea");
+      textarea.setAttribute("aria-label", "Terminal input");
+      host.append(textarea);
+      return view;
+    });
     const user = userEvent.setup();
     render(<Workbench />);
     const menu = screen.getByRole("menuitem", { name: "Terminal" });
@@ -160,6 +174,32 @@ describe("TerminalPanel", () => {
     const second = await screen.findByRole("tabpanel", { name: "Terminal 2" });
     await running(first);
     await running(second);
+    const input = within(second).getByRole("textbox", {
+      name: "Terminal input",
+    });
+    input.focus();
+    await user.keyboard("{F6}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("contentinfo", { name: "Workbench status" }),
+    );
+    await expectAccessible(document.body);
+    const profile = screen.getByRole("button", { name: "Launch profile" });
+    profile.focus();
+    await user.keyboard("{ArrowDown}");
+    await expectAccessible(document.body);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(profile);
+    screen.getByRole("tab", { name: "Terminal 2" }).focus();
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("tab", { name: "Terminal 1", selected: true }),
+    );
+    await user.keyboard("{ArrowDown}{F2}");
+    await expectAccessible(document.body);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("tab", { name: "Terminal 2", selected: true }),
+    );
     const divider = screen.getByRole("separator", {
       name: "Resize terminal panes",
     });

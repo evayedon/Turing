@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLayout } from "../state/layout";
@@ -22,6 +23,90 @@ afterEach(() => {
 });
 
 describe("Nebula workbench", () => {
+  it("qualifies the empty shell, sidebars, dock views, menus and dialogs", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<Workbench />);
+    await expectAccessible(container, true);
+    const settings = screen.getByRole("button", { name: "Settings" });
+    for (const name of ["Search", "Source Control", "Toggle Bottom Panel"]) {
+      screen.getByRole("button", { name }).focus();
+      await user.keyboard("{Enter}");
+      await expectAccessible(container, true);
+    }
+    screen.getByRole("tab", { name: "Terminal" }).focus();
+    await user.keyboard("{ArrowRight}");
+    await expectAccessible(container, true);
+    await user.keyboard("{End}");
+    await expectAccessible(container, true);
+
+    for (const [opener, key] of [
+      [screen.getByRole("menuitem", { name: "File" }), "{ArrowDown}"],
+      [screen.getByRole("button", { name: "Open command palette" }), "{Enter}"],
+      [settings, "{Enter}"],
+    ] as const) {
+      opener.focus();
+      await user.keyboard(key);
+      await expectAccessible(container, true);
+      if (
+        opener === settings ||
+        opener.getAttribute("aria-label") === "Open command palette"
+      ) {
+        await user.tab();
+        expect(
+          screen.getByRole("dialog").contains(document.activeElement),
+        ).toBe(true);
+      }
+      await user.keyboard("{Escape}");
+      expect(document.activeElement).toBe(opener);
+    }
+  });
+
+  it("follows workbench Tab order and cycles visible regions in both directions", async () => {
+    const user = userEvent.setup();
+    useLayout.setState({ terminal: true });
+    render(<Workbench />);
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "File" }),
+    );
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Edit" }),
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Open command palette" }),
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Explorer" }),
+    );
+    await user.keyboard("{F6}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("region", { name: "Explorer" }),
+    );
+    await user.tab();
+    expect(document.activeElement).toBe(
+      screen.getByRole("separator", { name: "Resize sidebar" }),
+    );
+    await user.keyboard("{F6}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("region", { name: "Editor" }),
+    );
+    await user.keyboard("{F6}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("region", { name: "Terminal" }),
+    );
+    await user.keyboard("{F6}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("contentinfo", { name: "Workbench status" }),
+    );
+    await user.keyboard("{Shift>}{F6}{/Shift}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("region", { name: "Terminal" }),
+    );
+  });
+
   it("searches and runs commands with the keyboard and restores focus", async () => {
     const user = userEvent.setup();
     useLayout.setState({ terminal: true });

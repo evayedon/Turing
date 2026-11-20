@@ -77,7 +77,12 @@ export function ActivityBar({
   openSettings: () => void;
 }) {
   return (
-    <nav className="activity" aria-label="Workbench panels">
+    <nav
+      className="activity"
+      aria-label="Workbench panels"
+      data-focus-region=""
+      tabIndex={-1}
+    >
       <div className="rail-group">
         {destinations.map(({ view, label, Icon }) => (
           <RailButton
