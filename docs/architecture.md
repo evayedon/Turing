@@ -697,6 +697,33 @@ directly and on Linux under Xvfb. Each successful capture uploads its JSON
 as a platform-specific artifact. The capture and upload steps are optional
 and use no performance thresholds.
 
+#### Frontend bundle and startup
+
+`index.html` loads only the `index` chunk and its stylesheet. The editor area
+imports `MonacoHost` with `React.lazy` and shows a `role="status"` "Loading
+editor…" placeholder until the chunk arrives, so the menus, activity bar,
+Explorer and dock render first. Monaco fetches its workers (`?worker` imports)
+and its 85 language and mode contributions as separate chunks when they are
+first needed. `Workbench.lazy-editor.test.tsx` holds the editor chunk pending
+and checks that the shell is already rendered. Measured with `pnpm build` on
+Vite 7 (sizes in kB, raw / gzip):
+
+| Chunk                                           | Loaded           | Before              | After               |
+| ----------------------------------------------- | ---------------- | ------------------- | ------------------- |
+| `index` JS + CSS                                | startup          | 446.06 / 135.38     | 446.06 / 135.38     |
+| `MonacoHost` JS + CSS                           | first editor tab | 4,229.69 / 1,075.70 | 4,229.69 / 1,075.70 |
+| Monaco language/mode chunks (85)                | on demand        | 477.31 total        | 477.31 total        |
+| Workers (`ts`, `css`, `html`, `json`, `editor`) | on demand        | 9,488.52 total      | 9,488.52 total      |
+| `terminal-view` JS + CSS                        | first terminal   | 338.20 / 86.11      | 338.20 / 86.11      |
+
+Before and after are identical: Monaco has been lazy since the editor first
+shipped, so no Monaco bytes are in the startup set. A `manualChunks` split of
+the 4 MB chunk was not adopted. Monaco's language definitions are reachable
+only through dynamic imports. Assigning `monaco-editor` modules to a manual
+chunk folded all 85 back into one 4,515.70 kB chunk in a trial build. The remaining split candidates
+(core versus editor contributions) load together on the first tab, so they
+would not shorten time to editor.
+
 #### Budgets and macOS findings
 
 - At **131,072 UTF-16 code units** (128 KiB for ASCII on disk), the workbench
