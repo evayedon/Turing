@@ -316,7 +316,7 @@ preferences. These preferences contain only layout values.
 
 The bottom dock offers Terminal, Problems, and Output views and uses the same
 layout controls as the side panels. Output shows Run & Build progress.
-Problems displays live clangd diagnostics and recognized C++ compiler diagnostics.
+Problems displays Monaco worker diagnostics, live clangd diagnostics and recognized C++ compiler diagnostics.
 
 ## Integrated terminal
 
@@ -701,8 +701,11 @@ and use no performance thresholds.
 ## Code navigation and debugging status
 
 Definition, declaration, implementation, and references use Monaco's
-registered providers. The menu disables operations when the active model has
-no provider. Cross-file destinations must belong to an already-open document
+registered providers. The Go menu reads provider availability from the active
+editor when opened, including providers loaded lazily by Monaco. In the bundled
+TypeScript and JavaScript services, Definition and References are available.
+Declaration and Implementation require their own providers. Python has
+syntax highlighting and no bundled navigation provider. Cross-file destinations must belong to an already-open document
 or use the active workspace's synthetic model URI. New workspace reads still
 go through Rust's authorized file command. Monaco's bundled providers may be
 limited to loaded models. Full project navigation for Python and C++ needs a
@@ -798,7 +801,7 @@ files with their reasons. Successful changes remain applied when another
 file conflicts.
 
 Every problem flows through one diagnostic store
-(`language/diagnostic-store.ts`). A producer (`clangd` or `compiler`)
+(`language/diagnostic-store.ts`). Each producer (`monaco`, `clangd`, or `compiler`)
 publishes a batch per document, stamped with the document's `uri`,
 `revision` and `editRevision` at the time it was computed. A batch is shown
 only while its open document still has that exact stamp and has not changed
@@ -807,6 +810,20 @@ deterministically. A newer batch from the same producer replaces the older
 one, and a stopped or crashed producer publishes nothing, which clears its
 items. Output is ordered by open-tab order, position, severity and producer,
 with IDs that do not depend on arrival order.
+
+The primary Monaco view listens once for marker changes across the shared models,
+including open background tabs. It coalesces updates in 100 ms windows and reads
+up to 200 markers per affected document from its active bundled validator.
+Large documents in plain-text mode skip marker collection. Monaco marker batches
+also expire on a language override change. F8 and Shift+F8 use the combined store.
+Bundled validators can emit markers without a model version. Those markers are
+stamped when Monaco reports them, using the local model version and document stamp
+to guard queued publication.
+
+Monaco uses one overflow host per editor view, mounted at the workbench root.
+Fixed overflow positioning uses the viewport for hover, suggest, and parameter
+hints, with hovers preferring placement below their anchor. Widgets inherit
+the Nebula theme and render above the editor panes.
 
 Problems groups errors, warnings and informational messages. The Severity
 filter is under **Settings → Diagnostics**. Rows open the

@@ -9,7 +9,7 @@ export function MenuBar({
   commands,
   onRun,
 }: {
-  commands: CommandViews;
+  commands: CommandViews | (() => CommandViews);
   onRun: (id: CommandId) => void;
 }) {
   const [open, setOpen] = useState<number>();
@@ -142,9 +142,16 @@ export function MenuBar({
     }
   }
 
+  const views =
+    open === undefined
+      ? undefined
+      : typeof commands === "function"
+        ? commands()
+        : commands;
+
   function item(id: CommandId) {
-    const command = commands[id];
-    if (!command.visible) return null;
+    const command = views?.[id];
+    if (!command?.visible) return null;
     const hint = command.hint;
     return (
       <button
