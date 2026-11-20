@@ -65,9 +65,22 @@ jobs:
           dotnet --list-sdks
 
       - name: Test native workspace authorization
-        env:
-          TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS: ${{ runner.os == 'Windows' && '1' || '' }}
+        if: runner.os != 'Windows'
         run: cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      # Keep cold toolchain launches from competing with one another and with
+      # filesystem stress tests on the hosted Windows runner.
+      - name: Test Windows execution toolchains
+        if: runner.os == 'Windows'
+        env:
+          TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS: "1"
+        run: |
+          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml execution:: -- --test-threads=1
+
+      - name: Test remaining Windows native coverage
+        if: runner.os == 'Windows' && !cancelled()
+        run: |
+          cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml -- --skip execution::
 
       # The managed clangd pilot against a real server (opt-in elsewhere
       # because it needs an installed, trusted clangd).

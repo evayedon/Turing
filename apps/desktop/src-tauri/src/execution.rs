@@ -88,7 +88,7 @@ pub enum Language {
     CSharp,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     Preparing,
@@ -660,11 +660,14 @@ mod tests {
             eprintln!("skipping {language:?}: {unavailable:?} (no usable installed toolchain)");
             return;
         }
+        let progress = service.progress("main", &started.id).unwrap();
+        let phase = progress.state().phase_before_exit;
         assert_eq!(
             result.exit_code,
             Some(0),
-            "{language:?}: {:?}\n{}\n{}\n{}",
+            "{language:?}: {:?} in {phase:?} after {} ms\n{}\n{}\n{}",
             result.error,
+            result.elapsed_ms,
             stream(&chunks, Stream::BuildStdout),
             stream(&chunks, Stream::BuildStderr),
             stream(&chunks, Stream::Stderr)
