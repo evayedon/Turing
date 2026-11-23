@@ -355,6 +355,9 @@ pub(super) fn ignored_directory(name: &str) -> bool {
 }
 
 pub(super) trait Walk {
+    fn descend(&self, _name: &str) -> bool {
+        true
+    }
     fn stop(&mut self) -> Result<bool>;
     fn count_entry(&mut self);
     fn skipped(&mut self);
@@ -395,7 +398,7 @@ pub(super) trait Walk {
             }
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => {
-                    if ignored_directory(&name) {
+                    if ignored_directory(&name) || !self.descend(&name) {
                         continue;
                     }
                     if parents.len() >= MAX_DEPTH {

@@ -1,4 +1,5 @@
 use crate::{
+    ask::AskService,
     execution::ExecutionService,
     language::LanguageService,
     terminal::TerminalService,
@@ -19,6 +20,7 @@ pub enum Kind {
 pub struct Resources {
     pub kind: Kind,
     pub workspace: WorkspaceService,
+    pub ask: AskService,
     pub execution: ExecutionService,
     pub terminal: TerminalService,
     pub language: LanguageService,
@@ -28,6 +30,7 @@ impl Resources {
     fn new(kind: Kind, label: &str) -> Self {
         Self {
             kind,
+            ask: AskService::default(),
             workspace: WorkspaceService::for_window(label),
             execution: ExecutionService::default(),
             terminal: TerminalService::default(),
@@ -38,12 +41,14 @@ impl Resources {
     /// A page (re)load starts a fresh frontend that knows none of the
     /// previous page's sessions, so end them instead of leaking them.
     fn reload(&self) {
+        self.ask.cancel(None);
         self.language.revoke(false);
         self.terminal.close_all();
         self.workspace.page_reloaded();
     }
 
     fn shutdown(&self) {
+        self.ask.cancel(None);
         self.language.revoke(true);
         self.execution.shutdown();
         self.terminal.shutdown();

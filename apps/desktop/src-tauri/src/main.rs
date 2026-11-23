@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ask;
 mod commands;
 #[cfg(test)]
 mod contract_fixtures;
@@ -46,6 +47,8 @@ fn main() {
     let context = tauri::generate_context!();
     builder
         .invoke_handler(tauri::generate_handler![
+            ask::ask_run,
+            ask::ask_cancel,
             drafts::draft_recovery,
             windows::window_new_workbench,
             windows::window_new_terminal,

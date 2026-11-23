@@ -4149,6 +4149,7 @@ dependencies = [
  "notify",
  "portable-pty",
  "regex",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -4157,6 +4158,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "tokio",
  "uuid",
  "windows-sys 0.61.2",
 ]

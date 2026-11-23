@@ -1089,3 +1089,27 @@ test doubles for the app integration checks. Contrast tests cover specified
 token pairs rather than rendered syntax highlighting, terminal ANSI colors,
 or OS overrides. Roadmap qualification requires a human to complete all three
 platform runs in the [screen-reader smoke checklist](accessibility/screen-reader-smoke.md).
+
+### Local Ask Mode foundation
+
+The native Ask commands currently expose retrieval and local streaming inference
+through the typed desktop service. To exercise the adapter, start
+`llama-server -m /path/to/instruct-model.gguf --host 127.0.0.1 --port 8080`
+with at least a 4096-token context. The adapter uses the local server's
+`/v1/chat/completions` endpoint with proxies and redirects disabled. Use a trusted
+server on that port because it receives the question and the retrieved source
+passages. The server and model are installed separately. The Ask panel is a
+later increment.
+
+Retrieval scans the active workspace on demand using the handle-relative search
+walker. It ranks bounded passages by keyword matches and returns relative
+paths, file versions, and one-based line ranges. It skips hidden files and
+directories, known generated directories, common sensitive filenames, and
+unsupported file types. These rules catch common cases. Source files can still
+contain secrets, so the local adapter does not establish a cloud-sharing policy.
+Cancellation drops the model request and stops the scan. Workspace replacement
+or closure revokes the request. Check the reported freshness before navigating
+to a passage.
+
+Run the opt-in model check with
+`cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml answers_a_workspace_question_with_a_real_local_model -- --ignored`.

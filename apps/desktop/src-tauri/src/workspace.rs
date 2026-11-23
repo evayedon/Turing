@@ -1,3 +1,4 @@
+pub(crate) mod ask;
 mod file;
 mod mutations;
 mod search;

@@ -43,7 +43,8 @@
             "allow-run-build",
             "allow-managed-clangd",
             "allow-turing-windows",
-            "allow-draft-recovery"
+            "allow-draft-recovery",
+            "allow-ask-local"
           ]
         },
         {

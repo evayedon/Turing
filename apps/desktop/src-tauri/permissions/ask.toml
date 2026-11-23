@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-ask-local"
+description = "Run and cancel read-only Ask requests using a local model."
+commands.allow = ["ask_run", "ask_cancel"]

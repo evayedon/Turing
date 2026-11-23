@@ -64,3 +64,11 @@ export type {
   WorkspaceEditFailure,
 } from "./language";
 export * from "./drafts";
+
+export type {
+  AskError,
+  AskEvent,
+  AskModel,
+  AskRequest,
+  AskSource,
+} from "./ask";
