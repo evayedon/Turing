@@ -1,0 +1,104 @@
+.ask-panel {
+  padding: var(--nebula-s3);
+  color: var(--nebula-text);
+  font-size: var(--nebula-sm);
+  overflow-wrap: anywhere;
+}
+
+.ask-form,
+.ask-model {
+  display: grid;
+  gap: var(--nebula-s2);
+}
+
+.ask-model {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  color: var(--nebula-muted);
+  margin-bottom: var(--nebula-s1);
+}
+
+.ask-form :is(select, textarea) {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: var(--nebula-s2);
+  color: var(--nebula-text);
+  background: var(--nebula-canvas);
+  border: 1px solid var(--nebula-border);
+  border-radius: var(--nebula-radius);
+  font: inherit;
+}
+
+.ask-form textarea {
+  resize: vertical;
+}
+
+.ask-form :is(select, textarea):focus-visible {
+  outline: var(--nebula-focus);
+  outline-offset: 2px;
+}
+
+.ask-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nebula-s2);
+}
+
+.ask-actions button {
+  padding: var(--nebula-s1) var(--nebula-s3);
+  border: 1px solid var(--nebula-border);
+  border-radius: var(--nebula-radius);
+}
+
+.ask-actions button[type="submit"]:enabled {
+  color: var(--nebula-accent);
+  background: var(--nebula-active);
+  border-color: var(--nebula-accent-border);
+}
+
+.ask-feedback,
+.ask-sources {
+  color: var(--nebula-muted);
+}
+
+.ask-feedback:not(:empty) {
+  margin-top: var(--nebula-s2);
+}
+
+.ask-error {
+  color: var(--nebula-danger);
+}
+
+.ask-response,
+.ask-sources {
+  border-top: 1px solid var(--nebula-border);
+  margin-top: var(--nebula-s3);
+  padding-top: var(--nebula-s3);
+}
+
+.ask-response h3,
+.ask-sources h3 {
+  margin: 0 0 var(--nebula-s2);
+  color: var(--nebula-text);
+  font-size: inherit;
+}
+
+.ask-answer {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.ask-sources ol {
+  margin: var(--nebula-s2) 0;
+  padding-inline-start: var(--nebula-s4);
+}
+
+.ask-sources button {
+  padding: var(--nebula-s1);
+  color: var(--nebula-accent);
+  font: var(--nebula-xs) / 1.5 var(--nebula-mono);
+  text-align: start;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+}

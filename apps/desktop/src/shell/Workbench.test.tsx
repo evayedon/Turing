@@ -4,12 +4,16 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { expectAccessible } from "../test/axe";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import type { AskEvent } from "@turing/contracts";
 import { autoSaveKey } from "../editor/use-editor";
 import { useLayout } from "../state/layout";
 import { Workbench } from "./Workbench";
 
 vi.mock("@tauri-apps/api/core", () => ({
+  Channel: class {
+    constructor(public onmessage: (event: AskEvent) => void) {}
+  },
   isTauri: vi.fn(() => false),
   invoke: vi.fn(),
 }));
@@ -208,6 +212,70 @@ describe("workbench panels", () => {
       screen.getByRole("tab", { name: "Output", selected: true }),
     ).toBeTruthy();
     expect(screen.getByRole("region", { name: "Turing AI" })).toBeTruthy();
+  });
+
+  it("opens Ask from the workbench and follows a streamed source into the editor", async () => {
+    vi.mocked(isTauri).mockReturnValue(true);
+    const source = {
+      relativePath: "README.md",
+      version: "v1",
+      startLine: 1,
+      endLine: 2,
+    };
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "workspace_open") return { id: "repo", name: "Project" };
+      if (command === "fs_list_directory") return [];
+      if (command === "fs_read_file")
+        return {
+          ...source,
+          workspaceId: "repo",
+          content: "Project documentation",
+          encoding: "utf-8",
+        };
+      if (command === "ask_run" && args && "events" in args) {
+        const events = args.events;
+        if (!(events instanceof Channel))
+          throw new Error("Expected an Ask channel");
+        events.onmessage({
+          kind: "delta",
+          text: "The project guide is in [1].",
+        });
+        events.onmessage({
+          kind: "completed",
+          sources: [source],
+          indexCoverage: "complete",
+          indexFreshness: "current",
+        });
+      }
+    });
+
+    const user = userEvent.setup();
+    render(<Workbench />);
+    const toggle = screen.getByRole("button", { name: "Turing AI" });
+    await user.click(toggle);
+    expect(
+      screen.getByText("Open a folder to ask about its files."),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("menuitem", { name: "File" }));
+    await user.click(screen.getByRole("menuitem", { name: "Open Folder" }));
+    await user.type(
+      await screen.findByRole("textbox", { name: "Ask about this workspace" }),
+      "Where is the project guide?",
+    );
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    expect(
+      await screen.findByText("The project guide is in [1]."),
+    ).toBeTruthy();
+
+    await user.click(toggle);
+    expect(screen.queryByRole("region", { name: "Turing AI" })).toBeNull();
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: "README.md:1–2" }));
+    expect(await screen.findByRole("tab", { name: "README.md" })).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith("fs_read_file", {
+      workspaceId: "repo",
+      relativePath: "README.md",
+    });
   });
 
   it("applies settings and returns keyboard focus to the opener", async () => {

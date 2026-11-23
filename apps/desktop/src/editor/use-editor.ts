@@ -409,6 +409,38 @@ export function useEditor(
     });
   }
 
+  function openWorkspaceRevision(
+    relativePath: string,
+    version: string,
+    location: EditorLocation,
+  ) {
+    if (!workspaceId) return Promise.resolve(undefined);
+    return perform(async () => {
+      const file = await invokeWorkspace("fs_read_file", {
+        workspaceId,
+        relativePath,
+      });
+      if (currentWorkspace.current !== workspaceId) return;
+
+      const existing = latest.current.find(
+        (tab) =>
+          tab.source.kind === "workspace" &&
+          tab.source.workspaceId === workspaceId &&
+          tab.source.relativePath === relativePath,
+      );
+      if (
+        file.version !== version ||
+        (existing && (existing.savedVersion !== version || isDirty(existing)))
+      ) {
+        return false;
+      }
+      const key = existing?.key ?? addTab(workspaceTab(file));
+      if (existing) showDocument(key);
+      revealIn(key, location);
+      return true;
+    });
+  }
+
   function openFile(recentPath?: string) {
     if (!native) return;
     return perform(async () => {
@@ -1113,6 +1145,7 @@ export function useEditor(
     select,
     navigate,
     open,
+    openWorkspaceRevision,
     openFile,
     newFile,
     createWorkspaceFile,

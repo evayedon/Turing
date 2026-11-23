@@ -1098,8 +1098,10 @@ through the typed desktop service. To exercise the adapter, start
 with at least a 4096-token context. The adapter uses the local server's
 `/v1/chat/completions` endpoint with proxies and redirects disabled. Use a trusted
 server on that port because it receives the question and the retrieved source
-passages. The server and model are installed separately. The Ask panel is a
-later increment.
+passages. The server and model are installed separately. Open Turing AI from the activity rail with a workspace folder open. The pane
+streams the latest answer, offers Stop, and rechecks the saved file version
+and open edits when you follow a source. The answer is cleared when you change
+workspaces.
 
 Retrieval scans the active workspace on demand using the handle-relative search
 walker. It ranks bounded passages by keyword matches and returns relative

@@ -151,6 +151,33 @@ describe("document identity", () => {
     });
   });
 
+  it("reveals a citation only when disk and editor match its saved revision", async () => {
+    const editor = setup();
+    const location = { line: 4, column: 1 };
+    const open = (version: string) =>
+      editor.result.current.openWorkspaceRevision(
+        "src/main.ts",
+        version,
+        location,
+      );
+    await act(async () => {
+      expect(await open("stale")).toBe(false);
+    });
+    expect(editor.result.current.tabs).toEqual([]);
+
+    await act(async () => {
+      expect(await open("v1")).toBe(true);
+    });
+    expect(editor.result.current.reveal).toMatchObject(location);
+    const reveal = editor.result.current.reveal;
+    editor.edit("unsaved draft");
+    await act(async () => {
+      expect(await open("v1")).toBe(false);
+    });
+    expect(editor.result.current.reveal).toBe(reveal);
+    expect(editor.result.current.active?.draft).toBe("unsaved draft");
+  });
+
   it("drops a file read that finishes after the workspace was replaced", async () => {
     const editor = setup("first");
     const read = deferred<ReturnType<typeof file>>();

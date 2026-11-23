@@ -10,7 +10,6 @@ import {
   GitBranch,
   Orbit,
   Search,
-  Sparkles,
 } from "lucide-react";
 import {
   useCallback,
@@ -45,6 +44,7 @@ import {
   runDisabledReason,
   useExecution,
 } from "../execution/use-execution";
+import { AskPanel } from "../ask/AskPanel";
 import { SearchPanel } from "../search/SearchPanel";
 import { useLayout } from "../state/layout";
 import type { DockView } from "../state/dock-views";
@@ -882,17 +882,36 @@ export function Workbench() {
             }}
           />
         </main>
-        {assistant && (
-          <>
-            <Splitter {...layout.splitter("assistant")} />
-            <Panel id="turing-ai-panel" title="Turing AI" className="assistant">
-              <div className="pane-empty">
-                <Sparkles size={20} aria-hidden="true" />
-                <p>AI features are unavailable in v0.1.</p>
-              </div>
-            </Panel>
-          </>
-        )}
+        {assistant && <Splitter {...layout.splitter("assistant")} />}
+        <Panel
+          id="turing-ai-panel"
+          title="Turing AI"
+          className="assistant"
+          hidden={!assistant}
+        >
+          {explorer.native && explorer.workspace ? (
+            <AskPanel
+              key={explorer.workspace.id}
+              workspaceId={explorer.workspace.id}
+              openSource={(source) =>
+                editor.openWorkspaceRevision(
+                  source.relativePath,
+                  source.version,
+                  {
+                    line: source.startLine,
+                    column: 1,
+                  },
+                )
+              }
+            />
+          ) : (
+            <p className="panel-message">
+              {explorer.native
+                ? "Open a folder to ask about its files."
+                : "Ask is available in the desktop app."}
+            </p>
+          )}
+        </Panel>
       </div>
       <footer
         className="statusbar"
