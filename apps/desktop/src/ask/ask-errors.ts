@@ -11,7 +11,7 @@ const messages = {
   INFERENCE_FAILED: "The model could not finish the answer. Try again.",
   CLOUD_CONSENT_DECLINED: "Cloud sharing canceled.",
   CLOUD_QUESTION_TOO_LONG:
-    "Shorten the question so it fits in the cloud sharing preview.",
+    "Shorten the question or selection so it fits in the cloud sharing preview.",
   CLOUD_KEY_REQUIRED: "Save an OpenRouter API key to use this model.",
   INVALID_CLOUD_KEY: "Enter a valid OpenRouter API key.",
   CREDENTIAL_STORE: "Could not access the system credential store.",
@@ -22,6 +22,12 @@ const messages = {
   PROVIDER_UNAVAILABLE: "OpenRouter is unavailable. Try again later.",
   PROVIDER_NO_PRIVATE_ROUTE:
     "No privacy-compliant OpenRouter provider was available for this model (providers that store or train on data are excluded). Try again later or use the local model.",
+  SELECTION_UNAVAILABLE: "Ask could not read the selected file.",
+  SELECTION_STALE:
+    "The selected file changed since you selected it. Select the lines again.",
+  SELECTION_INVALID:
+    "The selected lines are no longer in the file. Select them again.",
+  SELECTION_TOO_LARGE: "Select at most 200 lines and 16 KB of text.",
 } satisfies Record<AskError, string>;
 
 /** `localServer` names the configured address in the local startup hint. */

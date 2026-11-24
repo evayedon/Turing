@@ -36,6 +36,16 @@ impl Registry {
     }
 }
 
+/// Editor lines: CRLF, LF, and lone CR all end a line, as in Monaco.
+pub(crate) fn lines(content: &str) -> Vec<&str> {
+    content
+        .strip_prefix('\u{feff}')
+        .unwrap_or(content)
+        .split('\n')
+        .flat_map(|line| line.strip_suffix('\r').unwrap_or(line).split('\r'))
+        .collect()
+}
+
 pub(crate) fn retrieve(root: &Dir, question: &str, cancelled: &AtomicBool) -> Result<Retrieval> {
     let mut scan = make_scan(question, cancelled)?;
     scan.visit(root, &mut Vec::new())?;
@@ -218,12 +228,7 @@ impl Scan<'_> {
         let name = path.rsplit('/').next().unwrap_or(path);
         let filename = name.replace('.', " ");
         let path_score = self.terms.matches(&filename).iter().count();
-        let lines = content
-            .strip_prefix('\u{feff}')
-            .unwrap_or(content)
-            .split('\n')
-            .flat_map(|line| line.strip_suffix('\r').unwrap_or(line).split('\r'))
-            .collect::<Vec<_>>();
+        let lines = lines(content);
         for (index, block) in lines.chunks(PASSAGE_LINES).enumerate() {
             if self.stop()? {
                 break;

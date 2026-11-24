@@ -335,6 +335,41 @@
   field-sizing: content;
 }
 
+.ask-attachment {
+  display: flex;
+  align-items: center;
+  justify-self: start;
+  gap: 5px;
+  max-width: calc(100% - 16px);
+  margin: 8px 8px 0;
+  padding: 2px 2px 2px 7px;
+  color: var(--nebula-cyan);
+  font: var(--nebula-xs) / 1.6 var(--nebula-mono);
+  border: 1px solid var(--nebula-border);
+  border-radius: 4px;
+}
+
+.ask-attachment span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-attachment button {
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  color: var(--nebula-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+}
+
+.ask-attachment button:hover {
+  color: var(--nebula-text);
+  background: var(--nebula-hover);
+}
+
 .ask-composer textarea::placeholder {
   color: var(--nebula-muted);
 }

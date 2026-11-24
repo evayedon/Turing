@@ -50,6 +50,7 @@ function state(overrides: Partial<CommandState> = {}): CommandState {
     executionStopping: false,
     runBlocked: false,
     terminalRunning: false,
+    askSelectionReason: undefined,
     ...overrides,
   };
 }
@@ -87,6 +88,7 @@ function actions(): CommandActions {
     revealDock: vi.fn(),
     openSettings: vi.fn(),
     toggleAssistant: vi.fn(),
+    askSelection: vi.fn(),
     goToLine: vi.fn(),
     goToProblem: vi.fn(),
     startRun: vi.fn(),

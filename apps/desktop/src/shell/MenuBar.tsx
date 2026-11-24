@@ -159,7 +159,8 @@ export function MenuBar({
         type="button"
         role={command.pressed === undefined ? "menuitem" : "menuitemcheckbox"}
         aria-checked={command.pressed}
-        aria-description={hint}
+        aria-description={command.reason ?? hint}
+        title={command.reason}
         aria-disabled={!command.enabled || undefined}
         tabIndex={-1}
         onClick={() => {

@@ -37,6 +37,8 @@ export type CommandState = {
   bottomPanel: boolean;
   dockView: DockView;
   assistant: boolean;
+  /** Why the editor selection cannot be sent to Ask; undefined when it can. */
+  askSelectionReason: string | undefined;
   problemCount: number;
   executionBusy: boolean;
   executionStopping: boolean;
@@ -81,6 +83,7 @@ export type CommandActions = {
   revealDock: (view: DockView) => void;
   openSettings: () => void;
   toggleAssistant: () => void;
+  askSelection: () => void;
   goToLine: () => void;
   goToProblem: (direction: 1 | -1) => void;
   startRun: () => void;
@@ -108,6 +111,8 @@ export type CommandDeclaration = {
   enabled?: (state: CommandState) => boolean;
   visible?: (state: CommandState) => boolean;
   pressed?: (state: CommandState) => boolean;
+  /** Shown on menus while the command is disabled. */
+  reason?: (state: CommandState) => string | undefined;
   run: (actions: CommandActions) => void;
 };
 
@@ -126,6 +131,7 @@ export type CommandView = {
   pressed?: boolean;
   shortcut?: Shortcut;
   hint?: string;
+  reason?: string;
 };
 
 export type CommandViews = Record<CommandId, CommandView>;
@@ -330,6 +336,12 @@ export const commandRegistry: Record<CommandId, CommandDeclaration> = {
     label: (state) => (state.assistant ? "Hide Turing AI" : "Show Turing AI"),
     run: (actions) => actions.toggleAssistant(),
   },
+  askSelection: {
+    label: "Ask Turing AI About Selection",
+    enabled: (state) => !state.askSelectionReason,
+    reason: (state) => state.askSelectionReason,
+    run: (actions) => actions.askSelection(),
+  },
   goFile: {
     label: "Go to File…",
     enabled: (state) =>
@@ -420,11 +432,14 @@ function describe(
   declaration: CommandDeclaration,
   state: CommandState,
 ): CommandView {
-  const { label, shortcut, hint, enabled, visible, pressed } = declaration;
+  const { label, shortcut, hint, enabled, visible, pressed, reason } =
+    declaration;
+  const available = enabled?.(state) ?? true;
   return {
     id,
     label: typeof label === "function" ? label(state) : label,
-    enabled: enabled?.(state) ?? true,
+    enabled: available,
+    reason: available ? undefined : reason?.(state),
     visible: visible?.(state) ?? true,
     pressed: pressed?.(state),
     shortcut,

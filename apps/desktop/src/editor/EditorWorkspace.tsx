@@ -95,6 +95,8 @@ export function EditorWorkspace({
   language,
   problems,
   onMonacoDiagnostics,
+  canAskSelection,
+  onAskSelection,
 }: EditorState & {
   runControls?: ReactNode;
   sharedModels?: TextModels;
@@ -106,6 +108,8 @@ export function EditorWorkspace({
   onSaveCommand?: () => void;
   onInfo: (info: EditorInfo) => void;
   emptyContent: ReactNode;
+  canAskSelection?: boolean;
+  onAskSelection?: () => void;
 }) {
   const [models] = useState<TextModels>(
     () => sharedModels ?? new ModelRegistry(),
@@ -303,6 +307,8 @@ export function EditorWorkspace({
                 language={language}
                 problems={problems}
                 onMonacoDiagnostics={onMonacoDiagnostics}
+                canAskSelection={canAskSelection}
+                onAskSelection={onAskSelection}
               />
             </Suspense>
           </div>

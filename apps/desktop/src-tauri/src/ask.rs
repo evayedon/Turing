@@ -2,7 +2,10 @@ pub mod cloud;
 
 use crate::{
     windows::workbench,
-    workspace::ask::{retrieve, IndexAction, IndexStatus, Passage, Retrieval},
+    workspace::{
+        ask::{lines, retrieve, IndexAction, IndexStatus, Passage, Retrieval},
+        Registry, WorkspaceError,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +21,8 @@ use uuid::Uuid;
 const MODEL: &str = "llama.cpp";
 const AUTO: &str = "auto";
 const CHECK_INTERVAL: Duration = Duration::from_millis(100);
+const SELECTION_LINES: usize = 200;
+const SELECTION_BYTES: usize = 16 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -29,6 +34,17 @@ pub struct AskRequest {
     /// Base URL of the local OpenAI-compatible server; validated by `local_base`.
     local_server: String,
     local_model: Option<String>,
+    selection: Option<Selection>,
+}
+
+/// A reference to saved lines the user selected; Rust reads the text itself.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Selection {
+    relative_path: String,
+    version: String,
+    start_line: usize,
+    end_line: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -88,6 +104,10 @@ pub enum Error {
     ProviderRateLimited,
     ProviderUnavailable,
     ProviderNoPrivateRoute,
+    SelectionUnavailable,
+    SelectionStale,
+    SelectionInvalid,
+    SelectionTooLarge,
     Cancelled,
 }
 
@@ -277,6 +297,11 @@ pub async fn ask_run(
     let root = registry()?
         .ask_root(owner, &request.workspace_id)
         .map_err(|_| Error::WorkspaceDenied)?;
+    let selected = request
+        .selection
+        .as_ref()
+        .map(|selection| read_selection(&*registry()?, owner, &request.workspace_id, selection))
+        .transpose()?;
     let job = resources.ask.begin(request_id)?;
     let index = registry()?
         .ask_index_state(owner, &request.workspace_id)
@@ -320,6 +345,7 @@ pub async fn ask_run(
             .await?
             .map_err(|_| Error::IndexUnavailable)?
             .map_err(|_| Error::IndexUnavailable)?;
+        let selected = with_selection(&mut passages, selected);
         let (payload, model, authorization) = if cloud {
             let authorization = tauri::async_runtime::spawn_blocking(cloud::authorization)
                 .await
@@ -329,6 +355,7 @@ pub async fn ask_run(
                 request.conventions.as_deref(),
                 &mut passages,
                 &mut partial,
+                selected,
             )?;
             let payload = cloud::approve(
                 &window,
@@ -346,7 +373,12 @@ pub async fn ask_run(
             (payload, Some(cloud::MODEL), Some(authorization))
         } else {
             (
-                prompt(&request.question, request.conventions.as_deref(), &passages),
+                prompt(
+                    &request.question,
+                    request.conventions.as_deref(),
+                    &passages,
+                    selected,
+                ),
                 local_model,
                 None,
             )
@@ -424,7 +456,76 @@ async fn interruptible<F: std::future::Future>(
     }
 }
 
-fn prompt(question: &str, conventions: Option<&str>, passages: &[Passage]) -> String {
+/// Reads the selected lines through the caller's authorized workspace.
+fn read_selection(
+    registry: &Registry,
+    owner: &str,
+    workspace_id: &str,
+    selection: &Selection,
+) -> Result<Passage, Error> {
+    let Selection {
+        relative_path,
+        version,
+        start_line,
+        end_line,
+    } = selection;
+    if *start_line == 0 || start_line > end_line {
+        return Err(Error::SelectionInvalid);
+    }
+    if end_line - start_line >= SELECTION_LINES {
+        return Err(Error::SelectionTooLarge);
+    }
+    let file = registry
+        .read(owner, workspace_id, relative_path)
+        .map_err(|error| match error {
+            WorkspaceError::PermissionDenied => Error::WorkspaceDenied,
+            _ => Error::SelectionUnavailable,
+        })?;
+    if file.version != *version {
+        return Err(Error::SelectionStale);
+    }
+    let text = lines(&file.content)
+        .get(start_line - 1..*end_line)
+        .ok_or(Error::SelectionInvalid)?
+        .join("\n");
+    if text.len() > SELECTION_BYTES {
+        return Err(Error::SelectionTooLarge);
+    }
+    Ok(Passage {
+        source: Source {
+            relative_path: relative_path.clone(),
+            version: file.version,
+            start_line: *start_line,
+            end_line: *end_line,
+        },
+        text,
+        score: 0,
+    })
+}
+
+/// Puts the selection first, so it is cited as [1], and drops retrieved
+/// passages that overlap it. Returns whether a selection is present.
+fn with_selection(passages: &mut Vec<Passage>, selection: Option<Passage>) -> bool {
+    let Some(selection) = selection else {
+        return false;
+    };
+    let chosen = &selection.source;
+    passages.retain(|passage| {
+        let source = &passage.source;
+        source.relative_path != chosen.relative_path
+            || source.end_line < chosen.start_line
+            || source.start_line > chosen.end_line
+    });
+    passages.insert(0, selection);
+    true
+}
+
+fn prompt(
+    question: &str,
+    conventions: Option<&str>,
+    passages: &[Passage],
+    selected: bool,
+) -> String {
     let context: Vec<_> = passages
         .iter()
         .enumerate()
@@ -441,6 +542,9 @@ fn prompt(question: &str, conventions: Option<&str>, passages: &[Passage]) -> St
         serde_json::json!(question),
         serde_json::json!(context),
     );
+    if selected {
+        payload.push_str("\nThe user selected passage 1 and is asking about it.");
+    }
     if let Some(conventions) = conventions {
         payload.push_str("\nUser-approved project conventions: ");
         payload.push_str(&serde_json::json!(conventions).to_string());
@@ -619,6 +723,119 @@ mod tests {
         ] {
             assert_eq!(local_base(input), Err(Error::InvalidLocalServer), "{input}");
         }
+    }
+
+    #[test]
+    fn reads_selected_lines_only_from_the_callers_current_saved_file() {
+        use crate::workspace::Registry;
+        let fixture = tempfile::TempDir::new().unwrap();
+        let body: String = (1..=300).map(|line| format!("line {line}\r\n")).collect();
+        std::fs::write(fixture.path().join("a.rs"), &body).unwrap();
+        std::fs::write(fixture.path().join("wide.rs"), "x".repeat(17 * 1024)).unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "secret").unwrap();
+        let mut registry = Registry::default();
+        let scope = registry.register("main", fixture.path()).unwrap();
+        let version = |path: &str| registry.read("main", &scope.id, path).unwrap().version;
+        let select = |path: &str, version: &str, start_line, end_line| Selection {
+            relative_path: path.into(),
+            version: version.into(),
+            start_line,
+            end_line,
+        };
+        let current = version("a.rs");
+        let read = |owner: &str, id: &str, selection: &Selection| {
+            read_selection(&registry, owner, id, selection).map(|passage| passage.text)
+        };
+
+        assert_eq!(
+            read("main", &scope.id, &select("a.rs", &current, 10, 12)),
+            Ok("line 10\nline 11\nline 12".into())
+        );
+        assert_eq!(
+            read("main", &scope.id, &select("a.rs", &current, 300, 300)),
+            Ok("line 300".into())
+        );
+        for (selection, error) in [
+            (select("a.rs", "old", 1, 2), Error::SelectionStale),
+            (select("a.rs", &current, 0, 2), Error::SelectionInvalid),
+            (select("a.rs", &current, 5, 4), Error::SelectionInvalid),
+            (select("a.rs", &current, 300, 302), Error::SelectionInvalid),
+            (select("a.rs", &current, 1, 201), Error::SelectionTooLarge),
+            (
+                select("wide.rs", &version("wide.rs"), 1, 1),
+                Error::SelectionTooLarge,
+            ),
+            (
+                select("missing.rs", &current, 1, 1),
+                Error::SelectionUnavailable,
+            ),
+            (
+                select("../secret.rs", &current, 1, 1),
+                Error::SelectionUnavailable,
+            ),
+            (
+                select(
+                    outside.path().join("secret.rs").to_str().unwrap(),
+                    &current,
+                    1,
+                    1,
+                ),
+                Error::SelectionUnavailable,
+            ),
+        ] {
+            assert_eq!(read("main", &scope.id, &selection), Err(error));
+        }
+        let fine = select("a.rs", &current, 1, 2);
+        assert_eq!(
+            read("other-window", &scope.id, &fine),
+            Err(Error::WorkspaceDenied)
+        );
+        assert!(read("main", "other-workspace", &fine).is_err());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside.path().join("secret.rs"),
+                fixture.path().join("link.rs"),
+            )
+            .unwrap();
+            assert_eq!(
+                read("main", &scope.id, &select("link.rs", &current, 1, 1)),
+                Err(Error::SelectionUnavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn cites_the_selection_as_passage_one_and_drops_overlapping_retrievals() {
+        let passage = |path: &str, start_line, end_line| Passage {
+            source: Source {
+                relative_path: path.into(),
+                version: "v1".into(),
+                start_line,
+                end_line,
+            },
+            text: format!("{path}:{start_line}"),
+            score: 1,
+        };
+        let mut passages = vec![
+            passage("a.rs", 1, 12),
+            passage("a.rs", 13, 24),
+            passage("a.rs", 25, 36),
+            passage("b.rs", 13, 24),
+        ];
+        assert!(!with_selection(&mut passages, None));
+        assert_eq!(passages.len(), 4);
+        assert!(with_selection(&mut passages, Some(passage("a.rs", 14, 20))));
+        let kept: Vec<_> = passages
+            .iter()
+            .map(|passage| passage.text.as_str())
+            .collect();
+        assert_eq!(kept, ["a.rs:14", "a.rs:1", "a.rs:25", "b.rs:13"]);
+        let payload = prompt("What is this?", None, &passages, true);
+        assert!(payload.contains(r#"{"endLine":20,"file":"a.rs","id":1"#));
+        assert!(payload.ends_with("The user selected passage 1 and is asking about it."));
     }
 
     #[test]
@@ -873,7 +1090,7 @@ mod tests {
                 client.post("http://127.0.0.1:8080/v1/chat/completions"),
                 false,
                 None,
-                prompt(question, None, &retrieval.passages),
+                prompt(question, None, &retrieval.passages, false),
                 |text| {
                     answer.push_str(&text);
                     Ok(())

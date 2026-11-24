@@ -116,6 +116,8 @@ export default function MonacoHost({
   primary = true,
   focused = true,
   ariaLabel = "File editor",
+  canAskSelection = false,
+  onAskSelection,
 }: {
   active: EditorTab;
   reveal?: EditorReveal;
@@ -137,6 +139,9 @@ export default function MonacoHost({
   focused?: boolean;
   /** Accessible name of the editor text area, unique per editor group. */
   ariaLabel?: string;
+  /** The active document can send a selection to Ask (saved workspace file). */
+  canAskSelection?: boolean;
+  onAskSelection?: () => void;
 }) {
   const clangdCapabilities = language?.capabilities;
   const typescriptCapabilities = language?.servers?.typescript.capabilities;
@@ -192,6 +197,8 @@ export default function MonacoHost({
     },
   );
   const isFocused = useEffectEvent(() => focused);
+  const askSelection = useEffectEvent(() => onAskSelection?.());
+  const askable = useRef<monaco.editor.IContextKey<boolean>>(undefined);
 
   const report = useEffectEvent(
     (instance: monaco.editor.IStandaloneCodeEditor) => {
@@ -199,12 +206,26 @@ export default function MonacoHost({
       const position = instance.getPosition();
       const model = instance.getModel();
       if (!position || !model) return;
+      const range = instance.getSelection?.();
       onInfo({
         key: active.key,
         language: documentLanguage(active).label,
         line: position.lineNumber,
         column: position.column,
         eol: model.getEOL() === "\r\n" ? "CRLF" : "LF",
+        ...(range && !range.isEmpty()
+          ? {
+              selection: {
+                startLine: range.startLineNumber,
+                // A selection ending at column 1 does not include that line.
+                endLine:
+                  range.endColumn === 1 &&
+                  range.endLineNumber > range.startLineNumber
+                    ? range.endLineNumber - 1
+                    : range.endLineNumber,
+              },
+            }
+          : {}),
       });
     },
   );
@@ -417,6 +438,17 @@ export default function MonacoHost({
           },
         }),
     );
+    askable.current = instance.createContextKey?.(
+      "turingCanAskSelection",
+      false,
+    );
+    const askAction = instance.addAction?.({
+      id: "turing.askSelection",
+      label: "Ask Turing AI About Selection",
+      precondition: "editorHasSelection && turingCanAskSelection",
+      contextMenuGroupId: "1_turing",
+      run: () => askSelection(),
+    });
     editor.current = instance;
     const detachView = models.attach(instance);
     const opener = monaco.editor.registerEditorOpener?.({
@@ -434,8 +466,13 @@ export default function MonacoHost({
     const cursor = instance.onDidChangeCursorPosition(() => {
       if (!models.syncing) report(instance);
     });
+    const selection = instance.onDidChangeCursorSelection?.(() => {
+      if (!models.syncing) report(instance);
+    });
     return () => {
       cursor.dispose();
+      selection?.dispose();
+      askAction?.dispose();
       opener?.dispose();
       if (isFocused()) reportCommands(undefined);
       detachView();
@@ -545,6 +582,10 @@ export default function MonacoHost({
     const pane = container.current?.closest("[data-editor-group]");
     if (!(pane ?? container.current)?.contains(target)) instance.focus();
   }, [focused]);
+
+  useLayoutEffect(() => {
+    askable.current?.set(focused && canAskSelection);
+  }, [focused, canAskSelection, models]);
 
   useLayoutEffect(() => {
     const instance = editor.current;

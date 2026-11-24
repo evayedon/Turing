@@ -16,6 +16,8 @@ export interface AskRequest {
   localServer: string;
   /** Sent as the local request's `model` field when set (required by Ollama). */
   localModel?: string;
+  /** Saved lines the user attached; the native host reads and checks them itself. */
+  selection?: AskSource;
 }
 
 export interface AskSource extends Pick<TextFile, "relativePath" | "version"> {
@@ -55,7 +57,11 @@ export type AskError =
   | "PROVIDER_UNAUTHORIZED"
   | "PROVIDER_RATE_LIMITED"
   | "PROVIDER_UNAVAILABLE"
-  | "PROVIDER_NO_PRIVATE_ROUTE";
+  | "PROVIDER_NO_PRIVATE_ROUTE"
+  | "SELECTION_UNAVAILABLE"
+  | "SELECTION_STALE"
+  | "SELECTION_INVALID"
+  | "SELECTION_TOO_LARGE";
 
 export type AskCredentialAction =
   { kind: "status" } | { kind: "save"; key: string } | { kind: "remove" };

@@ -19,7 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { DirectoryEntry, SidebarView } from "@turing/contracts";
+import type { AskSource, DirectoryEntry, SidebarView } from "@turing/contracts";
 import type { ReactNode } from "react";
 import { LanguagePicker } from "../editor/LanguagePicker";
 import { EditorWorkspace } from "../editor/EditorWorkspace";
@@ -257,6 +257,11 @@ export function Workbench() {
   const lastSidebar = useRef<SidebarView>("explorer");
   const pendingCreate = useRef(false);
   const [info, setInfo] = useState<EditorInfo>();
+  const [askAttachment, setAskAttachment] = useState<{
+    workspaceId: string;
+    source: AskSource;
+  }>();
+  const [askFocus, setAskFocus] = useState(0);
   const previousFocus = useRef<HTMLElement | null>(null);
   const modifier = /Mac/i.test(navigator.platform) ? "⌘" : "Ctrl";
   const shortcut = `${modifier}+Shift+P`;
@@ -389,6 +394,31 @@ export function Workbench() {
     ? language.servers?.[activeServer]
     : undefined;
 
+  const workspaceId = explorer.workspace?.id;
+  const askSource =
+    active?.source.kind === "workspace" &&
+    active.source.workspaceId === workspaceId
+      ? active.source
+      : undefined;
+  const selectedLines =
+    active && info?.key === active.key ? info.selection : undefined;
+  // Only saved text is sent: Rust reads the lines and rejects a changed version.
+  const askBlocked =
+    !native || !workspaceId
+      ? "Open a folder in the desktop app to ask about a selection."
+      : !active || !askSource
+        ? "Open a workspace file to ask about a selection."
+        : isDirty(active) || active.recovered
+          ? "Save the file to ask about a selection."
+          : active.changedOnDisk || active.deletedOnDisk
+            ? "Reload the file to ask about a selection."
+            : undefined;
+  const askSelectionReason =
+    askBlocked ??
+    (selectedLines
+      ? undefined
+      : "Select lines in the editor to ask about them.");
+
   const commandState: CommandState = {
     native,
     modifier,
@@ -419,6 +449,7 @@ export function Workbench() {
     bottomPanel: terminal,
     dockView,
     assistant,
+    askSelectionReason,
     problemCount: navigable.length,
     executionBusy: execution.busy,
     executionStopping: execution.run?.phase === "stopping",
@@ -468,6 +499,19 @@ export function Workbench() {
     revealDock,
     openSettings: () => setSettings(true),
     toggleAssistant,
+    askSelection: () => {
+      if (!workspaceId || !askSource || !selectedLines) return;
+      setAskAttachment({
+        workspaceId,
+        source: {
+          relativePath: askSource.relativePath,
+          version: askSource.version,
+          ...selectedLines,
+        },
+      });
+      if (!assistant) toggleAssistant();
+      setAskFocus((previous) => previous + 1);
+    },
     goToLine: () => {
       setLineInput("");
       openPopup("line");
@@ -731,6 +775,8 @@ export function Workbench() {
               workspaceId={explorer.workspace?.id}
               onCommandsReady={setEditorCommands}
               onSaveCommand={() => runCommand("save")}
+              canAskSelection={!askBlocked}
+              onAskSelection={() => runCommand("askSelection")}
               runControls={
                 active && (
                   <div
@@ -832,7 +878,9 @@ export function Workbench() {
                   old.language === next.language &&
                   old.line === next.line &&
                   old.column === next.column &&
-                  old.eol === next.eol
+                  old.eol === next.eol &&
+                  old.selection?.startLine === next.selection?.startLine &&
+                  old.selection?.endLine === next.selection?.endLine
                     ? old
                     : next,
                 );
@@ -895,6 +943,13 @@ export function Workbench() {
               workspacePath={explorer.workspace.displayPath}
               key={explorer.workspace.id}
               workspaceId={explorer.workspace.id}
+              attachment={
+                askAttachment?.workspaceId === explorer.workspace.id
+                  ? askAttachment.source
+                  : undefined
+              }
+              clearAttachment={() => setAskAttachment(undefined)}
+              focusRequest={askFocus}
               openSource={(source) =>
                 editor.openWorkspaceRevision(
                   source.relativePath,

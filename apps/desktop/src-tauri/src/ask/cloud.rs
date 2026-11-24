@@ -80,15 +80,18 @@ pub(super) fn prepare(
     conventions: Option<&str>,
     passages: &mut Vec<Passage>,
     partial: &mut bool,
+    selected: bool,
 ) -> Result<String, Error> {
     loop {
-        let payload = prompt(question, conventions, passages);
+        let payload = prompt(question, conventions, passages, selected);
         if payload.len() <= CLOUD_BYTES {
             return Ok(payload);
         }
-        if passages.pop().is_none() {
+        // Trim retrieved passages only; the user's selection is never dropped.
+        if passages.len() <= usize::from(selected) {
             return Err(Error::CloudQuestionTooLong);
         }
+        passages.pop();
         *partial = true;
     }
 }
@@ -210,8 +213,14 @@ mod tests {
 
     #[test]
     fn includes_saved_conventions_inside_the_reviewed_cloud_payload() {
-        let payload =
-            prepare("How?", Some("Use snake_case."), &mut Vec::new(), &mut false).unwrap();
+        let payload = prepare(
+            "How?",
+            Some("Use snake_case."),
+            &mut Vec::new(),
+            &mut false,
+            false,
+        )
+        .unwrap();
         assert!(payload.contains("User-approved project conventions: \"Use snake_case.\""));
     }
 
@@ -234,7 +243,7 @@ mod tests {
             .map(|index| passage(&format!("src/{index}%.rs"), "x".repeat(6 * 1024)))
             .collect();
         let mut partial = false;
-        let payload = prepare("Where?", None, &mut passages, &mut partial).unwrap();
+        let payload = prepare("Where?", None, &mut passages, &mut partial, false).unwrap();
         assert!(payload.len() <= CLOUD_BYTES);
         assert!(partial);
         assert_eq!(passages.len(), 3);
@@ -247,6 +256,30 @@ mod tests {
         }
         assert!(!review.contains("src/3"));
         assert!(review.contains(&format!("({} KB)", payload.len().div_ceil(1024))));
+    }
+
+    #[test]
+    fn keeps_the_selection_first_while_trimming_and_fails_when_it_alone_is_too_long() {
+        let mut passages: Vec<_> = (0..8)
+            .map(|index| passage(&format!("src/{index}.rs"), "x".repeat(6 * 1024)))
+            .collect();
+        let selection = passage("src/chosen.rs", "y".repeat(16 * 1024));
+        assert!(crate::ask::with_selection(&mut passages, Some(selection)));
+        let mut partial = false;
+        let payload = prepare("Why?", None, &mut passages, &mut partial, true).unwrap();
+        assert!(payload.len() <= CLOUD_BYTES);
+        assert!(partial);
+        assert_eq!(passages[0].source.relative_path, "src/chosen.rs");
+        assert!(payload.contains(r#"{"endLine":12,"file":"src/chosen.rs","id":1"#));
+        assert!(review("Why?", None, &passages, payload.len()).contains("• src/chosen.rs:1–12"));
+
+        // JSON escaping doubles quotes, so this 16 KiB selection cannot fit by itself.
+        let mut passages = vec![passage("src/chosen.rs", "\"".repeat(16 * 1024))];
+        assert_eq!(
+            prepare("Why?", None, &mut passages, &mut false, true),
+            Err(Error::CloudQuestionTooLong)
+        );
+        assert_eq!(passages.len(), 1);
     }
 
     #[test]

@@ -74,6 +74,7 @@ export type CommandId =
   | "settings"
   | "sourceControl"
   | "assistant"
+  | "askSelection"
   | "goFile"
   | "goLine"
   | "workspaceSymbol"
@@ -205,6 +206,8 @@ export const menus: { label: string; entries: MenuRow[] }[] = [
       "-",
       "cursorAbove",
       "cursorBelow",
+      "-",
+      "askSelection",
     ],
   },
   {

@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => {
       active = model;
     }),
     getModel: vi.fn(() => active),
+    selection: undefined as unknown,
+    addAction: vi.fn<(action: unknown) => { dispose(): void }>(() => ({
+      dispose() {},
+    })),
+    contextKey: { set: vi.fn() },
   };
 });
 
@@ -32,6 +37,9 @@ vi.mock("monaco-editor", () => ({
       onDidChangeCursorPosition: () => ({ dispose() {} }),
       getPosition: () => ({ lineNumber: 8, column: 4 }),
       getModel: mocks.getModel,
+      getSelection: () => mocks.selection,
+      addAction: mocks.addAction,
+      createContextKey: () => mocks.contextKey,
       getAction: (id: string) => {
         if (id === "actions.find")
           return { isSupported: () => true, run: mocks.find };
@@ -182,4 +190,72 @@ it("updates and clears clangd and compiler markers independently", () => {
   expect(mocks.setMarkers).toHaveBeenCalledWith(model, "compiler", []);
   rerender(view(false));
   expect(mocks.setMarkers).toHaveBeenCalledWith(model, "clangd", []);
+});
+
+it("reports selected lines and offers the Ask context-menu action for saved files", () => {
+  mocks.addAction.mockClear();
+  mocks.createModel.mockReturnValue({
+    onDidChangeContent: () => ({ dispose() {} }),
+    getLanguageId: () => "rust",
+    getValue: () => "",
+    getEOL: () => "\n",
+    setValue: vi.fn(),
+    dispose: vi.fn(),
+  });
+  // Lines 3–5 fully selected: the selection ends at column 1 of line 6.
+  mocks.selection = {
+    startLineNumber: 3,
+    endLineNumber: 6,
+    endColumn: 1,
+    isEmpty: () => false,
+  };
+  const report = vi.fn();
+  const ask = vi.fn();
+  const tab: EditorTab = {
+    key: "doc",
+    uri: "turing-workspace://workspace/a.rs",
+    revision: 1,
+    name: "a.rs",
+    title: "a.rs",
+    source: {
+      kind: "workspace",
+      workspaceId: "workspace",
+      relativePath: "a.rs",
+      version: "v1",
+    },
+    content: "",
+    draft: "",
+    changedOnDisk: false,
+  };
+  const view = (canAsk: boolean) => (
+    <MonacoHost
+      active={tab}
+      tabs={[tab]}
+      models={new ModelRegistry()}
+      group="1"
+      readOnly={false}
+      onInfo={report}
+      onChange={vi.fn()}
+      canAskSelection={canAsk}
+      onAskSelection={ask}
+    />
+  );
+  const { rerender } = render(view(true));
+  expect(report).toHaveBeenLastCalledWith(
+    expect.objectContaining({ selection: { startLine: 3, endLine: 5 } }),
+  );
+  expect(mocks.contextKey.set).toHaveBeenLastCalledWith(true);
+  const action = mocks.addAction.mock.calls
+    .map(([descriptor]) => descriptor as { id: string; run: () => void })
+    .find(({ id }) => id === "turing.askSelection");
+  expect(action).toMatchObject({
+    label: "Ask Turing AI About Selection",
+    precondition: "editorHasSelection && turingCanAskSelection",
+    contextMenuGroupId: "1_turing",
+  });
+  action?.run();
+  expect(ask).toHaveBeenCalledOnce();
+  rerender(view(false));
+  expect(mocks.contextKey.set).toHaveBeenLastCalledWith(false);
+  mocks.selection = undefined;
 });

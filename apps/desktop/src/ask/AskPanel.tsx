@@ -11,6 +11,7 @@ import {
   Square,
   ThumbsDown,
   ThumbsUp,
+  X,
 } from "lucide-react";
 import {
   autoAskModel,
@@ -67,11 +68,19 @@ export function AskPanel({
   workspacePath,
   visible = true,
   openSource,
+  attachment,
+  clearAttachment,
+  focusRequest = 0,
 }: {
   workspaceId: string;
   workspacePath?: string;
   visible?: boolean;
   openSource: (source: AskSource) => Promise<boolean | undefined>;
+  /** Saved editor lines sent as a reference; the native host reads the text. */
+  attachment?: AskSource;
+  clearAttachment?: () => void;
+  /** Focuses the composer whenever it changes. */
+  focusRequest?: number;
 }) {
   const questionField = useId();
   const modelField = useId();
@@ -114,6 +123,10 @@ export function AskPanel({
       setLocalStatus(undefined),
     );
   }
+
+  useEffect(() => {
+    if (focusRequest) composer.current?.focus();
+  }, [focusRequest]);
 
   useEffect(() => {
     if (!visible) return;
@@ -235,6 +248,7 @@ export function AskPanel({
     active.current = id;
     setQuestion("");
     setNotice("");
+    clearAttachment?.();
     following.current = true;
     setTurns((previous) => [
       ...previous,
@@ -259,6 +273,7 @@ export function AskPanel({
         ...(preferences.conventions
           ? { conventions: preferences.conventions }
           : {}),
+        ...(attachment ? { selection: attachment } : {}),
       },
       (message) => {
         if (active.current !== id) return;
@@ -486,6 +501,15 @@ export function AskPanel({
           {notice || status || availability}
         </div>
         <form className="ask-composer" onSubmit={submit}>
+          {attachment && (
+            <AttachmentChip
+              source={attachment}
+              remove={() => {
+                clearAttachment?.();
+                composer.current?.focus();
+              }}
+            />
+          )}
           <label htmlFor={questionField} className="visually-hidden">
             Ask about this workspace
           </label>
@@ -664,6 +688,34 @@ function TurnView({
         </div>
       </div>
     </li>
+  );
+}
+
+function AttachmentChip({
+  source,
+  remove,
+}: {
+  source: AskSource;
+  remove: () => void;
+}) {
+  const label = `${source.relativePath}:${source.startLine}–${source.endLine}`;
+  return (
+    <div
+      className="ask-attachment"
+      role="group"
+      aria-label="Attached selection"
+    >
+      <FileCode2 size={12} aria-hidden="true" />
+      <span title={label}>{label}</span>
+      <button
+        type="button"
+        aria-label={`Remove selection ${label}`}
+        title="Remove selection"
+        onClick={remove}
+      >
+        <X size={12} aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 

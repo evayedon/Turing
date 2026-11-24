@@ -1175,6 +1175,38 @@ Turing rechecks workspace authorization after approval and uses the same stream
 and source navigation as local Ask. When OpenRouter reports token counts, the panel
 shows them with the answer.
 
+### Ask about selection
+
+Select lines in a saved workspace file and choose **Ask Turing AI About
+Selection** from the editor context menu, the **Selection** menu, or the command
+palette. The command opens the Turing AI panel, attaches the range to the
+composer as a removable chip, and focuses the composer. The menu item stays
+disabled, with its reason, until the active document is a saved, unmodified
+workspace file with a non-empty selection; the context-menu item is hidden in
+that case. There is no keyboard shortcut. A selection ending at column 1 of a
+line excludes that line, as in other editors.
+
+The webview sends only a reference: `selection` in `AskRequest` holds the
+relative path, the saved file version, and one-based inclusive lines. Rust reads
+the lines itself with `Registry::read` for the calling window and workspace, so
+the frontend path is never proof of access. It rejects a path the registry
+cannot read (`SELECTION_UNAVAILABLE`, or `WORKSPACE_DENIED` for another window's
+workspace), a version that no longer matches the file on disk
+(`SELECTION_STALE`), a reversed or out-of-range span (`SELECTION_INVALID`), and
+more than 200 lines or 16 KiB (`SELECTION_TOO_LARGE`). Unsaved edits are never
+sent: the command requires a saved file, and the version check catches a file
+that changed on disk after selection.
+
+The selection becomes passage 1 of the prompt, so the model cites it as [1],
+and the prompt says the user selected it. Retrieved passages that overlap the
+range are dropped and the rest follow it. For cloud requests the selection is
+listed in the consent review like any other range. Trimming to the 24 KiB cloud
+cap removes retrieved passages only; when the selection alone does not fit,
+Ask fails with `CLOUD_QUESTION_TOO_LONG` instead of dropping it. The selection
+appears in the completed answer's sources and freshness check. Unlike retrieved
+passages, a selected file is not filtered by the secret-file heuristics, because
+the user chose it explicitly.
+
 ### Workspace index for Ask
 
 Ask builds an in-memory index for the active desktop workspace. The index uses
