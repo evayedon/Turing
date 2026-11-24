@@ -6,13 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AskEvent } from "@turing/contracts";
 import { expectAccessible } from "../test/axe";
 import { AskPanel } from "./AskPanel";
-import { cancelAsk, cloudCredential, runAsk } from "./ask-ipc";
+import { cancelAsk, cloudCredential, localAskStatus, runAsk } from "./ask-ipc";
 
 vi.mock("./ask-ipc", async (original) => ({
   ...(await original<typeof import("./ask-ipc")>()),
   runAsk: vi.fn(),
   cancelAsk: vi.fn(),
   cloudCredential: vi.fn(),
+  localAskStatus: vi.fn(),
 }));
 
 const run = vi.mocked(runAsk);
@@ -22,6 +23,7 @@ beforeEach(() => {
   run.mockReset().mockImplementation(() => new Promise(() => {}));
   cancel.mockReset().mockResolvedValue(undefined);
   vi.mocked(cloudCredential).mockReset().mockResolvedValue(false);
+  vi.mocked(localAskStatus).mockReset().mockResolvedValue("ready");
 });
 afterEach(cleanup);
 
@@ -268,5 +270,29 @@ describe("Ask panel", () => {
       "fn main() {}\n",
     );
     expect(screen.getByText("Use this:")).toBeTruthy();
+  });
+
+  it("shows model availability before asking", async () => {
+    vi.mocked(localAskStatus).mockResolvedValue("offline");
+    render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
+    expect(
+      await screen.findByText("llama-server isn't running on 127.0.0.1:8080."),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("option", { name: "llama.cpp (local · offline)" }),
+    ).toBeTruthy();
+    const user = userEvent.setup();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Model" }),
+      "openrouter-qwen3-coder",
+    );
+    expect(
+      await screen.findByText("Save an OpenRouter API key to use this model."),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("option", {
+        name: "Qwen3-Coder via OpenRouter (cloud · key needed)",
+      }),
+    ).toBeTruthy();
   });
 });

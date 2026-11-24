@@ -321,6 +321,10 @@
   color: var(--nebula-cyan);
 }
 
+.ask-model[data-unavailable] {
+  color: var(--nebula-danger);
+}
+
 .ask-model:hover {
   background: var(--nebula-hover);
 }

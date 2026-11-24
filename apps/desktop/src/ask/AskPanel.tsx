@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import type { AskEvent, AskSource } from "@turing/contracts";
+import type { AskEvent, AskLocalStatus, AskSource } from "@turing/contracts";
 import {
   ArrowUp,
   Cloud,
@@ -11,7 +11,13 @@ import {
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
-import { cancelAsk, cloudAskModel, localAskModel, runAsk } from "./ask-ipc";
+import {
+  cancelAsk,
+  cloudAskModel,
+  localAskModel,
+  localAskStatus,
+  runAsk,
+} from "./ask-ipc";
 import { AskProjectPreferences } from "./AskPreferences";
 import { loadProjectAsk, mergeTurns, updateProjectAsk } from "./ask-history";
 import type { AskFeedback, AskPreferences, SavedTurn } from "./ask-history";
@@ -66,6 +72,8 @@ export function AskPanel({
     project.turns.map((turn) => ({ ...turn, phase: "completed" })),
   );
   const [notice, setNotice] = useState("");
+  const [localStatus, setLocalStatus] = useState<AskLocalStatus>();
+  const [keySaved, setKeySaved] = useState<boolean>();
   const latest = turns.at(-1);
   const busy =
     latest?.phase === "running" ||
@@ -80,6 +88,14 @@ export function AskPanel({
       if (id) void cancelAsk(id).catch(() => {});
     };
   }, []);
+
+  function probeLocal() {
+    void localAskStatus().then(setLocalStatus, () => setLocalStatus(undefined));
+  }
+
+  useEffect(() => {
+    if (visible) probeLocal();
+  }, [visible]);
 
   // shortcut: always follows the newest text, even if the reader scrolled up; add a "pinned to bottom" check if that annoys.
   useEffect(() => {
@@ -238,6 +254,7 @@ export function AskPanel({
       ) {
         setQuestion((current) => current || trimmedQuestion);
       }
+      if (cause === "MODEL_UNAVAILABLE") probeLocal();
       update(id, () => ({ phase: "failed", error: askErrorMessage(cause) }));
     });
   }
@@ -278,6 +295,19 @@ export function AskPanel({
         failed: "",
       }[latest.phase]
     : "";
+  const availability = cloud
+    ? keySaved === false
+      ? "Save an OpenRouter API key to use this model."
+      : ""
+    : localStatus === "offline"
+      ? "llama-server isn't running on 127.0.0.1:8080."
+      : localStatus === "loading"
+        ? "llama-server is still loading its model."
+        : "";
+  const localState =
+    localStatus === "offline" || localStatus === "loading"
+      ? ` · ${localStatus}`
+      : "";
 
   return (
     <div className="ask-panel">
@@ -333,7 +363,7 @@ export function AskPanel({
       </div>
 
       <div className="ask-dock">
-        {cloud && <CloudCredential disabled={busy} />}
+        {cloud && <CloudCredential disabled={busy} onStatus={setKeySaved} />}
         <AskIndex workspaceId={workspaceId} visible={visible} />
         {workspacePath && (
           <AskProjectPreferences
@@ -352,7 +382,7 @@ export function AskPanel({
           />
         )}
         <div className="ask-status" role="status">
-          {notice || status}
+          {notice || status || availability}
         </div>
         <form className="ask-composer" onSubmit={submit}>
           <label htmlFor={questionField} className="visually-hidden">
@@ -371,6 +401,7 @@ export function AskPanel({
             <div
               className="ask-model"
               data-location={cloud ? "cloud" : "local"}
+              data-unavailable={availability ? "" : undefined}
             >
               {cloud ? (
                 <Cloud size={14} aria-hidden="true" />
@@ -386,12 +417,14 @@ export function AskPanel({
                 disabled={busy}
                 value={modelId}
                 onChange={(event) => setModelId(event.target.value)}
+                onFocus={probeLocal}
               >
                 <option value={localAskModel.id}>
-                  {localAskModel.label} (local)
+                  {localAskModel.label} (local{localState})
                 </option>
                 <option value={cloudAskModel.id}>
-                  {cloudAskModel.label} (cloud)
+                  {cloudAskModel.label} (cloud
+                  {keySaved === false ? " · key needed" : ""})
                 </option>
               </select>
             </div>

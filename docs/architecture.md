@@ -1116,6 +1116,15 @@ to a passage.
 Run the opt-in model check with
 `cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml answers_a_workspace_question_with_a_real_local_model -- --ignored`.
 
+### Model availability
+
+The model picker shows whether each Ask model can answer before a request is
+sent. Rust probes llama-server's `GET /health` on `127.0.0.1:8080` with a
+one-second timeout when the panel opens, when the picker gains focus, and after
+a local model failure. It reports `ready`, `loading` (HTTP 503), or `offline`.
+The cloud model reports **key needed** when no OpenRouter key is saved. Status
+is advisory: a request can still be attempted and reports its own error.
+
 ### OpenRouter (Qwen3-Coder) in Ask Mode
 
 Select **Qwen3-Coder via OpenRouter** in Turing AI and save an OpenRouter API key in

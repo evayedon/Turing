@@ -5,7 +5,13 @@ import { KeyRound } from "lucide-react";
 import { cloudCredential } from "./ask-ipc";
 import { askErrorMessage } from "./ask-errors";
 
-export function CloudCredential({ disabled }: { disabled: boolean }) {
+export function CloudCredential({
+  disabled,
+  onStatus,
+}: {
+  disabled: boolean;
+  onStatus?: (configured: boolean) => void;
+}) {
   const field = useId();
   const [configured, setConfigured] = useState<boolean>();
   const [saving, setSaving] = useState(true);
@@ -17,6 +23,7 @@ export function CloudCredential({ disabled }: { disabled: boolean }) {
       (stored) => {
         if (active) {
           setConfigured(stored);
+          onStatus?.(stored);
           setSaving(false);
         }
       },
@@ -30,13 +37,15 @@ export function CloudCredential({ disabled }: { disabled: boolean }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [onStatus]);
 
   async function update(action: AskCredentialAction) {
     setSaving(true);
     setError("");
     try {
-      setConfigured(await cloudCredential(action));
+      const stored = await cloudCredential(action);
+      setConfigured(stored);
+      onStatus?.(stored);
     } catch (cause) {
       setError(askErrorMessage(cause));
     } finally {

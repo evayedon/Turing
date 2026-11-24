@@ -50,6 +50,7 @@ fn main() {
             ask::ask_run,
             ask::ask_index,
             ask::ask_cancel,
+            ask::ask_local_status,
             ask::cloud::ask_cloud_credential,
             drafts::draft_recovery,
             windows::window_new_workbench,

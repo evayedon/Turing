@@ -56,6 +56,9 @@ export type AskCredentialAction =
 export type AskIndexAction =
   "status" | "pause" | "resume" | "rebuild" | "disable";
 
+/** Reachability of the local llama-server, probed by the native host. */
+export type AskLocalStatus = "ready" | "loading" | "offline";
+
 export interface AskIndexStatus {
   phase: "indexing" | "ready" | "paused" | "disabled" | "unavailable";
   files: number;

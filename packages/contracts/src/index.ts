@@ -71,6 +71,7 @@ export type {
   AskEvent,
   AskIndexAction,
   AskIndexStatus,
+  AskLocalStatus,
   AskModel,
   AskRequest,
   AskSource,

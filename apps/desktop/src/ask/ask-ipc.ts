@@ -4,6 +4,7 @@ import type {
   AskEvent,
   AskIndexAction,
   AskIndexStatus,
+  AskLocalStatus,
   AskModel,
   AskRequest,
 } from "@turing/contracts";
@@ -34,6 +35,10 @@ export function runAsk(
     request,
     events: new Channel<AskEvent>(onEvent),
   });
+}
+
+export function localAskStatus() {
+  return invoke<AskLocalStatus>("ask_local_status");
 }
 
 export function cancelAsk(requestId: string) {

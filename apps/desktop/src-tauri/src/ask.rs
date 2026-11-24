@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 const MODEL: &str = "llama.cpp";
 const ENDPOINT: &str = "http://127.0.0.1:8080/v1/chat/completions";
+const HEALTH: &str = "http://127.0.0.1:8080/health";
 const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Deserialize)]
@@ -119,6 +120,43 @@ impl Drop for Job<'_> {
         if let Ok(mut active) = self.service.0.lock() {
             *active = None;
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalStatus {
+    Ready,
+    Loading,
+    Offline,
+}
+
+#[tauri::command]
+pub async fn ask_local_status(window: WebviewWindow) -> Result<LocalStatus, Error> {
+    workbench(&window).map_err(|_| Error::WorkspaceDenied)?;
+    Ok(local_status(HEALTH).await)
+}
+
+async fn local_status(url: &str) -> LocalStatus {
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(1))
+        .build()
+    else {
+        return LocalStatus::Offline;
+    };
+    // llama-server answers /health with 503 while it is still loading the model.
+    match client
+        .get(url)
+        .send()
+        .await
+        .map(|response| response.status().as_u16())
+    {
+        Ok(200..=299) => LocalStatus::Ready,
+        Ok(503) => LocalStatus::Loading,
+        _ => LocalStatus::Offline,
     }
 }
 
@@ -452,6 +490,33 @@ mod tests {
         io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
     };
+
+    #[test]
+    fn reports_local_server_health() {
+        fn health(status: &'static str) -> LocalStatus {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let url = format!("http://{}/health", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                let _ = socket.read(&mut request);
+                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").unwrap();
+            });
+            let result = tauri::async_runtime::block_on(local_status(&url));
+            server.join().unwrap();
+            result
+        }
+        assert_eq!(health("200 OK"), LocalStatus::Ready);
+        assert_eq!(health("503 Service Unavailable"), LocalStatus::Loading);
+        assert_eq!(health("404 Not Found"), LocalStatus::Offline);
+        let closed = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://{}/health", closed.local_addr().unwrap());
+        drop(closed);
+        assert_eq!(
+            tauri::async_runtime::block_on(local_status(&url)),
+            LocalStatus::Offline
+        );
+    }
 
     fn serve(frames: &'static str) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
