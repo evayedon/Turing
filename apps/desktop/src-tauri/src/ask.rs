@@ -30,7 +30,7 @@ pub struct AskRequest {
     conventions: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Source {
     pub relative_path: String,
@@ -50,7 +50,10 @@ pub enum Event {
     Routed {
         location: &'static str,
     },
-    AwaitingCloudApproval,
+    /// The exact file ranges the pending cloud request would share.
+    AwaitingCloudApproval {
+        sources: Vec<Source>,
+    },
     CloudApproved,
     Delta {
         text: String,
@@ -277,7 +280,16 @@ pub async fn ask_run(
                 &mut passages,
                 &mut partial,
             )?;
-            let payload = cloud::approve(&window, &events, payload, &check).await?;
+            let payload = cloud::approve(
+                &window,
+                &events,
+                payload,
+                &request.question,
+                request.conventions.as_deref(),
+                &passages,
+                &check,
+            )
+            .await?;
             events
                 .send(Event::CloudApproved)
                 .map_err(|_| Error::Cancelled)?;

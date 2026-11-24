@@ -120,7 +120,20 @@ describe("Ask panel", () => {
     );
     await submit("Where is the workspace?");
     expect(run.mock.lastCall?.[1].modelId).toBe("openrouter-qwen3-coder");
-    deliver({ kind: "awaitingCloudApproval" });
+    deliver({
+      kind: "awaitingCloudApproval",
+      sources: [
+        {
+          relativePath: "src/workspace.rs",
+          version: "v1",
+          startLine: 1,
+          endLine: 12,
+        },
+      ],
+    });
+    expect(
+      screen.getByRole("button", { name: "src/workspace.rs:1–12" }),
+    ).toBeTruthy();
     expect(
       screen.getByText("Review the request in the sharing dialog."),
     ).toBeTruthy();
@@ -133,7 +146,7 @@ describe("Ask panel", () => {
     expect(screen.getByText("Cloud sharing canceled.")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Ask" }));
-    deliver({ kind: "awaitingCloudApproval" });
+    deliver({ kind: "awaitingCloudApproval", sources: [] });
     deliver({ kind: "cloudApproved" });
     deliver({ kind: "delta", text: "Answer" });
     deliver({
@@ -322,7 +335,7 @@ describe("Ask panel", () => {
     ).toBeTruthy();
     await submit("Where is the workspace?");
     deliver({ kind: "routed", location: "cloud" });
-    deliver({ kind: "awaitingCloudApproval" });
+    deliver({ kind: "awaitingCloudApproval", sources: [] });
     deliver({ kind: "cloudApproved" });
     expect(
       screen.getByText("Preparing or generating cloud answer…"),

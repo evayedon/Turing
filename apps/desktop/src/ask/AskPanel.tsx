@@ -41,6 +41,7 @@ type Turn = {
   notice?: string;
   feedback?: AskFeedback;
   route?: "local" | "cloud";
+  sharing?: AskSource[];
 };
 
 const SUGGESTIONS = [
@@ -231,6 +232,10 @@ export function AskPanel({
                 : message.kind === "awaitingCloudApproval"
                   ? "approval"
                   : "running",
+            sharing:
+              message.kind === "awaitingCloudApproval"
+                ? message.sources
+                : undefined,
           }));
           return;
         }
@@ -511,6 +516,18 @@ function TurnView({
         </span>
         <div className="ask-reply-body">
           {pending && <span className="ask-typing" aria-hidden="true" />}
+          {turn.phase === "approval" && turn.sharing && (
+            <section className="ask-sources" aria-label="Lines to share">
+              <p>
+                {turn.sharing.length === 0
+                  ? "Only your question will be shared."
+                  : `Approve in the dialog to share these ${turn.sharing.length} workspace excerpts:`}
+              </p>
+              {turn.sharing.length > 0 && (
+                <SourceChips sources={turn.sharing} open={openSource} />
+              )}
+            </section>
+          )}
           {turn.answer && <Answer text={turn.answer} />}
           {turn.error && (
             <p className="ask-error" role={latest ? "alert" : undefined}>
@@ -520,23 +537,7 @@ function TurnView({
           {result && (
             <section className="ask-sources" aria-label="Workspace sources">
               {result.sources.length > 0 && (
-                <ul>
-                  {result.sources.map((source) => {
-                    const label = `${source.relativePath}:${source.startLine}–${source.endLine}`;
-                    return (
-                      <li key={`${source.relativePath}:${source.startLine}`}>
-                        <button
-                          type="button"
-                          title={label}
-                          onClick={() => void openSource(source)}
-                        >
-                          <FileCode2 size={12} aria-hidden="true" />
-                          <span>{label}</span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <SourceChips sources={result.sources} open={openSource} />
               )}
               {result.sources.length === 0 && (
                 <p>No matching workspace passages.</p>
@@ -604,5 +605,33 @@ function Answer({ text }: { text: string }) {
         ),
       )}
     </div>
+  );
+}
+
+function SourceChips({
+  sources,
+  open,
+}: {
+  sources: AskSource[];
+  open: (source: AskSource) => Promise<void>;
+}) {
+  return (
+    <ul>
+      {sources.map((source) => {
+        const label = `${source.relativePath}:${source.startLine}–${source.endLine}`;
+        return (
+          <li key={`${source.relativePath}:${source.startLine}`}>
+            <button
+              type="button"
+              title={label}
+              onClick={() => void open(source)}
+            >
+              <FileCode2 size={12} aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

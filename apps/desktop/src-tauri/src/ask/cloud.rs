@@ -8,8 +8,9 @@ pub(super) const MODEL: &str = "qwen/qwen3-coder";
 pub(super) const ID: &str = "openrouter-qwen3-coder";
 pub(super) const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 
-// Bound the content shown in the native dialog. The same payload goes to OpenRouter.
-const PREVIEW_BYTES: usize = 1800;
+// The native review lists every shared file range; the payload carries those lines.
+const CLOUD_BYTES: usize = 24 * 1024;
+const REVIEW_TEXT_CHARS: usize = 600;
 const SERVICE: &str = "dev.turingcore.ide";
 const ACCOUNT: &str = "ask-openrouter";
 
@@ -82,7 +83,7 @@ pub(super) fn prepare(
 ) -> Result<String, Error> {
     loop {
         let payload = prompt(question, conventions, passages);
-        if payload.len() <= PREVIEW_BYTES && dialog_text(&payload).len() <= PREVIEW_BYTES {
+        if payload.len() <= CLOUD_BYTES {
             return Ok(payload);
         }
         if passages.pop().is_none() {
@@ -96,13 +97,22 @@ pub(super) async fn approve(
     window: &WebviewWindow,
     events: &Channel<Event>,
     payload: String,
+    question: &str,
+    conventions: Option<&str>,
+    passages: &[Passage],
     check: &impl Fn() -> Result<(), Error>,
 ) -> Result<String, Error> {
     events
-        .send(Event::AwaitingCloudApproval)
+        .send(Event::AwaitingCloudApproval {
+            sources: passages
+                .iter()
+                .map(|passage| passage.source.clone())
+                .collect(),
+        })
         .map_err(|_| Error::Cancelled)?;
+    let review = review(question, conventions, passages, payload.len());
     let window = window.clone();
-    approved_payload(payload, check, |preview| async move {
+    approved_payload(payload, review, check, |preview| async move {
         tauri::async_runtime::spawn_blocking(move || {
             window
                 .dialog()
@@ -122,17 +132,48 @@ pub(super) async fn approve(
     .await
 }
 
+fn review(question: &str, conventions: Option<&str>, passages: &[Passage], bytes: usize) -> String {
+    let clip = |text: &str| {
+        let mut clipped: String = text.chars().take(REVIEW_TEXT_CHARS).collect();
+        if clipped.len() < text.len() {
+            clipped.push('…');
+        }
+        dialog_text(&clipped)
+    };
+    let mut review = format!(
+        "OpenRouter ({MODEL}) and its hosting provider will receive the question, the full text of the workspace lines listed below, and any saved conventions. This approval applies to one request ({} KB).\n\nQuestion: {}",
+        bytes.div_ceil(1024),
+        clip(question)
+    );
+    if let Some(conventions) = conventions {
+        review.push_str("\nConventions: ");
+        review.push_str(&clip(conventions));
+    }
+    if passages.is_empty() {
+        review.push_str("\n\nNo workspace lines are included.");
+    } else {
+        review.push_str("\n\nWorkspace lines:");
+        for passage in passages {
+            let source = &passage.source;
+            review.push_str(&format!(
+                "\n• {}:{}–{}",
+                clip(&source.relative_path),
+                source.start_line,
+                source.end_line
+            ));
+        }
+    }
+    review
+}
+
 async fn approved_payload<F: std::future::Future<Output = Result<bool, Error>>>(
     payload: String,
+    review: String,
     check: &impl Fn() -> Result<(), Error>,
     confirm: impl FnOnce(String) -> F,
 ) -> Result<String, Error> {
     check()?;
-    let visible = dialog_text(&payload);
-    let preview = format!(
-        "OpenRouter ({MODEL}) and its hosting provider will receive the question, workspace excerpts, and any saved conventions shown below. This approval applies to one request.\n\n{visible}"
-    );
-    if !confirm(preview).await? {
+    if !confirm(review).await? {
         return Err(Error::CloudConsentDeclined);
     }
     check()?;
@@ -174,13 +215,37 @@ mod tests {
         assert!(payload.contains("User-approved project conventions: \"Use snake_case.\""));
     }
 
+    fn passage(path: &str, text: String) -> Passage {
+        Passage {
+            source: crate::ask::Source {
+                relative_path: path.into(),
+                version: "v1".into(),
+                start_line: 1,
+                end_line: 12,
+            },
+            text,
+            score: 1,
+        }
+    }
+
     #[test]
-    fn rejects_questions_that_do_not_fit_the_review_dialog() {
-        let question = "%".repeat(PREVIEW_BYTES / 2);
-        assert_eq!(
-            prepare(&question, None, &mut Vec::new(), &mut false),
-            Err(Error::CloudQuestionTooLong)
-        );
+    fn trims_cloud_payload_and_lists_every_shared_range_in_the_review() {
+        let mut passages: Vec<_> = (0..8)
+            .map(|index| passage(&format!("src/{index}%.rs"), "x".repeat(6 * 1024)))
+            .collect();
+        let mut partial = false;
+        let payload = prepare("Where?", None, &mut passages, &mut partial).unwrap();
+        assert!(payload.len() <= CLOUD_BYTES);
+        assert!(partial);
+        assert_eq!(passages.len(), 3);
+        let review = review("50% <done>", Some("Tabs"), &passages, payload.len());
+        assert!(review.contains("Question: 50\\u{25} \\u{3c}done\\u{3e}"));
+        assert!(review.contains("Conventions: Tabs"));
+        for index in 0..3 {
+            assert!(review.contains(&format!("• src/{index}{}.rs:1–12", r"\u{25}")));
+        }
+        assert!(!review.contains("src/3"));
+        assert!(review.contains(&format!("({} KB)", payload.len().div_ceil(1024))));
     }
 
     #[test]
@@ -188,14 +253,22 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let payload = String::from("Question and workspace excerpt");
             assert_eq!(
-                approved_payload(payload.clone(), &|| Ok(()), |_| async { Ok(false) }).await,
+                approved_payload(payload.clone(), "Review".into(), &|| Ok(()), |_| async {
+                    Ok(false)
+                })
+                .await,
                 Err(Error::CloudConsentDeclined)
             );
             assert_eq!(
-                approved_payload(payload.clone(), &|| Ok(()), |preview| async move {
-                    assert!(preview.ends_with("Question and workspace excerpt"));
-                    Ok(true)
-                })
+                approved_payload(
+                    payload.clone(),
+                    "Review".into(),
+                    &|| Ok(()),
+                    |preview| async move {
+                        assert_eq!(preview, "Review");
+                        Ok(true)
+                    }
+                )
                 .await,
                 Ok(payload.clone())
             );
@@ -208,7 +281,7 @@ mod tests {
                 }
             };
             assert_eq!(
-                approved_payload(payload, &check, |_| async {
+                approved_payload(payload, "Review".into(), &check, |_| async {
                     revoked.set(true);
                     Ok(true)
                 })

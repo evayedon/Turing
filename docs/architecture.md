@@ -1141,9 +1141,13 @@ the panel. Rust stores it in macOS Keychain, Windows Credential Manager, or the
 Linux desktop Secret Service. Linux requires an available, unlocked Secret
 Service. The webview can save, remove, and check for a key.
 
-Each request opens a native confirmation with the question and the exact excerpts
-Turing proposes to send to `openrouter.ai`, which forwards it to a hosting provider. The preview is bounded, so it can
-include fewer sources than local Ask. Clicking **Send once** authorizes that
+Each request opens a native confirmation that names the question, any saved
+conventions, the request size, and every workspace file range Turing proposes to
+send to `openrouter.ai`, which forwards it to a hosting provider. The request
+carries the full text of those ranges, up to 24 KiB; lower-ranked excerpts are
+dropped to fit and the answer reports limited context. While the dialog is open,
+the Turing AI panel shows the same ranges as source chips that open the cited
+lines. Clicking **Send once** authorizes that
 payload for one HTTPS request. Closing or canceling the dialog prevents sending.
 Turing rechecks workspace authorization after approval and uses the same stream
 and source navigation as local Ask. When OpenRouter reports token counts, the panel

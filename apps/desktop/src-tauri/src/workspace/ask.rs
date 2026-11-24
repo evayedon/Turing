@@ -15,13 +15,13 @@ use std::{
 };
 
 const FILE_BYTES: u64 = 256 * 1024;
-const MAX_PASSAGES: usize = 4;
-const PASSAGE_LINES: usize = 6;
+const MAX_PASSAGES: usize = 8;
+const PASSAGE_LINES: usize = 12;
 
 pub(crate) struct Passage {
     pub source: Source,
     pub text: String,
-    score: usize,
+    pub(crate) score: usize,
 }
 
 pub(crate) struct Retrieval {
