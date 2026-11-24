@@ -1,4 +1,6 @@
-use super::{eligible, eligible_directory, excluded_content, make_scan, Retrieval, FILE_BYTES};
+use super::{
+    eligible, eligible_directory, excluded_content, make_scan, AskSymbol, Retrieval, FILE_BYTES,
+};
 use crate::workspace::{
     directory_at, is_workspace_link, relative_parts,
     search::{self, Walk},
@@ -164,6 +166,7 @@ impl State {
         &self,
         root: &Dir,
         question: &str,
+        symbols: &[AskSymbol],
         cancelled: &AtomicBool,
     ) -> Result<Option<Retrieval>> {
         if self.paused.load(Ordering::Relaxed) || self.cancelled.load(Ordering::Relaxed) {
@@ -181,7 +184,7 @@ impl State {
                 .collect::<Vec<_>>();
             (documents, files.partial)
         };
-        let mut scan = make_scan(question, cancelled)?;
+        let mut scan = make_scan(question, symbols, cancelled)?;
         scan.retrieval.partial = snapshot.1;
         for (path, document) in snapshot.0 {
             if scan.stop()? {
@@ -440,7 +443,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         wait_until(|| {
             index
-                .retrieve(&root, "original", &cancelled)
+                .retrieve(&root, "original", &[], &cancelled)
                 .unwrap()
                 .is_some_and(|result| {
                     result.passages.len() == 1 && result.passages[0].text.contains("original")
@@ -450,7 +453,7 @@ mod tests {
             .manage_ask_index("main", &workspace.id, IndexAction::Pause)
             .unwrap();
         assert!(index
-            .retrieve(&root, "original", &cancelled)
+            .retrieve(&root, "original", &[], &cancelled)
             .unwrap()
             .is_none());
         fs::remove_file(folder.join("first.rs")).unwrap();
@@ -465,7 +468,7 @@ mod tests {
             .unwrap();
         wait_until(|| {
             index
-                .retrieve(&root, "revised", &cancelled)
+                .retrieve(&root, "revised", &[], &cancelled)
                 .unwrap()
                 .is_some_and(|result| {
                     result.passages.len() == 1
@@ -481,7 +484,7 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(index
-            .retrieve(&root, "revised", &cancelled)
+            .retrieve(&root, "revised", &[], &cancelled)
             .unwrap()
             .is_none());
         registry.close("main", &workspace.id).unwrap();

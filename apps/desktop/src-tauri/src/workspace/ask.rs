@@ -6,10 +6,11 @@ use super::{
     search::{self, Walk},
     Registry, Result,
 };
-use crate::ask::Source;
+use crate::{ask::Source, language::AskSymbol};
 use cap_std::fs::Dir;
 use regex::RegexSet;
 use std::{
+    collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
@@ -46,13 +47,22 @@ pub(crate) fn lines(content: &str) -> Vec<&str> {
         .collect()
 }
 
-pub(crate) fn retrieve(root: &Dir, question: &str, cancelled: &AtomicBool) -> Result<Retrieval> {
-    let mut scan = make_scan(question, cancelled)?;
+/// `symbols` come from already-running language servers and only add a
+/// definition bonus to the block holding their start line; passage text is
+/// always read from the authorized workspace.
+pub(crate) fn retrieve(
+    root: &Dir,
+    question: &str,
+    symbols: &[AskSymbol],
+    cancelled: &AtomicBool,
+) -> Result<Retrieval> {
+    let mut scan = make_scan(question, symbols, cancelled)?;
     scan.visit(root, &mut Vec::new())?;
     Ok(scan.finish())
 }
 
-fn make_scan<'a>(question: &str, cancelled: &'a AtomicBool) -> Result<Scan<'a>> {
+/// Lowercased question words that ranking looks for, in question order.
+pub(crate) fn terms(question: &str) -> Vec<String> {
     let mut words = Vec::new();
     for word in question.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
         let word = word.to_lowercase();
@@ -70,13 +80,32 @@ fn make_scan<'a>(question: &str, cancelled: &'a AtomicBool) -> Result<Scan<'a>> 
             break;
         }
     }
+    words
+}
+
+fn make_scan<'a>(
+    question: &str,
+    symbols: &[AskSymbol],
+    cancelled: &'a AtomicBool,
+) -> Result<Scan<'a>> {
+    let words = terms(question);
+    let mut defined: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    for symbol in symbols {
+        let name = symbol.name.to_lowercase();
+        if let Some(word) = words.iter().position(|word| *word == name) {
+            defined
+                .entry(symbol.path.clone())
+                .or_default()
+                .push((symbol.line / PASSAGE_LINES, word));
+        }
+    }
     let terms = RegexSet::new(
         words
             .iter()
             .map(|word| format!(r"(?i)\b{}\b", regex::escape(word))),
     )
     .map_err(|_| super::WorkspaceError::InvalidSearch)?;
-    // shortcut: keyword-introduced definitions only (no C-style `int name(`); use LSP symbols when the index stores them.
+    // Keyword-introduced definitions only (no C-style `int name(`); running language servers cover the rest.
     let definitions = RegexSet::new(words.iter().map(|word| {
         format!(
             r"(?im)^[ \t]*(?:(?:pub(?:\([^)\n]*\))?|export|default|async|static|public|private|protected|abstract|final|unsafe|extern|inline|override)[ \t]+)*(?:fn|def|class|struct|enum|trait|interface|type|function|func|impl|mod|module|namespace|const|let|var|val)[ \t]+{}\b",
@@ -91,6 +120,7 @@ fn make_scan<'a>(question: &str, cancelled: &'a AtomicBool) -> Result<Scan<'a>> 
         },
         terms,
         definitions,
+        symbols: defined,
         cancelled,
         deadline: Instant::now() + search::MAX_DURATION,
         entries: 0,
@@ -102,6 +132,8 @@ struct Scan<'a> {
     retrieval: Retrieval,
     terms: RegexSet,
     definitions: RegexSet,
+    /// Relative path to (block index, term index) of server-reported definitions.
+    symbols: HashMap<String, Vec<(usize, usize)>>,
     cancelled: &'a AtomicBool,
     deadline: Instant,
     entries: usize,
@@ -240,8 +272,16 @@ impl Scan<'_> {
             if text.trim().is_empty() {
                 continue;
             }
-            let score = self.terms.matches(&text).iter().count() * 2
-                + self.definitions.matches(&text).iter().count() * 3
+            let mentioned = self.terms.matches(&text);
+            let mut defined: Vec<usize> = self.definitions.matches(&text).into_iter().collect();
+            // A server position counts only where the indexed text still names the symbol.
+            for &(block, word) in self.symbols.get(path).into_iter().flatten() {
+                if block == index && mentioned.matched(word) && !defined.contains(&word) {
+                    defined.push(word);
+                }
+            }
+            let score = mentioned.iter().count() * 2
+                + defined.len() * 3
                 + usize::from(index == 0) * path_score;
             if score == 0 && index != 0 {
                 continue;
@@ -311,8 +351,13 @@ mod tests {
         assert!(registry.ask_root("other", &workspace.id).is_err());
         assert!(registry.ask_root("workbench", "../other").is_err());
         let root = registry.ask_root("workbench", &workspace.id).unwrap();
-        let result =
-            retrieve(&root, "Where is MAX_TABS defined?", &AtomicBool::new(false)).unwrap();
+        let result = retrieve(
+            &root,
+            "Where is MAX_TABS defined?",
+            &[],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(result.passages.len(), 1);
         let passage = &result.passages[0];
         assert_eq!(passage.source.relative_path, "settings.rs");
@@ -328,7 +373,7 @@ mod tests {
                 .unwrap()
                 .version
         );
-        assert!(retrieve(&root, "MAX_TABS", &AtomicBool::new(true)).is_err());
+        assert!(retrieve(&root, "MAX_TABS", &[], &AtomicBool::new(true)).is_err());
         registry.close("workbench", &workspace.id).unwrap();
         assert!(registry.ask_root("workbench", &workspace.id).is_err());
     }
@@ -347,7 +392,7 @@ mod tests {
         let mut registry = Registry::default();
         let workspace = registry.register("workbench", dir).unwrap();
         let root = registry.ask_root("workbench", &workspace.id).unwrap();
-        let paths: Vec<_> = retrieve(&root, "What is retry_limit?", &AtomicBool::new(false))
+        let paths: Vec<_> = retrieve(&root, "What is retry_limit?", &[], &AtomicBool::new(false))
             .unwrap()
             .passages
             .into_iter()
@@ -367,7 +412,7 @@ mod tests {
         let root = registry.ask_root("workbench", &workspace.id).unwrap();
         let cancelled = AtomicBool::new(false);
         for question in ["What do these files do?", "what does this do"] {
-            let paths: Vec<_> = retrieve(&root, question, &cancelled)
+            let paths: Vec<_> = retrieve(&root, question, &[], &cancelled)
                 .unwrap()
                 .passages
                 .into_iter()
@@ -375,9 +420,62 @@ mod tests {
                 .collect();
             assert_eq!(paths, ["print.cpp", "print.py"], "{question}");
         }
-        let matched = retrieve(&root, "Where is main?", &cancelled).unwrap();
+        let matched = retrieve(&root, "Where is main?", &[], &cancelled).unwrap();
         assert_eq!(matched.passages.len(), 1);
         assert_eq!(matched.passages[0].source.relative_path, "print.cpp");
+    }
+
+    #[test]
+    fn server_symbols_rank_c_style_definitions_and_ignore_unmatched_paths() {
+        let fixture = TempDir::new().unwrap();
+        let dir = fixture.path();
+        fs::write(dir.join("a_use.c"), "int total = helper(1);\n").unwrap();
+        let mut definition = "// filler\n".repeat(PASSAGE_LINES);
+        definition.push_str("int helper(int value)\n{\n    return value;\n}\n");
+        fs::write(dir.join("z_def.c"), definition).unwrap();
+        let mut registry = Registry::default();
+        let workspace = registry.register("workbench", dir).unwrap();
+        let root = registry.ask_root("workbench", &workspace.id).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let ranked = |symbols: &[AskSymbol]| {
+            retrieve(&root, "What does helper do?", symbols, &cancelled)
+                .unwrap()
+                .passages
+                .into_iter()
+                .map(|passage| (passage.source.relative_path, passage.source.start_line))
+                .collect::<Vec<_>>()
+        };
+        let symbol = |path: &str, line: usize, name: &str| AskSymbol {
+            path: path.into(),
+            line,
+            name: name.into(),
+        };
+        // The text ranking treats the C-style declaration as a mention.
+        let regex = ranked(&[]);
+        assert_eq!(regex, [("a_use.c".into(), 1), ("z_def.c".into(), 13)]);
+        // Symbols that match no scanned path, name, or block text change nothing.
+        let unrelated = [
+            symbol("../outside.c", PASSAGE_LINES, "helper"),
+            symbol("missing.c", 0, "helper"),
+            symbol("z_def.c", PASSAGE_LINES, "other"),
+            symbol("z_def.c", 0, "helper"),
+        ];
+        assert_eq!(ranked(&unrelated), regex);
+        assert_eq!(
+            ranked(&[symbol("z_def.c", PASSAGE_LINES, "Helper")]),
+            [("z_def.c".into(), 13), ("a_use.c".into(), 1)]
+        );
+        // Regex and server definitions of the same term are counted once.
+        fs::write(dir.join("y_def.rs"), "fn helper() {}\n").unwrap();
+        let both = retrieve(
+            &root,
+            "helper",
+            &[symbol("y_def.rs", 0, "helper")],
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(both.passages[0].source.relative_path, "y_def.rs");
+        assert_eq!(both.passages[0].score, 5);
     }
 
     #[cfg(unix)]
@@ -394,7 +492,7 @@ mod tests {
         let mut registry = Registry::default();
         let workspace = registry.register("workbench", &root).unwrap();
         let handle = registry.ask_root("workbench", &workspace.id).unwrap();
-        let result = retrieve(&handle, "MAX_TABS", &AtomicBool::new(false)).unwrap();
+        let result = retrieve(&handle, "MAX_TABS", &[], &AtomicBool::new(false)).unwrap();
         assert!(result.passages.is_empty());
         fs::rename(&root, fixture.path().join("moved")).unwrap();
         fs::create_dir(&root).unwrap();

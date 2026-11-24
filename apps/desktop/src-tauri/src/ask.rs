@@ -3,7 +3,7 @@ pub mod cloud;
 use crate::{
     windows::workbench,
     workspace::{
-        ask::{lines, retrieve, IndexAction, IndexStatus, Passage, Retrieval},
+        ask::{lines, retrieve, terms, IndexAction, IndexStatus, Passage, Retrieval},
         Registry, WorkspaceError,
     },
 };
@@ -332,13 +332,23 @@ pub async fn ask_run(
         };
         let question = request.question.clone();
         let cancelled = job.cancelled.clone();
+        let language = resources.clone();
+        let language_owner = owner.to_owned();
+        let workspace_id = request.workspace_id.clone();
         let task = tauri::async_runtime::spawn_blocking(move || {
+            let symbols = language.language.ask_symbols(
+                &language.workspace,
+                &language_owner,
+                &workspace_id,
+                &terms(&question),
+                &cancelled,
+            );
             if let Some(index) = index {
-                if let Some(result) = index.retrieve(&root, &question, &cancelled)? {
+                if let Some(result) = index.retrieve(&root, &question, &symbols, &cancelled)? {
                     return Ok(result);
                 }
             }
-            retrieve(&root, &question, &cancelled)
+            retrieve(&root, &question, &symbols, &cancelled)
         });
         let Retrieval {
             mut passages,
@@ -1060,7 +1070,7 @@ mod tests {
         assert!(registry.ask_root("other-window", &scope.id).is_err());
         let root = registry.ask_root("main", &scope.id).unwrap();
         let question = "What is the value of MAX_TABS?";
-        let retrieval = retrieve(&root, question, &AtomicBool::new(false)).unwrap();
+        let retrieval = retrieve(&root, question, &[], &AtomicBool::new(false)).unwrap();
         assert_eq!(retrieval.passages.len(), 1);
         assert_eq!(retrieval.passages[0].source.relative_path, "editor.rs");
         let payload = prompt(question, None, &retrieval.passages, false);
@@ -1195,7 +1205,7 @@ mod tests {
         let scope = registry.register("main", fixture.path()).unwrap();
         let root = registry.ask_root("main", &scope.id).unwrap();
         let question = "What is the value of MAX_TABS? Reply with the number.";
-        let retrieval = retrieve(&root, question, &AtomicBool::new(false)).unwrap();
+        let retrieval = retrieve(&root, question, &[], &AtomicBool::new(false)).unwrap();
         assert_eq!(retrieval.passages.len(), 1);
         let mut answer = String::new();
         tauri::async_runtime::block_on(async {

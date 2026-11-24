@@ -18,7 +18,10 @@ use server::{Executable, Kind};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 use tauri::{Url, WebviewWindow};
@@ -28,6 +31,8 @@ const MAX_DOCUMENTS: usize = 24;
 const MAX_PENDING: usize = 16;
 const MAX_MESSAGES_PER_POLL: usize = 32;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const ASK_TERMS: usize = 4;
+const ASK_WAIT: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -216,6 +221,9 @@ struct Session {
     last_request: u32,
     revision: u64,
     started: Instant,
+    /// Ask's `workspace/symbol` requests by string id; `Some` once answered.
+    ask: HashMap<String, Option<Vec<AskSymbol>>>,
+    ask_next: u64,
 }
 
 fn supported(path: &str) -> bool {
@@ -447,6 +455,8 @@ impl Session {
             last_request: 2,
             revision: 0,
             started: Instant::now(),
+            ask: HashMap::new(),
+            ask_next: 0,
         })
     }
 
@@ -834,6 +844,12 @@ impl Session {
                         }
                     }
                 }
+            } else if let Some(ask_id) = id
+                .and_then(Value::as_str)
+                .filter(|ask_id| self.ask.contains_key(*ask_id))
+            {
+                let symbols = self.ask_answer(&message["result"], registry, owner);
+                self.ask.insert(ask_id.to_owned(), Some(symbols));
             } else if method == Some("textDocument/publishDiagnostics") {
                 if let Some((event, path)) = self.diagnostics(&message["params"]) {
                     if registry
@@ -968,6 +984,72 @@ impl Session {
         }).collect())
     }
 
+    /// Sends one `workspace/symbol` request per question term for Ask. Only a
+    /// ready, still-authorized session is used, and one Ask at a time.
+    fn ask_symbols(&mut self, registry: &Registry, owner: &str, terms: &[String]) -> Vec<String> {
+        if self.verify_root(registry, owner).is_err()
+            || !self.capabilities.is_some_and(|c| c.workspace_symbol)
+            || !self.ask.is_empty()
+        {
+            return Vec::new();
+        }
+        let mut ids = Vec::new();
+        for term in terms.iter().take(ASK_TERMS) {
+            self.ask_next += 1;
+            let id = format!("ask-{}", self.ask_next);
+            let request = json!({"jsonrpc":"2.0","id":id,"method":"workspace/symbol","params":{"query":term}});
+            if self.process.send(request).is_err() {
+                break;
+            }
+            self.ask.insert(id.clone(), None);
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Answered symbols for `ids`, once all have replied or `finished`; then
+    /// forgets the ids and cancels any the server still owes.
+    fn ask_collect(&mut self, ids: &[String], finished: bool) -> Option<Vec<AskSymbol>> {
+        let answered = ids
+            .iter()
+            .all(|id| self.ask.get(id).is_none_or(Option::is_some));
+        if !answered && !finished {
+            return None;
+        }
+        let mut symbols = Vec::new();
+        for id in ids {
+            match self.ask.remove(id) {
+                Some(Some(found)) => symbols.extend(found),
+                Some(None) => {
+                    // Best effort: the server may stop work it no longer owes.
+                    let _ = self
+                        .process
+                        .send(notify("$/cancelRequest", json!({"id":id})));
+                }
+                None => {}
+            }
+        }
+        Some(symbols)
+    }
+
+    /// Maps a `workspace/symbol` reply to authorized relative paths; entries
+    /// whose URI is malformed or outside the workspace are dropped.
+    fn ask_answer(&self, result: &Value, registry: &Registry, owner: &str) -> Vec<AskSymbol> {
+        let symbols = self.symbols(result, registry, owner);
+        symbols
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|symbol| {
+                Some(AskSymbol {
+                    path: symbol.get("path")?.as_str()?.to_owned(),
+                    line: usize::try_from(symbol.pointer("/range/start/line")?.as_u64()?).ok()?,
+                    name: symbol.get("name")?.as_str()?.to_owned(),
+                })
+            })
+            .collect()
+    }
+
     fn definitions(&self, result: &Value, registry: &Registry, owner: &str) -> Value {
         let entries = result
             .as_array()
@@ -991,6 +1073,15 @@ impl Session {
                 .collect(),
         )
     }
+}
+
+/// A server-reported symbol at an authorized workspace-relative path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AskSymbol {
+    pub path: String,
+    /// Zero-based line where the symbol's range starts.
+    pub line: usize,
+    pub name: String,
 }
 
 #[derive(PartialEq, Eq)]
@@ -1022,6 +1113,67 @@ pub struct LanguageService {
 }
 
 impl LanguageService {
+    /// Symbols from language servers already running for this workspace and
+    /// window. Never starts a server; returns nothing on timeout or failure so
+    /// Ask falls back to its text ranking.
+    pub(crate) fn ask_symbols(
+        &self,
+        workspace: &crate::workspace::WorkspaceService,
+        owner: &str,
+        workspace_id: &str,
+        terms: &[String],
+        cancelled: &AtomicBool,
+    ) -> Vec<AskSymbol> {
+        let sent: Vec<(Kind, String, Vec<String>)> = {
+            let Ok(registry) = workspace.registry() else {
+                return Vec::new();
+            };
+            if registry.authorize(owner, workspace_id).is_err() {
+                return Vec::new();
+            }
+            let Ok(mut state) = self.state.lock() else {
+                return Vec::new();
+            };
+            state
+                .sessions
+                .iter_mut()
+                .filter(|(_, session)| session.workspace_id == workspace_id)
+                .map(|(kind, session)| {
+                    let ids = session.ask_symbols(&registry, owner, terms);
+                    (*kind, session.id.clone(), ids)
+                })
+                .filter(|(_, _, ids)| !ids.is_empty())
+                .collect()
+        };
+        let mut symbols = Vec::new();
+        let mut waiting = sent;
+        // The workbench's own poll loop reads replies; this thread only waits.
+        let deadline = Instant::now() + ASK_WAIT;
+        while !waiting.is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+            let finished = cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline;
+            let Ok(mut state) = self.state.lock() else {
+                return Vec::new();
+            };
+            waiting.retain(|(kind, id, ids)| {
+                let Some(session) = state.sessions.get_mut(kind).filter(|s| &s.id == id) else {
+                    return false;
+                };
+                match session.ask_collect(ids, finished) {
+                    Some(found) => {
+                        symbols.extend(found);
+                        false
+                    }
+                    None => true,
+                }
+            });
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        symbols
+    }
+
     pub fn revoke(&self, destroy: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.destroyed |= destroy;
@@ -1579,6 +1731,8 @@ mod lifecycle_tests {
         crash_on_open: bool,
         rename: bool,
         rename_without_prepare: bool,
+        symbols: bool,
+        hold_symbols: bool,
     }
 
     type Log = Arc<StdMutex<Vec<Value>>>;
@@ -1595,6 +1749,7 @@ mod lifecycle_tests {
     ) {
         let mut input = BufReader::new(input);
         let mut send = |message: Value| framing::write(&mut output, &message).is_ok();
+        let mut root = String::new();
         while let Ok(message) = framing::read(&mut input) {
             log.lock().unwrap().push(message.clone());
             let id = message.get("id").cloned().unwrap_or(Value::Null);
@@ -1616,6 +1771,10 @@ mod lifecycle_tests {
                     if let Some(encoding) = script.encoding {
                         capabilities["positionEncoding"] = json!(encoding);
                     }
+                    if script.symbols || script.hold_symbols {
+                        capabilities["workspaceSymbolProvider"] = json!(true);
+                    }
+                    root = params["rootUri"].as_str().unwrap_or_default().to_owned();
                     send(reply(&id, json!({ "capabilities": capabilities })));
                     if script.server_request {
                         send(
@@ -1642,6 +1801,25 @@ mod lifecycle_tests {
                             }}),
                         );
                     }
+                }
+                Some("workspace/symbol") if script.hold_symbols => {}
+                Some("workspace/symbol") => {
+                    let symbol = |uri: String, line: u32| {
+                        json!({"name": params["query"], "kind": 12, "location": {"uri": uri,
+                            "range": {"start":{"line":line,"character":4},"end":{"line":line,"character":8}}}})
+                    };
+                    send(reply(
+                        &id,
+                        json!([
+                            symbol(format!("{root}hello.ts"), 3),
+                            symbol("file:///etc/passwd".into(), 0),
+                            symbol(format!("{root}nested/%2e%2e/hello.ts"), 0),
+                            symbol(format!("{root}missing.ts"), 0),
+                            symbol(format!("{root}hello.ts?x=1"), 0),
+                            symbol("not a uri".into(), 0),
+                            {"name": "broken", "location": {"uri": format!("{root}hello.ts")}},
+                        ]),
+                    ));
                 }
                 Some("textDocument/hover") if script.hold_hover => {}
                 Some("textDocument/hover" | "textDocument/completion") => {
@@ -1923,6 +2101,76 @@ mod lifecycle_tests {
                 .target_path(&uri(&link), &test.registry, "owner")
                 .is_none());
         }
+    }
+
+    #[test]
+    fn ask_symbols_keep_only_authorized_paths_and_cancel_on_timeout() {
+        let terms = ["main".to_owned(), "other".to_owned()];
+        let mut test = fixture_for(
+            Script {
+                symbols: true,
+                ..Script::default()
+            },
+            Kind::Typescript,
+            "hello.ts",
+        );
+        test.ready();
+        let ids = test.session.ask_symbols(&test.registry, "owner", &terms);
+        assert_eq!(ids.len(), 2);
+        // One Ask at a time per session.
+        assert!(test
+            .session
+            .ask_symbols(&test.registry, "owner", &terms)
+            .is_empty());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let symbols = loop {
+            test.poll().unwrap();
+            if let Some(symbols) = test.session.ask_collect(&ids, false) {
+                break symbols;
+            }
+            assert!(Instant::now() < deadline, "symbols deadline");
+            thread::sleep(Duration::from_millis(5));
+        };
+        let found = |name: &str| AskSymbol {
+            path: "hello.ts".into(),
+            line: 3,
+            name: name.into(),
+        };
+        assert_eq!(symbols, [found("main"), found("other")]);
+        assert!(test.session.ask.is_empty());
+        assert!(test
+            .session
+            .ask_symbols(&test.registry, "other", &terms)
+            .is_empty());
+
+        let mut silent = fixture_for(
+            Script {
+                hold_symbols: true,
+                ..Script::default()
+            },
+            Kind::Typescript,
+            "hello.ts",
+        );
+        silent.ready();
+        let ids = silent
+            .session
+            .ask_symbols(&silent.registry, "owner", &terms);
+        silent.poll().unwrap();
+        assert!(silent.session.ask_collect(&ids, false).is_none());
+        assert_eq!(silent.session.ask_collect(&ids, true), Some(Vec::new()));
+        assert!(silent.session.ask.is_empty());
+        assert!(
+            silent.received(|message| message["method"] == "$/cancelRequest"
+                && message.pointer("/params/id") == Some(&json!(ids[1])))
+        );
+
+        // Servers without workspace symbols are never asked.
+        let mut plain = fixture_for(Script::default(), Kind::Typescript, "hello.ts");
+        plain.ready();
+        assert!(plain
+            .session
+            .ask_symbols(&plain.registry, "owner", &terms)
+            .is_empty());
     }
 
     #[cfg(unix)]

@@ -1237,13 +1237,23 @@ to pause, resume, rebuild, or disable it. Ask can still scan on demand while
 the index is unavailable, paused, disabled, or refreshing. Cached passages
 are version-checked through safe file reads before they are offered to a model.
 
-Passages are ranked by question terms in six-line blocks. A block that defines
-a question term with a declaration keyword (`fn`, `def`, `class`, `struct`,
+Passages are ranked by question terms in 12-line blocks. A block that defines
+a question term ranks above blocks that only mention it. Definitions come from
+two sources. A declaration keyword (`fn`, `def`, `class`, `struct`,
 `function`, `func`, `interface`, `type`, `const` and similar, after optional
-modifiers such as `pub`, `export` or `async`) ranks above blocks that only
-mention it. C-style declarations without a keyword, such as `int main(`, are
-treated as mentions. When no block matches, the first block of up to four files
-is offered so broad questions still have workspace context.
+modifiers such as `pub`, `export` or `async`) always counts. When a managed
+language server is already running for the workspace and window and supports
+`workspace/symbol`, Ask also sends one query per question term (at most four)
+and waits up to 1.5 seconds. The workbench poll loop reads the replies. Each
+reported location is mapped through the same root, traversal and symlink checks
+as other language results. A symbol whose name equals a term marks its starting
+line as a definition, but only when the indexed block still contains that term.
+This catches C-style declarations such as `int helper(int)`. Ask never starts a
+server or asks for approval. With no server, an unsupported server, a timeout,
+an error or cancellation, ranking falls back to the keyword rule alone. Symbols
+only adjust ranking, and passage text still comes from authorized, version-checked
+reads. When no block matches, the first block of up to four files is offered so
+broad questions still have workspace context.
 
 ### Ask project preferences and retention
 
