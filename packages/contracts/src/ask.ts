@@ -20,12 +20,15 @@ export interface AskSource extends Pick<TextFile, "relativePath" | "version"> {
 }
 
 export type AskEvent =
+  | { kind: "awaitingCloudApproval" }
+  | { kind: "cloudApproved" }
   | { kind: "delta"; text: string }
   | {
       kind: "completed";
       sources: AskSource[];
       indexCoverage: "complete" | "partial";
       indexFreshness: "current" | "stale";
+      usage?: { inputTokens: number; outputTokens: number };
     }
   | { kind: "cancelled" };
 
@@ -36,4 +39,15 @@ export type AskError =
   | "BUSY"
   | "MODEL_UNAVAILABLE"
   | "INDEX_UNAVAILABLE"
-  | "INFERENCE_FAILED";
+  | "INFERENCE_FAILED"
+  | "CLOUD_CONSENT_DECLINED"
+  | "CLOUD_QUESTION_TOO_LONG"
+  | "CLOUD_KEY_REQUIRED"
+  | "INVALID_CLOUD_KEY"
+  | "CREDENTIAL_STORE"
+  | "PROVIDER_UNAUTHORIZED"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_UNAVAILABLE";
+
+export type AskCredentialAction =
+  { kind: "status" } | { kind: "save"; key: string } | { kind: "remove" };

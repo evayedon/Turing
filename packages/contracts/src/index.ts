@@ -66,6 +66,7 @@ export type {
 export * from "./drafts";
 
 export type {
+  AskCredentialAction,
   AskError,
   AskEvent,
   AskModel,

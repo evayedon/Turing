@@ -6,12 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AskEvent } from "@turing/contracts";
 import { expectAccessible } from "../test/axe";
 import { AskPanel } from "./AskPanel";
-import { cancelAsk, runAsk } from "./ask-ipc";
+import { cancelAsk, cloudCredential, runAsk } from "./ask-ipc";
 
 vi.mock("./ask-ipc", async (original) => ({
   ...(await original<typeof import("./ask-ipc")>()),
   runAsk: vi.fn(),
   cancelAsk: vi.fn(),
+  cloudCredential: vi.fn(),
 }));
 
 const run = vi.mocked(runAsk);
@@ -20,6 +21,7 @@ const cancel = vi.mocked(cancelAsk);
 beforeEach(() => {
   run.mockReset().mockImplementation(() => new Promise(() => {}));
   cancel.mockReset().mockResolvedValue(undefined);
+  vi.mocked(cloudCredential).mockReset().mockResolvedValue(false);
 });
 afterEach(cleanup);
 
@@ -78,9 +80,7 @@ describe("Ask panel", () => {
       indexFreshness: "stale",
     });
     expect(screen.getByText("Workspace authorization [1].")).toBeTruthy();
-    expect(
-      screen.getByText("Only part of the workspace was scanned."),
-    ).toBeTruthy();
+    expect(screen.getByText("Workspace context was limited.")).toBeTruthy();
     expect(
       screen.getByText("Some source files changed during this answer."),
     ).toBeTruthy();
@@ -96,6 +96,48 @@ describe("Ask panel", () => {
       ),
     ).toBeTruthy();
     await expectAccessible(container);
+  });
+
+  it("shows cloud approval, restores the question after denial, and presents token usage after approval", async () => {
+    let deny: (cause: unknown) => void = () => {};
+    run.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          deny = reject;
+        }),
+    );
+    render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Model" }),
+      "openrouter-qwen3-coder",
+    );
+    await submit("Where is the workspace?");
+    expect(run.mock.lastCall?.[1].modelId).toBe("openrouter-qwen3-coder");
+    deliver({ kind: "awaitingCloudApproval" });
+    expect(
+      screen.getByText("Review the request in the sharing dialog."),
+    ).toBeTruthy();
+    await act(async () => deny("CLOUD_CONSENT_DECLINED"));
+    expect(screen.getByRole("textbox")).toHaveProperty(
+      "value",
+      "Where is the workspace?",
+    );
+    expect(screen.queryByRole("list", { name: "Conversation" })).toBeNull();
+    expect(screen.getByText("Cloud sharing canceled.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    deliver({ kind: "awaitingCloudApproval" });
+    deliver({ kind: "cloudApproved" });
+    deliver({ kind: "delta", text: "Answer" });
+    deliver({
+      kind: "completed",
+      sources: [],
+      indexCoverage: "complete",
+      indexFreshness: "current",
+      usage: { inputTokens: 41, outputTokens: 9 },
+    });
+    expect(screen.getByText("41 input tokens · 9 output tokens")).toBeTruthy();
   });
 
   it("stops the current request and discards late events", async () => {
@@ -129,5 +171,28 @@ describe("Ask panel", () => {
     deliver({ kind: "delta", text: "Previous workspace content" });
     expect(screen.queryByText("Previous workspace content")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps earlier turns and renders fenced code as a code block", async () => {
+    const { container } = render(
+      <AskPanel workspaceId="workspace" openSource={vi.fn()} />,
+    );
+    await submit("First question");
+    deliver({ kind: "delta", text: "Plain answer" });
+    deliver({
+      kind: "completed",
+      sources: [],
+      indexCoverage: "complete",
+      indexFreshness: "current",
+    });
+    await submit("Second question");
+    deliver({ kind: "delta", text: "Use this:\n```rust\nfn main() {}\n```" });
+    const conversation = screen.getByRole("list", { name: "Conversation" });
+    expect(conversation.children).toHaveLength(2);
+    expect(screen.getByText("Plain answer")).toBeTruthy();
+    expect(container.querySelector("pre code")?.textContent).toBe(
+      "fn main() {}\n",
+    );
+    expect(screen.getByText("Use this:")).toBeTruthy();
   });
 });

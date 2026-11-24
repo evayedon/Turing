@@ -44,7 +44,7 @@
             "allow-managed-clangd",
             "allow-turing-windows",
             "allow-draft-recovery",
-            "allow-ask-local"
+            "allow-ask"
           ]
         },
         {

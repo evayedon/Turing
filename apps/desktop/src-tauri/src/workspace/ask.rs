@@ -68,6 +68,11 @@ pub(crate) fn retrieve(root: &Dir, question: &str, cancelled: &AtomicBool) -> Re
         bytes: 0,
     };
     scan.visit(root, &mut Vec::new())?;
+    // File heads are only a fallback for questions that match no text.
+    let passages = &mut scan.retrieval.passages;
+    if passages.iter().any(|passage| passage.score > 0) {
+        passages.retain(|passage| passage.score > 0);
+    }
     Ok(scan.retrieval)
 }
 
@@ -115,7 +120,7 @@ impl Walk for Scan<'_> {
             || self.entries >= search::MAX_ENTRIES
             || self.bytes >= search::MAX_SCAN_BYTES - FILE_BYTES - 1;
         self.retrieval.partial |= stop;
-        Ok(stop || self.terms.is_empty())
+        Ok(stop)
     }
 
     fn count_entry(&mut self) {
@@ -198,7 +203,7 @@ impl Walk for Scan<'_> {
             }
             let score =
                 self.terms.matches(&text).iter().count() * 2 + usize::from(index == 0) * path_score;
-            if score == 0 {
+            if score == 0 && index != 0 {
                 continue;
             }
             let start_line = index * PASSAGE_LINES + 1;
@@ -286,6 +291,30 @@ mod tests {
         assert!(retrieve(&root, "MAX_TABS", &AtomicBool::new(true)).is_err());
         registry.close("workbench", &workspace.id).unwrap();
         assert!(registry.ask_root("workbench", &workspace.id).is_err());
+    }
+
+    #[test]
+    fn falls_back_to_file_heads_only_when_no_text_matches() {
+        let fixture = TempDir::new().unwrap();
+        let dir = fixture.path();
+        fs::write(dir.join("print.py"), "print(\"Hello\")\n").unwrap();
+        fs::write(dir.join("print.cpp"), "int main() {}\n").unwrap();
+        let mut registry = Registry::default();
+        let workspace = registry.register("workbench", dir).unwrap();
+        let root = registry.ask_root("workbench", &workspace.id).unwrap();
+        let cancelled = AtomicBool::new(false);
+        for question in ["What do these files do?", "what does this do"] {
+            let paths: Vec<_> = retrieve(&root, question, &cancelled)
+                .unwrap()
+                .passages
+                .into_iter()
+                .map(|passage| passage.source.relative_path)
+                .collect();
+            assert_eq!(paths, ["print.cpp", "print.py"], "{question}");
+        }
+        let matched = retrieve(&root, "Where is main?", &cancelled).unwrap();
+        assert_eq!(matched.passages.len(), 1);
+        assert_eq!(matched.passages[0].source.relative_path, "print.cpp");
     }
 
     #[cfg(unix)]

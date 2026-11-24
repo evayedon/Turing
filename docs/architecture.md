@@ -1115,3 +1115,18 @@ to a passage.
 
 Run the opt-in model check with
 `cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml answers_a_workspace_question_with_a_real_local_model -- --ignored`.
+
+### OpenRouter (Qwen3-Coder) in Ask Mode
+
+Select **Qwen3-Coder via OpenRouter** in Turing AI and save an OpenRouter API key in
+the panel. Rust stores it in macOS Keychain, Windows Credential Manager, or the
+Linux desktop Secret Service. Linux requires an available, unlocked Secret
+Service. The webview can save, remove, and check for a key.
+
+Each request opens a native confirmation with the question and the exact excerpts
+Turing proposes to send to `openrouter.ai`, which forwards it to a hosting provider. The preview is bounded, so it can
+include fewer sources than local Ask. Clicking **Send once** authorizes that
+payload for one HTTPS request. Closing or canceling the dialog prevents sending.
+Turing rechecks workspace authorization after approval and uses the same stream
+and source navigation as local Ask. When OpenRouter reports token counts, the panel
+shows them with the answer.

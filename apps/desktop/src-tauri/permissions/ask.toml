@@ -1,4 +1,4 @@
 [[permission]]
-identifier = "allow-ask-local"
-description = "Run and cancel read-only Ask requests using a local model."
-commands.allow = ["ask_run", "ask_cancel"]
+identifier = "allow-ask"
+description = "Run and cancel read-only Ask requests and manage the OpenRouter key."
+commands.allow = ["ask_run", "ask_cancel", "ask_cloud_credential"]

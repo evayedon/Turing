@@ -1,3 +1,5 @@
+pub mod cloud;
+
 use crate::{
     windows::workbench,
     workspace::ask::{retrieve, Passage, Retrieval},
@@ -41,6 +43,8 @@ pub(crate) struct Source {
     rename_all_fields = "camelCase"
 )]
 pub enum Event {
+    AwaitingCloudApproval,
+    CloudApproved,
     Delta {
         text: String,
     },
@@ -48,6 +52,8 @@ pub enum Event {
         sources: Vec<Source>,
         index_coverage: &'static str,
         index_freshness: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
     Cancelled,
 }
@@ -61,6 +67,14 @@ pub enum Error {
     ModelUnavailable,
     IndexUnavailable,
     InferenceFailed,
+    CloudConsentDeclined,
+    CloudQuestionTooLong,
+    CloudKeyRequired,
+    InvalidCloudKey,
+    CredentialStore,
+    ProviderUnauthorized,
+    ProviderRateLimited,
+    ProviderUnavailable,
     Cancelled,
 }
 
@@ -126,9 +140,11 @@ pub async fn ask_run(
     if request.question.trim().is_empty() || request.question.len() > 2048 {
         return Err(Error::InvalidQuestion);
     }
-    if request.model_id != MODEL {
-        return Err(Error::ModelUnavailable);
-    }
+    let cloud = match request.model_id.as_str() {
+        MODEL => false,
+        cloud::ID => true,
+        _ => return Err(Error::ModelUnavailable),
+    };
     let resources = workbench(&window).map_err(|_| Error::WorkspaceDenied)?;
     let registry = || {
         resources
@@ -155,20 +171,41 @@ pub async fn ask_run(
         let cancelled = job.cancelled.clone();
         let task =
             tauri::async_runtime::spawn_blocking(move || retrieve(&root, &question, &cancelled));
-        let Retrieval { passages, partial } = interruptible(task, &check)
+        let Retrieval {
+            mut passages,
+            mut partial,
+        } = interruptible(task, &check)
             .await?
             .map_err(|_| Error::IndexUnavailable)?
             .map_err(|_| Error::IndexUnavailable)?;
+        let (payload, model, authorization) = if cloud {
+            let authorization = tauri::async_runtime::spawn_blocking(cloud::authorization)
+                .await
+                .map_err(|_| Error::CredentialStore)??;
+            let payload = cloud::prepare(&request.question, &mut passages, &mut partial)?;
+            let payload = cloud::approve(&window, &events, payload, &check).await?;
+            events
+                .send(Event::CloudApproved)
+                .map_err(|_| Error::Cancelled)?;
+            (payload, Some(cloud::MODEL), Some(authorization))
+        } else {
+            (prompt(&request.question, &passages), None, None)
+        };
         let client = reqwest::Client::builder()
+            .https_only(cloud)
+            .retry(reqwest::retry::never())
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|_| Error::InferenceFailed)?;
-        let prompt = prompt(&request.question, &passages);
-        interruptible(
-            infer(&client, ENDPOINT, prompt, |text| {
+        let mut outgoing = client.post(if cloud { cloud::ENDPOINT } else { ENDPOINT });
+        if let Some(auth) = authorization {
+            outgoing = outgoing.header(reqwest::header::AUTHORIZATION, auth);
+        }
+        let usage = interruptible(
+            infer(outgoing, model, payload, |text| {
                 check()?;
                 events
                     .send(Event::Delta { text })
@@ -196,6 +233,7 @@ pub async fn ask_run(
                 sources: passages.into_iter().map(|passage| passage.source).collect(),
                 index_coverage: if partial { "partial" } else { "complete" },
                 index_freshness: freshness,
+                usage,
             })
             .map_err(|_| Error::Cancelled)
     }
@@ -244,6 +282,15 @@ fn prompt(question: &str, passages: &[Passage]) -> String {
 #[derive(Deserialize)]
 struct Frame {
     choices: Vec<Choice>,
+    usage: Option<Usage>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Usage {
+    #[serde(rename(serialize = "inputTokens", deserialize = "prompt_tokens"))]
+    input_tokens: u64,
+    #[serde(rename(serialize = "outputTokens", deserialize = "completion_tokens"))]
+    output_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -257,14 +304,13 @@ struct Delta {
 }
 
 async fn infer(
-    client: &reqwest::Client,
-    endpoint: &str,
+    request: reqwest::RequestBuilder,
+    model: Option<&str>,
     prompt: String,
     mut emit: impl FnMut(String) -> Result<(), Error>,
-) -> Result<(), Error> {
-    let body = serde_json::json!({
+) -> Result<Option<Usage>, Error> {
+    let mut body = serde_json::json!({
         "stream": true,
-        "max_tokens": 512,
         "messages": [
             {
                 "role": "system",
@@ -273,28 +319,32 @@ async fn infer(
             { "role": "user", "content": prompt }
         ],
     });
-    let mut response = client
-        .post(endpoint)
+    if let Some(model) = model {
+        body["model"] = serde_json::json!(model);
+        body["max_completion_tokens"] = serde_json::json!(512);
+        body["store"] = serde_json::json!(false);
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+    } else {
+        body["max_tokens"] = serde_json::json!(512);
+    }
+    let mut response = request
         .header("content-type", "application/json")
         .body(body.to_string())
         .send()
         .await
         .map_err(|error| {
-            if error.is_connect() {
+            if error.is_connect() && model.is_some() {
+                Error::ProviderUnavailable
+            } else if error.is_connect() {
                 Error::ModelUnavailable
             } else {
                 Error::InferenceFailed
             }
         })?;
     if !response.status().is_success() {
-        return Err(
-            if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-                Error::ModelUnavailable
-            } else {
-                Error::InferenceFailed
-            },
-        );
+        return Err(response_error(response.status(), model.is_some()));
     }
+    let mut usage = None;
     let mut line = Vec::new();
     let mut received = 0usize;
     while let Some(chunk) = response.chunk().await.map_err(|_| Error::InferenceFailed)? {
@@ -313,10 +363,13 @@ async fn infer(
             if let Some(data) = line.strip_prefix(b"data:") {
                 let data = data.trim_ascii();
                 if data == b"[DONE]" {
-                    return Ok(());
+                    return Ok(usage);
                 }
                 let frame: Frame =
                     serde_json::from_slice(data).map_err(|_| Error::InferenceFailed)?;
+                if frame.usage.is_some() {
+                    usage = frame.usage;
+                }
                 if let Some(text) = frame
                     .choices
                     .into_iter()
@@ -332,6 +385,16 @@ async fn infer(
         }
     }
     Err(Error::InferenceFailed)
+}
+
+fn response_error(status: reqwest::StatusCode, cloud: bool) -> Error {
+    match (cloud, status.as_u16()) {
+        (true, 401 | 403 | 404) => Error::ProviderUnauthorized,
+        (true, 429) => Error::ProviderRateLimited,
+        (true, 500..=599) => Error::ProviderUnavailable,
+        (false, 503) => Error::ModelUnavailable,
+        _ => Error::InferenceFailed,
+    }
 }
 
 #[cfg(test)]
@@ -382,10 +445,15 @@ mod tests {
                 "data: {\"choices\":[{\"delta\":{\"content\":\"12\"}}]}\n\ndata: [DONE]\n\n",
             ));
             let mut received = Vec::new();
-            infer(&client, &url, "workspace question".into(), |text| {
-                received.push(text);
-                Ok(())
-            })
+            infer(
+                client.post(&url),
+                None,
+                "workspace question".into(),
+                |text| {
+                    received.push(text);
+                    Ok(())
+                },
+            )
             .await
             .unwrap();
             assert_eq!(received, ["Line ", "12"]);
@@ -396,10 +464,52 @@ mod tests {
             let (url, server) =
                 serve("data: {\"choices\":[{\"delta\":{\"content\":\"unfinished\"}}]}\n\n");
             assert_eq!(
-                infer(&client, &url, "question".into(), |_| Ok(())).await,
+                infer(client.post(&url), None, "question".into(), |_| Ok(())).await,
                 Err(Error::InferenceFailed)
             );
             server.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn requests_cloud_usage_and_reads_the_final_usage_frame() {
+        tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let (url, server) = serve(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"cloud answer\"}}],\"usage\":null}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":19,\"completion_tokens\":4}}\n\n",
+                "data: [DONE]\n\n",
+            ));
+            let mut answer = String::new();
+            let usage = infer(
+                client.post(url),
+                Some(cloud::MODEL),
+                "approved payload".into(),
+                |text| {
+                    answer.push_str(&text);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(answer, "cloud answer");
+            assert_eq!(
+                usage,
+                Usage {
+                    input_tokens: 19,
+                    output_tokens: 4
+                }
+            );
+            let body: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+            assert_eq!(body["messages"][1]["content"], "approved payload");
+            assert_eq!(body["model"], cloud::MODEL);
+            assert_eq!(body["store"], false);
+            assert_eq!(body["stream_options"]["include_usage"], true);
+            assert_eq!(
+                response_error(reqwest::StatusCode::TOO_MANY_REQUESTS, true),
+                Error::ProviderRateLimited,
+            );
         });
     }
 
@@ -454,8 +564,8 @@ mod tests {
                 .build()
                 .unwrap();
             infer(
-                &client,
-                ENDPOINT,
+                client.post(ENDPOINT),
+                None,
                 prompt(question, &retrieval.passages),
                 |text| {
                     answer.push_str(&text);
