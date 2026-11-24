@@ -84,7 +84,12 @@ describe("Ask panel", () => {
       indexCoverage: "partial",
       indexFreshness: "stale",
     });
-    expect(screen.getByText("Workspace authorization [1].")).toBeTruthy();
+    const citation = screen.getByRole("button", {
+      name: "Source 1: src/workspace.rs:3–8",
+    });
+    expect(citation.closest("p")?.textContent).toBe(
+      "Workspace authorization 1.",
+    );
     expect(screen.getByText("Workspace context was limited.")).toBeTruthy();
     expect(screen.getByText("Answered by llama.cpp (local)")).toBeTruthy();
     expect(

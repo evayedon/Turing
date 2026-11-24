@@ -264,7 +264,7 @@ describe("workbench panels", () => {
     );
     await user.click(screen.getByRole("button", { name: "Ask" }));
     expect(
-      await screen.findByText("The project guide is in [1]."),
+      await screen.findByRole("button", { name: "Source 1: README.md:1–2" }),
     ).toBeTruthy();
 
     await user.click(toggle);

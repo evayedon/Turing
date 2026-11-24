@@ -1116,6 +1116,14 @@ to a passage.
 Run the opt-in model check with
 `cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml answers_a_workspace_question_with_a_real_local_model -- --ignored`.
 
+### Ask answer rendering
+
+Answers render a safe Markdown subset as React elements: headings, ordered and
+unordered lists, paragraphs, inline code, bold, italic, and fenced code blocks.
+Raw HTML in model output stays literal text. A citation such as `[2]` becomes a
+button that opens the second cited source at its line range. The thread follows
+streaming text only while the reader is at the bottom of the conversation.
+
 ### Model availability
 
 The model picker shows whether each Ask model can answer before a request is

@@ -24,6 +24,7 @@ import { AskProjectPreferences } from "./AskPreferences";
 import { loadProjectAsk, mergeTurns, updateProjectAsk } from "./ask-history";
 import type { AskFeedback, AskPreferences, SavedTurn } from "./ask-history";
 import { AskIndex } from "./AskIndex";
+import { AskMarkdown } from "./AskMarkdown";
 import { CloudCredential } from "./CloudCredential";
 import { askErrorMessage } from "./ask-errors";
 import "./ask-panel.css";
@@ -65,6 +66,7 @@ export function AskPanel({
   const modelField = useId();
   const active = useRef<string>(undefined);
   const thread = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
   const [project] = useState(() => loadProjectAsk(workspacePath));
   const [preferences, setPreferences] = useState(project.preferences);
@@ -102,10 +104,10 @@ export function AskPanel({
     if (visible) probeLocal();
   }, [visible]);
 
-  // shortcut: always follows the newest text, even if the reader scrolled up; add a "pinned to bottom" check if that annoys.
+  // Follow streaming text only while the reader is at the bottom of the thread.
   useEffect(() => {
     const element = thread.current;
-    if (element) element.scrollTop = element.scrollHeight;
+    if (element && following.current) element.scrollTop = element.scrollHeight;
   }, [latest?.answer, latest?.phase, turns.length]);
 
   function update(id: string, change: (turn: Turn) => Partial<Turn>) {
@@ -187,6 +189,7 @@ export function AskPanel({
     active.current = id;
     setQuestion("");
     setNotice("");
+    following.current = true;
     setTurns((previous) => [
       ...previous,
       {
@@ -340,7 +343,16 @@ export function AskPanel({
 
   return (
     <div className="ask-panel">
-      <div className="ask-thread" ref={thread}>
+      <div
+        className="ask-thread"
+        ref={thread}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          following.current =
+            element.scrollHeight - element.scrollTop - element.clientHeight <
+            48;
+        }}
+      >
         {turns.length === 0 ? (
           <div className="ask-empty">
             <span className="ask-empty-mark" aria-hidden="true">
@@ -528,7 +540,13 @@ function TurnView({
               )}
             </section>
           )}
-          {turn.answer && <Answer text={turn.answer} />}
+          {turn.answer && (
+            <AskMarkdown
+              text={turn.answer}
+              sources={result?.sources}
+              open={(source) => void openSource(source)}
+            />
+          )}
           {turn.error && (
             <p className="ask-error" role={latest ? "alert" : undefined}>
               {turn.error}
@@ -588,23 +606,6 @@ function TurnView({
         </div>
       </div>
     </li>
-  );
-}
-
-// shortcut: only ``` fences become code blocks; inline markdown stays literal. Swap in a markdown renderer if answers need more.
-function Answer({ text }: { text: string }) {
-  return (
-    <div className="ask-answer">
-      {text.split("```").map((part, index) =>
-        index % 2 === 0 ? (
-          part.trim() && <p key={index}>{part.trim()}</p>
-        ) : (
-          <pre key={index}>
-            <code>{part.replace(/^[\w+-]*\n/, "")}</code>
-          </pre>
-        ),
-      )}
-    </div>
   );
 }
 
