@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
   workflow_dispatch:
+  schedule:
+    # Weekly performance baseline: Mondays at 06:00 UTC.
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -138,8 +141,8 @@ jobs:
           exit "$status"
 
       - name: Capture startup and interaction baseline
-        if: github.event_name == 'workflow_dispatch'
-        continue-on-error: true
+        # Perf runs only; a failed capture fails the job so a missing result is visible.
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         timeout-minutes: 12
         shell: bash
         env:
@@ -154,10 +157,9 @@ jobs:
           fi
 
       - name: Upload startup and interaction baseline
-        if: always() && github.event_name == 'workflow_dispatch'
-        continue-on-error: true
+        if: always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
         uses: actions/upload-artifact@v4
         with:
           name: turing-perf-${{ matrix.os }}
           path: ${{ runner.temp }}/turing-perf-baseline.json
-          if-no-files-found: ignore
+          if-no-files-found: error

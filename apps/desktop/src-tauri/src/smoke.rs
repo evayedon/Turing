@@ -324,8 +324,14 @@ pub fn instrument<'a>(
     let builder = if _probe.perf.is_some() {
         // Measurements must not depend on whether the window happens to be
         // in front: an occluded WebView throttles timers and rendering.
+        //
+        // Not incognito on Linux: WebKitGTK gives every incognito webview a
+        // new ephemeral WebContext, but tauri-runtime-wry registers custom
+        // protocols (tauri://, ipc://) only once per shared context entry, so
+        // every window after the first one gets a context without them and its
+        // page never mounts.
         let builder = builder
-            .incognito(true)
+            .incognito(!cfg!(target_os = "linux"))
             .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
         if _label.starts_with("workbench-") {
             builder.initialization_script(perf::EDITOR_SCRIPT)

@@ -895,6 +895,14 @@ mod tests {
     }
 
     fn serve(frames: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        respond("200 OK", frames)
+    }
+
+    /// Answers one request with `status` and `frames`; returns the request body.
+    fn respond(
+        status: &'static str,
+        frames: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let url = format!(
             "http://{}/v1/chat/completions",
@@ -919,7 +927,7 @@ mod tests {
             }
             let mut body = vec![0; length.unwrap()];
             reader.read_exact(&mut body).unwrap();
-            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{frames}", frames.len()).unwrap();
+            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{frames}", frames.len()).unwrap();
             String::from_utf8(body).unwrap()
         });
         (url, server)
@@ -1035,6 +1043,114 @@ mod tests {
                 response_error(reqwest::StatusCode::NOT_FOUND, false),
                 Error::InferenceFailed,
             );
+        });
+    }
+
+    #[test]
+    fn answers_a_workspace_question_end_to_end_with_a_fake_model_server() {
+        use crate::workspace::Registry;
+        let fixture = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            fixture.path().join("editor.rs"),
+            "const MAX_TABS: u32 = 42;\n",
+        )
+        .unwrap();
+        let mut registry = Registry::default();
+        let scope = registry.register("main", fixture.path()).unwrap();
+        assert!(registry.ask_root("other-window", &scope.id).is_err());
+        let root = registry.ask_root("main", &scope.id).unwrap();
+        let question = "What is the value of MAX_TABS?";
+        let retrieval = retrieve(&root, question, &AtomicBool::new(false)).unwrap();
+        assert_eq!(retrieval.passages.len(), 1);
+        assert_eq!(retrieval.passages[0].source.relative_path, "editor.rs");
+        let payload = prompt(question, None, &retrieval.passages, false);
+
+        // Mirrors ask_run: deltas pass the cancellation check before emission.
+        let cancelled = AtomicBool::new(false);
+        let check = || {
+            if cancelled.load(Ordering::Relaxed) {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap();
+            let (url, server) = serve(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"MAX_TABS is \"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"42 [1].\"}}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":57,\"completion_tokens\":6}}\n\n",
+                "data: [DONE]\n\n",
+            ));
+            let mut answer = String::new();
+            let usage = interruptible(
+                infer(
+                    client.post(&url),
+                    false,
+                    Some("tiny-model"),
+                    payload.clone(),
+                    |text| {
+                        check()?;
+                        answer.push_str(&text);
+                        Ok(())
+                    },
+                ),
+                &check,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(answer, "MAX_TABS is 42 [1].");
+            assert_eq!(
+                usage,
+                Some(Usage {
+                    input_tokens: 57,
+                    output_tokens: 6
+                })
+            );
+            let body: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+            let sent = body["messages"][1]["content"].as_str().unwrap();
+            assert!(sent.contains(question), "{sent}");
+            assert!(sent.contains(r#""file":"editor.rs","id":1"#), "{sent}");
+            assert!(sent.contains("const MAX_TABS: u32 = 42;"), "{sent}");
+            assert_eq!(body["model"], "tiny-model");
+            assert_eq!(body["max_tokens"], 512);
+            assert!(body.get("provider").is_none());
+
+            // Cancelling after the first delta stops the stream.
+            let (url, server) = serve(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"second\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            ));
+            let mut received = Vec::new();
+            let result = interruptible(
+                infer(client.post(&url), false, None, payload.clone(), |text| {
+                    check()?;
+                    received.push(text);
+                    cancelled.store(true, Ordering::Relaxed);
+                    Ok(())
+                }),
+                &check,
+            )
+            .await;
+            assert_eq!(result.and_then(|inner| inner), Err(Error::Cancelled));
+            assert_eq!(received, ["first"]);
+            let body: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+            assert!(body.get("model").is_none());
+            cancelled.store(false, Ordering::Relaxed);
+
+            // A local server that is still loading its model answers 503.
+            let (url, server) = respond("503 Service Unavailable", "");
+            assert_eq!(
+                infer(client.post(&url), false, None, payload, |_| Ok(())).await,
+                Err(Error::ModelUnavailable)
+            );
+            server.join().unwrap();
         });
     }
 
