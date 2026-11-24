@@ -1162,6 +1162,14 @@ to pause, resume, rebuild, or disable it. Ask can still scan on demand while
 the index is unavailable, paused, disabled, or refreshing. Cached passages
 are version-checked through safe file reads before they are offered to a model.
 
+Passages are ranked by question terms in six-line blocks. A block that defines
+a question term with a declaration keyword (`fn`, `def`, `class`, `struct`,
+`function`, `func`, `interface`, `type`, `const` and similar, after optional
+modifiers such as `pub`, `export` or `async`) ranks above blocks that only
+mention it. C-style declarations without a keyword, such as `int main(`, are
+treated as mentions. When no block matches, the first block of up to four files
+is offered so broad questions still have workspace context.
+
 ### Ask project preferences and retention
 
 Inside Turing AI, **Project preferences and history** lets users save conventions

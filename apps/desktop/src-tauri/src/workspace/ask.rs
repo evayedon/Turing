@@ -66,12 +66,21 @@ fn make_scan<'a>(question: &str, cancelled: &'a AtomicBool) -> Result<Scan<'a>> 
             .map(|word| format!(r"(?i)\b{}\b", regex::escape(word))),
     )
     .map_err(|_| super::WorkspaceError::InvalidSearch)?;
+    // shortcut: keyword-introduced definitions only (no C-style `int name(`); use LSP symbols when the index stores them.
+    let definitions = RegexSet::new(words.iter().map(|word| {
+        format!(
+            r"(?im)^[ \t]*(?:(?:pub(?:\([^)\n]*\))?|export|default|async|static|public|private|protected|abstract|final|unsafe|extern|inline|override)[ \t]+)*(?:fn|def|class|struct|enum|trait|interface|type|function|func|impl|mod|module|namespace|const|let|var|val)[ \t]+{}\b",
+            regex::escape(word)
+        )
+    }))
+    .map_err(|_| super::WorkspaceError::InvalidSearch)?;
     Ok(Scan {
         retrieval: Retrieval {
             passages: Vec::new(),
             partial: false,
         },
         terms,
+        definitions,
         cancelled,
         deadline: Instant::now() + search::MAX_DURATION,
         entries: 0,
@@ -82,6 +91,7 @@ fn make_scan<'a>(question: &str, cancelled: &'a AtomicBool) -> Result<Scan<'a>> 
 struct Scan<'a> {
     retrieval: Retrieval,
     terms: RegexSet,
+    definitions: RegexSet,
     cancelled: &'a AtomicBool,
     deadline: Instant,
     entries: usize,
@@ -225,8 +235,9 @@ impl Scan<'_> {
             if text.trim().is_empty() {
                 continue;
             }
-            let score =
-                self.terms.matches(&text).iter().count() * 2 + usize::from(index == 0) * path_score;
+            let score = self.terms.matches(&text).iter().count() * 2
+                + self.definitions.matches(&text).iter().count() * 3
+                + usize::from(index == 0) * path_score;
             if score == 0 && index != 0 {
                 continue;
             }
@@ -315,6 +326,29 @@ mod tests {
         assert!(retrieve(&root, "MAX_TABS", &AtomicBool::new(true)).is_err());
         registry.close("workbench", &workspace.id).unwrap();
         assert!(registry.ask_root("workbench", &workspace.id).is_err());
+    }
+
+    #[test]
+    fn ranks_definitions_above_mentions() {
+        let fixture = TempDir::new().unwrap();
+        let dir = fixture.path();
+        fs::write(dir.join("a_use.rs"), "let limit = retry_limit();\n").unwrap();
+        fs::write(
+            dir.join("z_def.rs"),
+            "pub(crate) fn retry_limit() -> u32 {\n    3\n}\n",
+        )
+        .unwrap();
+        fs::write(dir.join("y_def.py"), "def other():\n    pass\n").unwrap();
+        let mut registry = Registry::default();
+        let workspace = registry.register("workbench", dir).unwrap();
+        let root = registry.ask_root("workbench", &workspace.id).unwrap();
+        let paths: Vec<_> = retrieve(&root, "What is retry_limit?", &AtomicBool::new(false))
+            .unwrap()
+            .passages
+            .into_iter()
+            .map(|passage| passage.source.relative_path)
+            .collect();
+        assert_eq!(paths, ["z_def.rs", "a_use.rs"]);
     }
 
     #[test]
