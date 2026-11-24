@@ -43,6 +43,9 @@ pnpm dev          # Browser workbench
 pnpm dev:desktop  # Native Tauri window
 ```
 
+On macOS, if the Keychain asks for your password after every rebuild, see
+[macOS dev signing](docs/development/macos-dev-signing.md).
+
 ## Verification
 
 ```sh

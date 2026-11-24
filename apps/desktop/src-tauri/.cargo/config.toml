@@ -1,0 +1,5 @@
+# macOS-only: sign `cargo run` / `tauri dev` app binaries with a stable local
+# identity when it exists. Paths are relative to this directory's parent.
+# See docs/development/macos-dev-signing.md.
+[target.'cfg(target_os = "macos")']
+runner = "../../../scripts/dev-signing/run-signed.sh"
