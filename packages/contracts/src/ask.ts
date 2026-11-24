@@ -11,6 +11,7 @@ export interface AskRequest {
   workspaceId: WorkspaceDescriptor["id"];
   modelId: AskModel["id"];
   question: string;
+  conventions?: string;
 }
 
 export interface AskSource extends Pick<TextFile, "relativePath" | "version"> {

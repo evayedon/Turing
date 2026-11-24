@@ -140,6 +140,80 @@ describe("Ask panel", () => {
     expect(screen.getByText("41 input tokens · 9 output tokens")).toBeTruthy();
   });
 
+  it("retains completed answers and feedback only after opt-in and restores them for the same folder", async () => {
+    const workspacePath = "/test/retention";
+    const openSource = vi.fn();
+    const first = render(
+      <AskPanel
+        workspaceId="old-grant"
+        workspacePath={workspacePath}
+        openSource={openSource}
+      />,
+    );
+    const user = userEvent.setup();
+    const complete = (text: string) => {
+      deliver({ kind: "delta", text });
+      deliver({
+        kind: "completed",
+        sources: [],
+        indexCoverage: "complete",
+        indexFreshness: "current",
+      });
+    };
+    await submit("First question");
+    complete("Session answer");
+    expect(localStorage.length).toBe(0);
+    await user.click(screen.getByText("Project preferences and history"));
+    await user.type(
+      screen.getByRole("textbox", { name: "Project conventions" }),
+      "Use snake_case.",
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Save conventions and selected model",
+      }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /Keep the last 20/ }),
+    );
+    await submit("Second question");
+    expect(run.mock.lastCall?.[1].conventions).toBe("Use snake_case.");
+    complete("Retained answer");
+    await user.click(screen.getAllByRole("button", { name: "Helpful" })[1]);
+    first.unmount();
+
+    const other = render(
+      <AskPanel
+        workspaceId="other"
+        workspacePath="/test/other"
+        openSource={openSource}
+      />,
+    );
+    expect(screen.queryByText("Retained answer")).toBeNull();
+    other.unmount();
+
+    render(
+      <AskPanel
+        workspaceId="new-grant"
+        workspacePath={workspacePath}
+        openSource={openSource}
+      />,
+    );
+    expect(screen.getByText("Retained answer")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Helpful", pressed: true }),
+    ).toBeTruthy();
+    await user.click(screen.getByText("Project preferences and history"));
+    await user.click(
+      screen.getByRole("button", { name: "Clear conversation" }),
+    );
+    expect(screen.queryByText("Retained answer")).toBeNull();
+    expect(
+      localStorage.getItem(`turing:ask-project:v1:${workspacePath}`),
+    ).not.toContain("Retained answer");
+    localStorage.clear();
+  });
+
   it("stops the current request and discards late events", async () => {
     render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
     const user = await submit("Where is access checked?");

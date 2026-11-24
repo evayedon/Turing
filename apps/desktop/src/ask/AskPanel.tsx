@@ -8,8 +8,13 @@ import {
   HardDrive,
   Sparkles,
   Square,
+  ThumbsDown,
+  ThumbsUp,
 } from "lucide-react";
 import { cancelAsk, cloudAskModel, localAskModel, runAsk } from "./ask-ipc";
+import { AskProjectPreferences } from "./AskPreferences";
+import { loadProjectAsk, mergeTurns, updateProjectAsk } from "./ask-history";
+import type { AskFeedback, AskPreferences, SavedTurn } from "./ask-history";
 import { AskIndex } from "./AskIndex";
 import { CloudCredential } from "./CloudCredential";
 import { askErrorMessage } from "./ask-errors";
@@ -26,6 +31,7 @@ type Turn = {
   error?: string;
   result?: Completed;
   notice?: string;
+  feedback?: AskFeedback;
 };
 
 const SUGGESTIONS = [
@@ -36,10 +42,12 @@ const SUGGESTIONS = [
 
 export function AskPanel({
   workspaceId,
+  workspacePath,
   visible = true,
   openSource,
 }: {
   workspaceId: string;
+  workspacePath?: string;
   visible?: boolean;
   openSource: (source: AskSource) => Promise<boolean | undefined>;
 }) {
@@ -48,10 +56,15 @@ export function AskPanel({
   const active = useRef<string>(undefined);
   const thread = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
-  const [modelId, setModelId] = useState(localAskModel.id);
+  const [project] = useState(() => loadProjectAsk(workspacePath));
+  const [preferences, setPreferences] = useState(project.preferences);
+  const [retain, setRetain] = useState(project.retain);
+  const [modelId, setModelId] = useState(project.preferences.modelId);
   const cloud = modelId === cloudAskModel.id;
   const [question, setQuestion] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [turns, setTurns] = useState<Turn[]>(() =>
+    project.turns.map((turn) => ({ ...turn, phase: "completed" })),
+  );
   const [notice, setNotice] = useState("");
   const latest = turns.at(-1);
   const busy =
@@ -82,6 +95,65 @@ export function AskPanel({
     );
   }
 
+  function persist(change: Parameters<typeof updateProjectAsk>[1]) {
+    if (!workspacePath) return false;
+    try {
+      updateProjectAsk(workspacePath, change);
+      return true;
+    } catch {
+      setNotice("Could not update local Ask storage.");
+      return false;
+    }
+  }
+
+  function remember(next: boolean) {
+    const completed = turns.flatMap((turn): SavedTurn[] =>
+      turn.result
+        ? [
+            {
+              id: turn.id,
+              question: turn.question,
+              answer: turn.answer,
+              result: turn.result,
+              feedback: turn.feedback,
+            },
+          ]
+        : [],
+    );
+    if (
+      persist((current) => ({
+        ...current,
+        retain: next,
+        turns: next ? mergeTurns(current.turns, completed) : [],
+      }))
+    ) {
+      setRetain(next);
+      setNotice(
+        next
+          ? "Conversation retention enabled for this folder."
+          : "Saved conversation removed.",
+      );
+    }
+  }
+
+  function savePreferences(next: AskPreferences) {
+    if (persist((current) => ({ ...current, preferences: next }))) {
+      setPreferences(next);
+      setNotice("Project preferences saved.");
+    }
+  }
+
+  function vote(turn: Turn, feedback: AskFeedback) {
+    update(turn.id, () => ({ feedback }));
+    if (retain)
+      persist((current) => ({
+        ...current,
+        turns: current.turns.map((entry) =>
+          entry.id === turn.id ? { ...entry, feedback } : entry,
+        ),
+      }));
+  }
+
   function submit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (!trimmedQuestion || active.current) return;
@@ -99,13 +171,23 @@ export function AskPanel({
       { id, question: trimmedQuestion, answer: "", phase: "running" },
     ]);
 
+    let answer = "";
     void runAsk(
       id,
-      { workspaceId, modelId, question: trimmedQuestion },
+      {
+        workspaceId,
+        modelId,
+        question: trimmedQuestion,
+        ...(preferences.conventions
+          ? { conventions: preferences.conventions }
+          : {}),
+      },
       (message) => {
         if (active.current !== id) return;
         if (message.kind === "delta") {
-          update(id, (turn) => ({ answer: turn.answer + message.text }));
+          answer += message.text;
+          const streamed = answer;
+          update(id, () => ({ answer: streamed }));
           return;
         }
         if (
@@ -123,6 +205,18 @@ export function AskPanel({
           return;
         }
         active.current = undefined;
+        if (message.kind === "completed" && retain) {
+          persist((current) =>
+            current.retain
+              ? {
+                  ...current,
+                  turns: mergeTurns(current.turns, [
+                    { id, question: trimmedQuestion, answer, result: message },
+                  ]),
+                }
+              : current,
+          );
+        }
         update(id, () =>
           message.kind === "completed"
             ? { phase: "completed", result: message }
@@ -221,6 +315,7 @@ export function AskPanel({
                 key={turn.id}
                 turn={turn}
                 latest={turn === latest}
+                vote={(feedback) => vote(turn, feedback)}
                 openSource={async (source) => {
                   const opened = await openSource(source);
                   update(turn.id, () => ({
@@ -240,6 +335,22 @@ export function AskPanel({
       <div className="ask-dock">
         {cloud && <CloudCredential disabled={busy} />}
         <AskIndex workspaceId={workspaceId} visible={visible} />
+        {workspacePath && (
+          <AskProjectPreferences
+            modelId={modelId}
+            preferences={preferences}
+            retain={retain}
+            disabled={busy}
+            save={savePreferences}
+            setRetention={remember}
+            clear={() => {
+              if (persist((current) => ({ ...current, turns: [] }))) {
+                setTurns([]);
+                setNotice("Conversation cleared.");
+              }
+            }}
+          />
+        )}
         <div className="ask-status" role="status">
           {notice || status}
         </div>
@@ -316,10 +427,12 @@ export function AskPanel({
 function TurnView({
   turn,
   latest,
+  vote,
   openSource,
 }: {
   turn: Turn;
   latest: boolean;
+  vote: (feedback: AskFeedback) => void;
   openSource: (source: AskSource) => Promise<void>;
 }) {
   const { result } = turn;
@@ -376,6 +489,24 @@ function TurnView({
                   {result.usage.outputTokens} output tokens
                 </p>
               )}
+              <div className="ask-actions" aria-label="Answer feedback">
+                <button
+                  type="button"
+                  aria-label="Helpful"
+                  aria-pressed={turn.feedback === "helpful"}
+                  onClick={() => vote("helpful")}
+                >
+                  <ThumbsUp size={12} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Unhelpful"
+                  aria-pressed={turn.feedback === "unhelpful"}
+                  onClick={() => vote("unhelpful")}
+                >
+                  <ThumbsDown size={12} aria-hidden="true" />
+                </button>
+              </div>
               <div role="status" className="ask-source-notice">
                 {turn.notice}
               </div>

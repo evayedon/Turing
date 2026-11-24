@@ -76,11 +76,12 @@ pub async fn ask_cloud_credential(
 
 pub(super) fn prepare(
     question: &str,
+    conventions: Option<&str>,
     passages: &mut Vec<Passage>,
     partial: &mut bool,
 ) -> Result<String, Error> {
     loop {
-        let payload = prompt(question, passages);
+        let payload = prompt(question, conventions, passages);
         if payload.len() <= PREVIEW_BYTES && dialog_text(&payload).len() <= PREVIEW_BYTES {
             return Ok(payload);
         }
@@ -129,7 +130,7 @@ async fn approved_payload<F: std::future::Future<Output = Result<bool, Error>>>(
     check()?;
     let visible = dialog_text(&payload);
     let preview = format!(
-        "OpenRouter ({MODEL}) and its hosting provider will receive the question and workspace excerpts below. This approval applies to one request.\n\n{visible}"
+        "OpenRouter ({MODEL}) and its hosting provider will receive the question, workspace excerpts, and any saved conventions shown below. This approval applies to one request.\n\n{visible}"
     );
     if !confirm(preview).await? {
         return Err(Error::CloudConsentDeclined);
@@ -167,10 +168,17 @@ mod tests {
     }
 
     #[test]
+    fn includes_saved_conventions_inside_the_reviewed_cloud_payload() {
+        let payload =
+            prepare("How?", Some("Use snake_case."), &mut Vec::new(), &mut false).unwrap();
+        assert!(payload.contains("User-approved project conventions: \"Use snake_case.\""));
+    }
+
+    #[test]
     fn rejects_questions_that_do_not_fit_the_review_dialog() {
         let question = "%".repeat(PREVIEW_BYTES / 2);
         assert_eq!(
-            prepare(&question, &mut Vec::new(), &mut false),
+            prepare(&question, None, &mut Vec::new(), &mut false),
             Err(Error::CloudQuestionTooLong)
         );
     }

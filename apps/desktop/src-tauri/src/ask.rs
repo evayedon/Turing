@@ -25,6 +25,7 @@ pub struct AskRequest {
     workspace_id: String,
     model_id: String,
     question: String,
+    conventions: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -155,7 +156,13 @@ pub async fn ask_run(
     request: AskRequest,
     events: Channel<Event>,
 ) -> Result<(), Error> {
-    if request.question.trim().is_empty() || request.question.len() > 2048 {
+    if request.question.trim().is_empty()
+        || request.question.len() > 2048
+        || request
+            .conventions
+            .as_ref()
+            .is_some_and(|text| text.len() > 1024)
+    {
         return Err(Error::InvalidQuestion);
     }
     let cloud = match request.model_id.as_str() {
@@ -209,14 +216,23 @@ pub async fn ask_run(
             let authorization = tauri::async_runtime::spawn_blocking(cloud::authorization)
                 .await
                 .map_err(|_| Error::CredentialStore)??;
-            let payload = cloud::prepare(&request.question, &mut passages, &mut partial)?;
+            let payload = cloud::prepare(
+                &request.question,
+                request.conventions.as_deref(),
+                &mut passages,
+                &mut partial,
+            )?;
             let payload = cloud::approve(&window, &events, payload, &check).await?;
             events
                 .send(Event::CloudApproved)
                 .map_err(|_| Error::Cancelled)?;
             (payload, Some(cloud::MODEL), Some(authorization))
         } else {
-            (prompt(&request.question, &passages), None, None)
+            (
+                prompt(&request.question, request.conventions.as_deref(), &passages),
+                None,
+                None,
+            )
         };
         let client = reqwest::Client::builder()
             .https_only(cloud)
@@ -287,7 +303,7 @@ async fn interruptible<F: std::future::Future>(
     }
 }
 
-fn prompt(question: &str, passages: &[Passage]) -> String {
+fn prompt(question: &str, conventions: Option<&str>, passages: &[Passage]) -> String {
     let context: Vec<_> = passages
         .iter()
         .enumerate()
@@ -299,11 +315,16 @@ fn prompt(question: &str, passages: &[Passage]) -> String {
             })
         })
         .collect();
-    format!(
+    let mut payload = format!(
         "Question: {}\nPassages: {}",
         serde_json::json!(question),
         serde_json::json!(context),
-    )
+    );
+    if let Some(conventions) = conventions {
+        payload.push_str("\nUser-approved project conventions: ");
+        payload.push_str(&serde_json::json!(conventions).to_string());
+    }
+    payload
 }
 
 #[derive(Deserialize)]
@@ -593,7 +614,7 @@ mod tests {
             infer(
                 client.post(ENDPOINT),
                 None,
-                prompt(question, &retrieval.passages),
+                prompt(question, None, &retrieval.passages),
                 |text| {
                     answer.push_str(&text);
                     Ok(())

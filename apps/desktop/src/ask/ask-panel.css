@@ -430,3 +430,8 @@
     animation: none;
   }
 }
+
+.ask-sources .ask-actions button[aria-pressed="true"] {
+  color: var(--nebula-accent);
+  border-color: var(--nebula-accent-border);
+}

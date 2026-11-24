@@ -1143,3 +1143,19 @@ Open **Workspace index** inside Turing AI to see its phase and file count, or
 to pause, resume, rebuild, or disable it. Ask can still scan on demand while
 the index is unavailable, paused, disabled, or refreshing. Cached passages
 are version-checked through safe file reads before they are offered to a model.
+
+### Ask project preferences and retention
+
+Inside Turing AI, **Project preferences and history** lets users save conventions
+and the selected model for this folder. A saved convention is included in the
+next Ask request and appears in the cloud review. Conversation retention is off
+by default. Opting in keeps the last 20 completed answers, source references,
+and feedback ratings in the local desktop profile for that folder. Turning it
+off removes the saved conversation. **Clear conversation** also clears the open
+thread. Answer ratings remain local.
+
+The v0.2 autocomplete foundation uses the existing Monaco completion provider
+and managed language servers. Completion waits for the exact edited document
+revision to reach the server, then checks cancellation and capability before
+using the response. Diagnostics, definitions, references, and completions are
+available where the installed server advertises them.
