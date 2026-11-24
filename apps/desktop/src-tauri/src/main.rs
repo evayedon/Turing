@@ -48,6 +48,7 @@ fn main() {
     builder
         .invoke_handler(tauri::generate_handler![
             ask::ask_run,
+            ask::ask_index,
             ask::ask_cancel,
             ask::cloud::ask_cloud_credential,
             drafts::draft_recovery,

@@ -2,6 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AskCredentialAction,
   AskEvent,
+  AskIndexAction,
+  AskIndexStatus,
   AskModel,
   AskRequest,
 } from "@turing/contracts";
@@ -36,4 +38,8 @@ export function runAsk(
 
 export function cancelAsk(requestId: string) {
   return invoke<void>("ask_cancel", { requestId });
+}
+
+export function manageAskIndex(workspaceId: string, action: AskIndexAction) {
+  return invoke<AskIndexStatus>("ask_index", { workspaceId, action });
 }

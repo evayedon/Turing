@@ -2,7 +2,7 @@ pub mod cloud;
 
 use crate::{
     windows::workbench,
-    workspace::ask::{retrieve, Passage, Retrieval},
+    workspace::ask::{retrieve, IndexAction, IndexStatus, Passage, Retrieval},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -131,6 +131,24 @@ pub fn ask_cancel(window: WebviewWindow, request_id: Uuid) -> Result<(), Error> 
 }
 
 #[tauri::command]
+pub fn ask_index(
+    window: WebviewWindow,
+    workspace_id: String,
+    action: IndexAction,
+) -> Result<IndexStatus, Error> {
+    workbench(&window)
+        .map_err(|_| Error::WorkspaceDenied)?
+        .workspace
+        .registry()
+        .map_err(|_| Error::WorkspaceDenied)?
+        .manage_ask_index(window.label(), &workspace_id, action)
+        .map_err(|error| match error {
+            crate::workspace::WorkspaceError::PermissionDenied => Error::WorkspaceDenied,
+            _ => Error::IndexUnavailable,
+        })
+}
+
+#[tauri::command]
 pub async fn ask_run(
     window: WebviewWindow,
     request_id: Uuid,
@@ -157,6 +175,9 @@ pub async fn ask_run(
         .ask_root(owner, &request.workspace_id)
         .map_err(|_| Error::WorkspaceDenied)?;
     let job = resources.ask.begin(request_id)?;
+    let index = registry()?
+        .ask_index_state(owner, &request.workspace_id)
+        .map_err(|_| Error::IndexUnavailable)?;
     let check = || {
         if job.cancelled.load(Ordering::Relaxed) {
             return Err(Error::Cancelled);
@@ -169,8 +190,14 @@ pub async fn ask_run(
     let run = async {
         let question = request.question.clone();
         let cancelled = job.cancelled.clone();
-        let task =
-            tauri::async_runtime::spawn_blocking(move || retrieve(&root, &question, &cancelled));
+        let task = tauri::async_runtime::spawn_blocking(move || {
+            if let Some(index) = index {
+                if let Some(result) = index.retrieve(&root, &question, &cancelled)? {
+                    return Ok(result);
+                }
+            }
+            retrieve(&root, &question, &cancelled)
+        });
         let Retrieval {
             mut passages,
             mut partial,

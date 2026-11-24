@@ -891,6 +891,7 @@ export function Workbench() {
         >
           {explorer.native && explorer.workspace ? (
             <AskPanel
+              visible={assistant}
               key={explorer.workspace.id}
               workspaceId={explorer.workspace.id}
               openSource={(source) =>

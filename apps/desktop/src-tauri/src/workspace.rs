@@ -109,6 +109,8 @@ struct Workspace {
     /// Canonical filesystem path of the workspace root; used by git subprocess.
     canonical_path: std::path::PathBuf,
     symbols: Option<symbols::Index>,
+    ask_index: Option<ask::Index>,
+    ask_index_disabled: bool,
     symbols_revoked: bool,
     /// Change notifications for this registration only; dropped with it.
     watch: Option<watch::Watch>,
@@ -182,6 +184,8 @@ impl Registry {
             canonical_path: canonical,
             watch: None,
             symbols: None,
+            ask_index: None,
+            ask_index_disabled: false,
             symbols_revoked: false,
         });
         Ok(descriptor)
@@ -207,6 +211,7 @@ impl Registry {
     pub fn attach_watch(&mut self, owner: &str, id: &str, watch: watch::Watch) -> Result<()> {
         let workspace = self.active_mut(owner, id)?;
         workspace.symbols = None;
+        workspace.ask_index = None;
         workspace.watch = Some(watch);
         Ok(())
     }
@@ -214,6 +219,7 @@ impl Registry {
     pub fn page_reloaded(&mut self) {
         if let Some(workspace) = self.active.as_mut() {
             workspace.revoke_symbols();
+            workspace.ask_index = None;
             workspace.watch = None;
         }
     }
@@ -233,6 +239,7 @@ impl Registry {
         };
         if workspace.root_replaced() {
             workspace.revoke_symbols();
+            workspace.ask_index = None;
             workspace.watch = None;
             return Ok(WorkspaceChanges {
                 paths: Vec::new(),

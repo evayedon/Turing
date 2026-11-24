@@ -153,6 +153,7 @@ pub(crate) fn classify(event: &notify::Result<Event>) -> Signal<'_> {
 pub(crate) struct Inbox {
     pending: Coalescer,
     symbols: Coalescer,
+    ask: Coalescer,
     closed: bool,
 }
 
@@ -183,12 +184,14 @@ pub(crate) fn deliver(inbox: &Mutex<Inbox>, root: &Path, event: notify::Result<E
         Signal::Rescan => {
             inbox.pending.rescan(now);
             inbox.symbols.rescan(now);
+            inbox.ask.rescan(now);
         }
         Signal::Paths(paths) => {
             for path in paths {
                 if let Some(relative) = relative_path(root, path) {
                     if !relative.split('/').any(super::search::ignored_directory) {
                         inbox.symbols.path(relative.clone(), now);
+                        inbox.ask.path(relative.clone(), now);
                     }
                     inbox.pending.path(relative, now);
                 }
@@ -226,6 +229,10 @@ impl Watch {
         lock(&self.inbox).pending.take(now)
     }
 
+    pub(super) fn ask_hints(&self) -> AskHints {
+        AskHints(Arc::clone(&self.inbox))
+    }
+
     pub(super) fn symbol_hints(&self) -> SymbolHints {
         SymbolHints(Arc::clone(&self.inbox))
     }
@@ -233,6 +240,14 @@ impl Watch {
     #[cfg(test)]
     pub(crate) fn inbox(&self) -> Arc<Mutex<Inbox>> {
         Arc::clone(&self.inbox)
+    }
+}
+
+pub(super) struct AskHints(Arc<Mutex<Inbox>>);
+
+impl AskHints {
+    pub(super) fn take(&self) -> WorkspaceChanges {
+        lock(&self.0).ask.take(Instant::now() + MAX_DELAY)
     }
 }
 

@@ -51,3 +51,12 @@ export type AskError =
 
 export type AskCredentialAction =
   { kind: "status" } | { kind: "save"; key: string } | { kind: "remove" };
+
+export type AskIndexAction =
+  "status" | "pause" | "resume" | "rebuild" | "disable";
+
+export interface AskIndexStatus {
+  phase: "indexing" | "ready" | "paused" | "disabled" | "unavailable";
+  files: number;
+  partial: boolean;
+}

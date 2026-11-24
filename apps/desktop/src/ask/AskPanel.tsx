@@ -10,6 +10,7 @@ import {
   Square,
 } from "lucide-react";
 import { cancelAsk, cloudAskModel, localAskModel, runAsk } from "./ask-ipc";
+import { AskIndex } from "./AskIndex";
 import { CloudCredential } from "./CloudCredential";
 import { askErrorMessage } from "./ask-errors";
 import "./ask-panel.css";
@@ -35,9 +36,11 @@ const SUGGESTIONS = [
 
 export function AskPanel({
   workspaceId,
+  visible = true,
   openSource,
 }: {
   workspaceId: string;
+  visible?: boolean;
   openSource: (source: AskSource) => Promise<boolean | undefined>;
 }) {
   const questionField = useId();
@@ -236,6 +239,7 @@ export function AskPanel({
 
       <div className="ask-dock">
         {cloud && <CloudCredential disabled={busy} />}
+        <AskIndex workspaceId={workspaceId} visible={visible} />
         <div className="ask-status" role="status">
           {notice || status}
         </div>

@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-ask"
 description = "Run and cancel read-only Ask requests and manage the OpenRouter key."
-commands.allow = ["ask_run", "ask_cancel", "ask_cloud_credential"]
+commands.allow = ["ask_run", "ask_index", "ask_cancel", "ask_cloud_credential"]

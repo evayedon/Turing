@@ -69,6 +69,8 @@ export type {
   AskCredentialAction,
   AskError,
   AskEvent,
+  AskIndexAction,
+  AskIndexStatus,
   AskModel,
   AskRequest,
   AskSource,

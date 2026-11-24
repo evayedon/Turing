@@ -1,3 +1,7 @@
+mod index;
+pub(super) use index::Index;
+pub(crate) use index::{IndexAction, IndexStatus};
+
 use super::{
     search::{self, Walk},
     Registry, Result,
@@ -33,6 +37,12 @@ impl Registry {
 }
 
 pub(crate) fn retrieve(root: &Dir, question: &str, cancelled: &AtomicBool) -> Result<Retrieval> {
+    let mut scan = make_scan(question, cancelled)?;
+    scan.visit(root, &mut Vec::new())?;
+    Ok(scan.finish())
+}
+
+fn make_scan<'a>(question: &str, cancelled: &'a AtomicBool) -> Result<Scan<'a>> {
     let mut words = Vec::new();
     for word in question.split(|ch: char| !ch.is_alphanumeric() && ch != '_') {
         let word = word.to_lowercase();
@@ -56,7 +66,7 @@ pub(crate) fn retrieve(root: &Dir, question: &str, cancelled: &AtomicBool) -> Re
             .map(|word| format!(r"(?i)\b{}\b", regex::escape(word))),
     )
     .map_err(|_| super::WorkspaceError::InvalidSearch)?;
-    let mut scan = Scan {
+    Ok(Scan {
         retrieval: Retrieval {
             passages: Vec::new(),
             partial: false,
@@ -66,14 +76,7 @@ pub(crate) fn retrieve(root: &Dir, question: &str, cancelled: &AtomicBool) -> Re
         deadline: Instant::now() + search::MAX_DURATION,
         entries: 0,
         bytes: 0,
-    };
-    scan.visit(root, &mut Vec::new())?;
-    // File heads are only a fallback for questions that match no text.
-    let passages = &mut scan.retrieval.passages;
-    if passages.iter().any(|passage| passage.score > 0) {
-        passages.retain(|passage| passage.score > 0);
-    }
-    Ok(scan.retrieval)
+    })
 }
 
 struct Scan<'a> {
@@ -111,6 +114,38 @@ fn eligible(name: &str) -> bool {
     })
 }
 
+fn excluded_content(content: &str) -> bool {
+    content.contains('\0')
+        || content.contains("PRIVATE KEY-----")
+        || content.lines().any(|line| {
+            let trimmed = line.trim_start().to_ascii_lowercase();
+            [
+                "api_key",
+                "access_token",
+                "password",
+                "client_secret",
+                "aws_secret_access_key",
+            ]
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
+        })
+}
+
+fn eligible_directory(name: &str) -> bool {
+    !name.starts_with('.')
+        && ![
+            "vendor",
+            "generated",
+            "secret",
+            "secrets",
+            "credentials",
+            "private",
+            "out",
+        ]
+        .iter()
+        .any(|part| name.eq_ignore_ascii_case(part))
+}
+
 impl Walk for Scan<'_> {
     fn stop(&mut self) -> Result<bool> {
         if self.cancelled.load(Ordering::Relaxed) {
@@ -133,18 +168,7 @@ impl Walk for Scan<'_> {
         self.retrieval.partial = true;
     }
     fn descend(&self, name: &str) -> bool {
-        !name.starts_with('.')
-            && ![
-                "vendor",
-                "generated",
-                "secret",
-                "secrets",
-                "credentials",
-                "private",
-                "out",
-            ]
-            .iter()
-            .any(|part| name.eq_ignore_ascii_case(part))
+        eligible_directory(name)
     }
 
     fn file(&mut self, root: &Dir, directory: &Dir, parents: &[String], name: &str) -> Result<()> {
@@ -157,21 +181,7 @@ impl Walk for Scan<'_> {
             self.skipped();
             return Ok(());
         };
-        if snapshot.content.contains('\0')
-            || snapshot.content.contains("PRIVATE KEY-----")
-            || snapshot.content.lines().any(|line| {
-                let trimmed = line.trim_start().to_ascii_lowercase();
-                [
-                    "api_key",
-                    "access_token",
-                    "password",
-                    "client_secret",
-                    "aws_secret_access_key",
-                ]
-                .iter()
-                .any(|prefix| trimmed.starts_with(prefix))
-            })
-        {
+        if excluded_content(&snapshot.content) {
             self.skipped();
             return Ok(());
         }
@@ -181,12 +191,26 @@ impl Walk for Scan<'_> {
             .chain(std::iter::once(name))
             .collect::<Vec<_>>()
             .join("/");
+        self.rank(&path, &snapshot.content, &snapshot.version)
+    }
+}
+
+impl Scan<'_> {
+    fn finish(mut self) -> Retrieval {
+        let passages = &mut self.retrieval.passages;
+        if passages.iter().any(|passage| passage.score > 0) {
+            passages.retain(|passage| passage.score > 0);
+        }
+        self.retrieval
+    }
+
+    fn rank(&mut self, path: &str, content: &str, version: &str) -> Result<()> {
+        let name = path.rsplit('/').next().unwrap_or(path);
         let filename = name.replace('.', " ");
         let path_score = self.terms.matches(&filename).iter().count();
-        let lines = snapshot
-            .content
+        let lines = content
             .strip_prefix('\u{feff}')
-            .unwrap_or(&snapshot.content)
+            .unwrap_or(content)
             .split('\n')
             .flat_map(|line| line.strip_suffix('\r').unwrap_or(line).split('\r'))
             .collect::<Vec<_>>();
@@ -210,8 +234,8 @@ impl Walk for Scan<'_> {
             let passages = &mut self.retrieval.passages;
             passages.push(Passage {
                 source: Source {
-                    relative_path: path.clone(),
-                    version: snapshot.version.clone(),
+                    relative_path: path.to_owned(),
+                    version: version.to_owned(),
                     start_line,
                     end_line: start_line + block.len() - 1,
                 },

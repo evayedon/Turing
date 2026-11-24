@@ -1130,3 +1130,16 @@ payload for one HTTPS request. Closing or canceling the dialog prevents sending.
 Turing rechecks workspace authorization after approval and uses the same stream
 and source navigation as local Ask. When OpenRouter reports token counts, the panel
 shows them with the answer.
+
+### Workspace index for Ask
+
+Ask builds an in-memory index for the active desktop workspace. The index uses
+the authorized directory handle and the same file exclusions as on-demand
+retrieval. It keeps up to 4,096 files and 16 MiB of text. An independent watcher
+inbox refreshes changed paths and their descendants, and watcher overflow
+rebuilds the index. The index is discarded with the workspace registration.
+
+Open **Workspace index** inside Turing AI to see its phase and file count, or
+to pause, resume, rebuild, or disable it. Ask can still scan on demand while
+the index is unavailable, paused, disabled, or refreshing. Cached passages
+are version-checked through safe file reads before they are offered to a model.
