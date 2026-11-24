@@ -12,7 +12,7 @@ jobs:
   verify:
     name: Verify on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'ubuntu-24.04' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +34,9 @@ jobs:
       - name: Install Tauri Linux prerequisites
         if: runner.os == 'Linux'
         run: |
+          # Slow downloads from the hosted runner's regional mirror have
+          # exhausted the job timeout before the native smoke checks.
+          sudo sed -i 's#http://us-east-2.ec2.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential curl wget file libwebkit2gtk-4.1-dev \
