@@ -16,6 +16,7 @@ use tauri::{ipc::Channel, WebviewWindow};
 use uuid::Uuid;
 
 const MODEL: &str = "llama.cpp";
+const AUTO: &str = "auto";
 const ENDPOINT: &str = "http://127.0.0.1:8080/v1/chat/completions";
 const HEALTH: &str = "http://127.0.0.1:8080/health";
 const CHECK_INTERVAL: Duration = Duration::from_millis(100);
@@ -45,6 +46,10 @@ pub(crate) struct Source {
     rename_all_fields = "camelCase"
 )]
 pub enum Event {
+    /// Auto mode chose this location for the request.
+    Routed {
+        location: &'static str,
+    },
     AwaitingCloudApproval,
     CloudApproved,
     Delta {
@@ -204,7 +209,7 @@ pub async fn ask_run(
         return Err(Error::InvalidQuestion);
     }
     let cloud = match request.model_id.as_str() {
-        MODEL => false,
+        MODEL | AUTO => false,
         cloud::ID => true,
         _ => return Err(Error::ModelUnavailable),
     };
@@ -233,6 +238,18 @@ pub async fn ask_run(
         Ok(())
     };
     let run = async {
+        // Auto prefers the local model; cloud use still requires per-request consent below.
+        let cloud = if request.model_id == AUTO {
+            let cloud = interruptible(local_status(HEALTH), &check).await? != LocalStatus::Ready;
+            events
+                .send(Event::Routed {
+                    location: if cloud { "cloud" } else { "local" },
+                })
+                .map_err(|_| Error::Cancelled)?;
+            cloud
+        } else {
+            cloud
+        };
         let question = request.question.clone();
         let cancelled = job.cancelled.clone();
         let task = tauri::async_runtime::spawn_blocking(move || {

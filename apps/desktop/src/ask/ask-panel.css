@@ -321,6 +321,10 @@
   color: var(--nebula-cyan);
 }
 
+.ask-model[data-location="auto"] {
+  color: var(--nebula-accent);
+}
+
 .ask-model[data-unavailable] {
   color: var(--nebula-danger);
 }

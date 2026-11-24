@@ -21,6 +21,7 @@ export interface AskSource extends Pick<TextFile, "relativePath" | "version"> {
 }
 
 export type AskEvent =
+  | { kind: "routed"; location: AskModel["location"] }
   | { kind: "awaitingCloudApproval" }
   | { kind: "cloudApproved" }
   | { kind: "delta"; text: string }

@@ -1,5 +1,5 @@
 import type { AskEvent, AskSource } from "@turing/contracts";
-import { cloudAskModel, localAskModel } from "./ask-ipc";
+import { autoAskModel, cloudAskModel, localAskModel } from "./ask-ipc";
 
 export type CompletedAsk = Extract<AskEvent, { kind: "completed" }>;
 export type AskFeedback = "helpful" | "unhelpful";
@@ -18,7 +18,7 @@ export interface AskPreferences {
 }
 
 export const defaultPreferences: AskPreferences = {
-  modelId: localAskModel.id,
+  modelId: autoAskModel.id,
   conventions: "",
 };
 
@@ -100,9 +100,11 @@ export function loadProjectAsk(path: string | undefined): ProjectAsk {
     const preferences =
       record(prefs) &&
       typeof prefs.conventions === "string" &&
-      (prefs.modelId === localAskModel.id || prefs.modelId === cloudAskModel.id)
+      [autoAskModel.id, localAskModel.id, cloudAskModel.id].includes(
+        String(prefs.modelId),
+      )
         ? {
-            modelId: prefs.modelId,
+            modelId: String(prefs.modelId),
             conventions: prefs.conventions.slice(0, 256),
           }
         : defaultPreferences;

@@ -9,6 +9,9 @@ import type {
   AskRequest,
 } from "@turing/contracts";
 
+/** Routed by the native host: local when llama-server is ready, else cloud with consent. */
+export const autoAskModel = { id: "auto", label: "Auto (local first)" };
+
 export const localAskModel: AskModel = {
   id: "llama.cpp",
   label: "llama.cpp",

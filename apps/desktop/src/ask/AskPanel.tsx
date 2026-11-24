@@ -7,11 +7,13 @@ import {
   FileCode2,
   HardDrive,
   Sparkles,
+  Route,
   Square,
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
 import {
+  autoAskModel,
   cancelAsk,
   cloudAskModel,
   localAskModel,
@@ -38,6 +40,7 @@ type Turn = {
   result?: Completed;
   notice?: string;
   feedback?: AskFeedback;
+  route?: "local" | "cloud";
 };
 
 const SUGGESTIONS = [
@@ -66,6 +69,7 @@ export function AskPanel({
   const [preferences, setPreferences] = useState(project.preferences);
   const [retain, setRetain] = useState(project.retain);
   const [modelId, setModelId] = useState(project.preferences.modelId);
+  const auto = modelId === autoAskModel.id;
   const cloud = modelId === cloudAskModel.id;
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<Turn[]>(() =>
@@ -184,7 +188,13 @@ export function AskPanel({
     setNotice("");
     setTurns((previous) => [
       ...previous,
-      { id, question: trimmedQuestion, answer: "", phase: "running" },
+      {
+        id,
+        question: trimmedQuestion,
+        answer: "",
+        phase: "running",
+        ...(auto ? {} : { route: cloud ? "cloud" : "local" }),
+      },
     ]);
 
     let answer = "";
@@ -204,6 +214,10 @@ export function AskPanel({
           answer += message.text;
           const streamed = answer;
           update(id, () => ({ answer: streamed }));
+          return;
+        }
+        if (message.kind === "routed") {
+          update(id, () => ({ route: message.location }));
           return;
         }
         if (
@@ -285,9 +299,12 @@ export function AskPanel({
 
   const status = latest
     ? {
-        running: cloud
-          ? "Preparing or generating cloud answer…"
-          : "Generating locally…",
+        running:
+          latest.route === "cloud"
+            ? "Preparing or generating cloud answer…"
+            : latest.route === "local"
+              ? "Generating locally…"
+              : "Choosing a model…",
         approval: "Review the request in the sharing dialog.",
         stopping: "Stopping…",
         completed: "Answer ready.",
@@ -295,15 +312,22 @@ export function AskPanel({
         failed: "",
       }[latest.phase]
     : "";
+  const localDown = localStatus === "offline" || localStatus === "loading";
   const availability = cloud
     ? keySaved === false
       ? "Save an OpenRouter API key to use this model."
       : ""
-    : localStatus === "offline"
-      ? "llama-server isn't running on 127.0.0.1:8080."
-      : localStatus === "loading"
-        ? "llama-server is still loading its model."
-        : "";
+    : auto
+      ? !localDown
+        ? ""
+        : keySaved === false
+          ? "llama-server isn't running and no OpenRouter key is saved."
+          : "llama-server is unavailable, so Auto will ask before using the cloud."
+      : localStatus === "offline"
+        ? "llama-server isn't running on 127.0.0.1:8080."
+        : localStatus === "loading"
+          ? "llama-server is still loading its model."
+          : "";
   const localState =
     localStatus === "offline" || localStatus === "loading"
       ? ` · ${localStatus}`
@@ -363,7 +387,9 @@ export function AskPanel({
       </div>
 
       <div className="ask-dock">
-        {cloud && <CloudCredential disabled={busy} onStatus={setKeySaved} />}
+        {(cloud || (auto && localDown)) && (
+          <CloudCredential disabled={busy} onStatus={setKeySaved} />
+        )}
         <AskIndex workspaceId={workspaceId} visible={visible} />
         {workspacePath && (
           <AskProjectPreferences
@@ -400,10 +426,14 @@ export function AskPanel({
           <div className="ask-composer-bar">
             <div
               className="ask-model"
-              data-location={cloud ? "cloud" : "local"}
-              data-unavailable={availability ? "" : undefined}
+              data-location={auto ? "auto" : cloud ? "cloud" : "local"}
+              data-unavailable={
+                availability && !(auto && keySaved !== false) ? "" : undefined
+              }
             >
-              {cloud ? (
+              {auto ? (
+                <Route size={14} aria-hidden="true" />
+              ) : cloud ? (
                 <Cloud size={14} aria-hidden="true" />
               ) : (
                 <HardDrive size={14} aria-hidden="true" />
@@ -419,6 +449,7 @@ export function AskPanel({
                 onChange={(event) => setModelId(event.target.value)}
                 onFocus={probeLocal}
               >
+                <option value={autoAskModel.id}>{autoAskModel.label}</option>
                 <option value={localAskModel.id}>
                   {localAskModel.label} (local{localState})
                 </option>
@@ -515,6 +546,14 @@ function TurnView({
               )}
               {result.indexFreshness === "stale" && (
                 <p>Some source files changed during this answer.</p>
+              )}
+              {turn.route && (
+                <p className="ask-route">
+                  Answered by{" "}
+                  {turn.route === "cloud"
+                    ? `${cloudAskModel.label} (cloud)`
+                    : `${localAskModel.label} (local)`}
+                </p>
               )}
               {result.usage && (
                 <p className="ask-usage">

@@ -1125,6 +1125,15 @@ a local model failure. It reports `ready`, `loading` (HTTP 503), or `offline`.
 The cloud model reports **key needed** when no OpenRouter key is saved. Status
 is advisory: a request can still be attempted and reports its own error.
 
+### Auto model routing
+
+**Auto (local first)** is the default model for folders without a saved model
+preference. For each request, Rust checks llama-server's `/health`. A ready local
+server answers the request. Otherwise Auto routes to Qwen3-Coder via OpenRouter,
+which still requires a saved key and the per-request **Send once** approval, so
+source never leaves the machine silently. The panel shows the choice while the
+answer streams and labels each answer with the model that produced it.
+
 ### OpenRouter (Qwen3-Coder) in Ask Mode
 
 Select **Qwen3-Coder via OpenRouter** in Turing AI and save an OpenRouter API key in

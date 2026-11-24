@@ -61,17 +61,20 @@ describe("Ask panel", () => {
     const user = await submit("Where is access checked?");
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveProperty(
       "value",
-      "llama.cpp",
+      "auto",
     );
     expect(run).toHaveBeenCalledWith(
       expect.any(String),
       {
         workspaceId: "workspace",
-        modelId: "llama.cpp",
+        modelId: "auto",
         question: "Where is access checked?",
       },
       expect.any(Function),
     );
+    expect(screen.getByText("Choosing a model…")).toBeTruthy();
+    deliver({ kind: "routed", location: "local" });
+    expect(screen.getByText("Generating locally…")).toBeTruthy();
     deliver({ kind: "delta", text: "Workspace " });
     expect(screen.getByText("Workspace")).toBeTruthy();
     deliver({ kind: "delta", text: "authorization [1]." });
@@ -83,6 +86,7 @@ describe("Ask panel", () => {
     });
     expect(screen.getByText("Workspace authorization [1].")).toBeTruthy();
     expect(screen.getByText("Workspace context was limited.")).toBeTruthy();
+    expect(screen.getByText("Answered by llama.cpp (local)")).toBeTruthy();
     expect(
       screen.getByText("Some source files changed during this answer."),
     ).toBeTruthy();
@@ -276,6 +280,17 @@ describe("Ask panel", () => {
     vi.mocked(localAskStatus).mockResolvedValue("offline");
     render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
     expect(
+      await screen.findByText(
+        "llama-server isn't running and no OpenRouter key is saved.",
+      ),
+    ).toBeTruthy();
+    await userEvent
+      .setup()
+      .selectOptions(
+        screen.getByRole("combobox", { name: "Model" }),
+        "llama.cpp",
+      );
+    expect(
       await screen.findByText("llama-server isn't running on 127.0.0.1:8080."),
     ).toBeTruthy();
     expect(
@@ -293,6 +308,34 @@ describe("Ask panel", () => {
       screen.getByRole("option", {
         name: "Qwen3-Coder via OpenRouter (cloud · key needed)",
       }),
+    ).toBeTruthy();
+  });
+
+  it("routes Auto to the cloud when llama-server is unavailable", async () => {
+    vi.mocked(localAskStatus).mockResolvedValue("offline");
+    vi.mocked(cloudCredential).mockResolvedValue(true);
+    render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
+    expect(
+      await screen.findByText(
+        "llama-server is unavailable, so Auto will ask before using the cloud.",
+      ),
+    ).toBeTruthy();
+    await submit("Where is the workspace?");
+    deliver({ kind: "routed", location: "cloud" });
+    deliver({ kind: "awaitingCloudApproval" });
+    deliver({ kind: "cloudApproved" });
+    expect(
+      screen.getByText("Preparing or generating cloud answer…"),
+    ).toBeTruthy();
+    deliver({ kind: "delta", text: "Answer" });
+    deliver({
+      kind: "completed",
+      sources: [],
+      indexCoverage: "complete",
+      indexFreshness: "current",
+    });
+    expect(
+      screen.getByText("Answered by Qwen3-Coder via OpenRouter (cloud)"),
     ).toBeTruthy();
   });
 });
