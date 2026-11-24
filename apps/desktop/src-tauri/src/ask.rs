@@ -17,8 +17,6 @@ use uuid::Uuid;
 
 const MODEL: &str = "llama.cpp";
 const AUTO: &str = "auto";
-const ENDPOINT: &str = "http://127.0.0.1:8080/v1/chat/completions";
-const HEALTH: &str = "http://127.0.0.1:8080/health";
 const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Deserialize)]
@@ -28,6 +26,9 @@ pub struct AskRequest {
     model_id: String,
     question: String,
     conventions: Option<String>,
+    /// Base URL of the local OpenAI-compatible server; validated by `local_base`.
+    local_server: String,
+    local_model: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -73,6 +74,7 @@ pub enum Event {
 pub enum Error {
     WorkspaceDenied,
     InvalidQuestion,
+    InvalidLocalServer,
     Busy,
     ModelUnavailable,
     IndexUnavailable,
@@ -85,6 +87,7 @@ pub enum Error {
     ProviderUnauthorized,
     ProviderRateLimited,
     ProviderUnavailable,
+    ProviderNoPrivateRoute,
     Cancelled,
 }
 
@@ -140,12 +143,41 @@ pub enum LocalStatus {
 }
 
 #[tauri::command]
-pub async fn ask_local_status(window: WebviewWindow) -> Result<LocalStatus, Error> {
+pub async fn ask_local_status(
+    window: WebviewWindow,
+    local_server: String,
+) -> Result<LocalStatus, Error> {
     workbench(&window).map_err(|_| Error::WorkspaceDenied)?;
-    Ok(local_status(HEALTH).await)
+    Ok(local_status(&local_base(&local_server)?).await)
 }
 
-async fn local_status(url: &str) -> LocalStatus {
+/// Accepts only `http://<loopback>:<port>` (optionally with a trailing slash) and
+/// returns it normalized; callers append fixed paths, so no path, query, or userinfo.
+fn local_base(server: &str) -> Result<String, Error> {
+    let rest = server
+        .strip_prefix("http://")
+        .ok_or(Error::InvalidLocalServer)?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let (host, port) = rest.rsplit_once(':').ok_or(Error::InvalidLocalServer)?;
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+        || port.is_empty()
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(Error::InvalidLocalServer);
+    }
+    // Pin `localhost` to IPv4 loopback so an edited hosts file cannot redirect it.
+    let host = if host == "localhost" {
+        "127.0.0.1"
+    } else {
+        host
+    };
+    match port.parse::<u16>() {
+        Ok(port @ 1..) => Ok(format!("http://{host}:{port}")),
+        _ => Err(Error::InvalidLocalServer),
+    }
+}
+
+async fn local_status(base: &str) -> LocalStatus {
     let Ok(client) = reqwest::Client::builder()
         .no_proxy()
         .retry(reqwest::retry::never())
@@ -155,15 +187,24 @@ async fn local_status(url: &str) -> LocalStatus {
     else {
         return LocalStatus::Offline;
     };
-    // llama-server answers /health with 503 while it is still loading the model.
-    match client
-        .get(url)
-        .send()
-        .await
-        .map(|response| response.status().as_u16())
-    {
+    let status = |path: &'static str| {
+        let request = client.get(format!("{base}{path}"));
+        async move {
+            request
+                .send()
+                .await
+                .map(|response| response.status().as_u16())
+        }
+    };
+    // llama-server answers /health with 503 while loading; Ollama has no /health,
+    // so a 404 falls back to the OpenAI-compatible model list.
+    match status("/health").await {
         Ok(200..=299) => LocalStatus::Ready,
         Ok(503) => LocalStatus::Loading,
+        Ok(404) => match status("/v1/models").await {
+            Ok(200..=299) => LocalStatus::Ready,
+            _ => LocalStatus::Offline,
+        },
         _ => LocalStatus::Offline,
     }
 }
@@ -211,6 +252,15 @@ pub async fn ask_run(
     {
         return Err(Error::InvalidQuestion);
     }
+    let local = local_base(&request.local_server)?;
+    let local_model = request
+        .local_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if local_model.is_some_and(|model| model.len() > 256 || model.chars().any(char::is_control)) {
+        return Err(Error::InvalidLocalServer);
+    }
     let cloud = match request.model_id.as_str() {
         MODEL | AUTO => false,
         cloud::ID => true,
@@ -243,7 +293,7 @@ pub async fn ask_run(
     let run = async {
         // Auto prefers the local model; cloud use still requires per-request consent below.
         let cloud = if request.model_id == AUTO {
-            let cloud = interruptible(local_status(HEALTH), &check).await? != LocalStatus::Ready;
+            let cloud = interruptible(local_status(&local), &check).await? != LocalStatus::Ready;
             events
                 .send(Event::Routed {
                     location: if cloud { "cloud" } else { "local" },
@@ -297,7 +347,7 @@ pub async fn ask_run(
         } else {
             (
                 prompt(&request.question, request.conventions.as_deref(), &passages),
-                None,
+                local_model,
                 None,
             )
         };
@@ -310,12 +360,16 @@ pub async fn ask_run(
             .timeout(Duration::from_secs(120))
             .build()
             .map_err(|_| Error::InferenceFailed)?;
-        let mut outgoing = client.post(if cloud { cloud::ENDPOINT } else { ENDPOINT });
+        let mut outgoing = client.post(if cloud {
+            cloud::ENDPOINT.to_owned()
+        } else {
+            format!("{local}/v1/chat/completions")
+        });
         if let Some(auth) = authorization {
             outgoing = outgoing.header(reqwest::header::AUTHORIZATION, auth);
         }
         let usage = interruptible(
-            infer(outgoing, model, payload, |text| {
+            infer(outgoing, cloud, model, payload, |text| {
                 check()?;
                 events
                     .send(Event::Delta { text })
@@ -420,6 +474,7 @@ struct Delta {
 
 async fn infer(
     request: reqwest::RequestBuilder,
+    cloud: bool,
     model: Option<&str>,
     prompt: String,
     mut emit: impl FnMut(String) -> Result<(), Error>,
@@ -436,9 +491,13 @@ async fn infer(
     });
     if let Some(model) = model {
         body["model"] = serde_json::json!(model);
+    }
+    if cloud {
         body["max_completion_tokens"] = serde_json::json!(512);
         body["store"] = serde_json::json!(false);
         body["stream_options"] = serde_json::json!({"include_usage": true});
+        // Route only to OpenRouter providers that neither store nor train on prompts.
+        body["provider"] = serde_json::json!({"data_collection": "deny"});
     } else {
         body["max_tokens"] = serde_json::json!(512);
     }
@@ -448,7 +507,7 @@ async fn infer(
         .send()
         .await
         .map_err(|error| {
-            if error.is_connect() && model.is_some() {
+            if error.is_connect() && cloud {
                 Error::ProviderUnavailable
             } else if error.is_connect() {
                 Error::ModelUnavailable
@@ -457,7 +516,7 @@ async fn infer(
             }
         })?;
     if !response.status().is_success() {
-        return Err(response_error(response.status(), model.is_some()));
+        return Err(response_error(response.status(), cloud));
     }
     let mut usage = None;
     let mut line = Vec::new();
@@ -504,7 +563,9 @@ async fn infer(
 
 fn response_error(status: reqwest::StatusCode, cloud: bool) -> Error {
     match (cloud, status.as_u16()) {
-        (true, 401 | 403 | 404) => Error::ProviderUnauthorized,
+        (true, 401 | 403) => Error::ProviderUnauthorized,
+        // OpenRouter answers 404 when no endpoint satisfies the data-collection policy.
+        (true, 404) => Error::ProviderNoPrivateRoute,
         (true, 429) => Error::ProviderRateLimited,
         (true, 500..=599) => Error::ProviderUnavailable,
         (false, 503) => Error::ModelUnavailable,
@@ -521,25 +582,92 @@ mod tests {
     };
 
     #[test]
-    fn reports_local_server_health() {
-        fn health(status: &'static str) -> LocalStatus {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            let url = format!("http://{}/health", listener.local_addr().unwrap());
-            let server = std::thread::spawn(move || {
-                let (mut socket, _) = listener.accept().unwrap();
-                let mut request = [0; 1024];
-                let _ = socket.read(&mut request);
-                write!(socket, "HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").unwrap();
-            });
-            let result = tauri::async_runtime::block_on(local_status(&url));
-            server.join().unwrap();
-            result
+    fn accepts_only_loopback_http_servers_with_an_explicit_port() {
+        for (input, base) in [
+            ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("http://localhost:11434/", "http://127.0.0.1:11434"),
+            ("http://[::1]:1234", "http://[::1]:1234"),
+            ("http://127.0.0.1:65535", "http://127.0.0.1:65535"),
+            ("http://127.0.0.1:1", "http://127.0.0.1:1"),
+        ] {
+            assert_eq!(local_base(input).as_deref(), Ok(base), "{input}");
         }
-        assert_eq!(health("200 OK"), LocalStatus::Ready);
-        assert_eq!(health("503 Service Unavailable"), LocalStatus::Loading);
-        assert_eq!(health("404 Not Found"), LocalStatus::Offline);
+        for input in [
+            "https://127.0.0.1:8080",
+            "127.0.0.1:8080",
+            "http://example.com:8080",
+            "http://192.168.1.2:8080",
+            "http://0.0.0.0:8080",
+            "http://127.0.0.2:8080",
+            "http://[::]:8080",
+            "http://user@127.0.0.1:8080",
+            "http://user:pw@localhost:8080",
+            "http://localhost:8080@evil.com:80",
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.1:8080?x=1",
+            "http://127.0.0.1:8080#x",
+            "http://127.0.0.1",
+            "http://127.0.0.1:",
+            "http://localhost",
+            "http://[::1]",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:-1",
+            "http://127.0.0.1:+80",
+            "http://127.0.0.1: 80",
+            "",
+        ] {
+            assert_eq!(local_base(input), Err(Error::InvalidLocalServer), "{input}");
+        }
+    }
+
+    #[test]
+    fn reports_local_server_health() {
+        // Serves one response per status, in order, and records the requested paths.
+        fn health(statuses: &'static [&'static str]) -> (LocalStatus, Vec<String>) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let mut paths = Vec::new();
+                for status in statuses {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let mut request = [0; 1024];
+                    let read = socket.read(&mut request).unwrap();
+                    let line = String::from_utf8_lossy(&request[..read]);
+                    paths.push(line.split(' ').nth(1).unwrap().to_owned());
+                    write!(
+                        socket,
+                        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+                paths
+            });
+            let result = tauri::async_runtime::block_on(local_status(&base));
+            (result, server.join().unwrap())
+        }
+        assert_eq!(
+            health(&["200 OK"]),
+            (LocalStatus::Ready, vec!["/health".into()])
+        );
+        assert_eq!(health(&["503 Service Unavailable"]).0, LocalStatus::Loading);
+        assert_eq!(
+            health(&["500 Internal Server Error"]).0,
+            LocalStatus::Offline
+        );
+        assert_eq!(
+            health(&["404 Not Found", "200 OK"]),
+            (
+                LocalStatus::Ready,
+                vec!["/health".into(), "/v1/models".into()]
+            )
+        );
+        assert_eq!(
+            health(&["404 Not Found", "404 Not Found"]).0,
+            LocalStatus::Offline
+        );
         let closed = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let url = format!("http://{}/health", closed.local_addr().unwrap());
+        let url = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
         assert_eq!(
             tauri::async_runtime::block_on(local_status(&url)),
@@ -589,6 +717,7 @@ mod tests {
             let mut received = Vec::new();
             infer(
                 client.post(&url),
+                false,
                 None,
                 "workspace question".into(),
                 |text| {
@@ -602,11 +731,36 @@ mod tests {
             let body: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
             assert_eq!(body["messages"][1]["content"], "workspace question");
             assert_eq!(body["stream"], true);
+            assert_eq!(body["max_tokens"], 512);
+            assert!(body.get("model").is_none());
+            assert!(body.get("provider").is_none());
+
+            let (url, server) = serve("data: [DONE]\n\n");
+            infer(
+                client.post(&url),
+                false,
+                Some("llama3.2"),
+                "q".into(),
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+            let body: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+            assert_eq!(body["model"], "llama3.2");
+            assert!(body.get("provider").is_none());
+            assert!(body.get("store").is_none());
 
             let (url, server) =
                 serve("data: {\"choices\":[{\"delta\":{\"content\":\"unfinished\"}}]}\n\n");
             assert_eq!(
-                infer(client.post(&url), None, "question".into(), |_| Ok(())).await,
+                infer(
+                    client.post(&url),
+                    false,
+                    None,
+                    "question".into(),
+                    |_| Ok(())
+                )
+                .await,
                 Err(Error::InferenceFailed)
             );
             server.join().unwrap();
@@ -625,6 +779,7 @@ mod tests {
             let mut answer = String::new();
             let usage = infer(
                 client.post(url),
+                true,
                 Some(cloud::MODEL),
                 "approved payload".into(),
                 |text| {
@@ -648,9 +803,18 @@ mod tests {
             assert_eq!(body["model"], cloud::MODEL);
             assert_eq!(body["store"], false);
             assert_eq!(body["stream_options"]["include_usage"], true);
+            assert_eq!(body["provider"]["data_collection"], "deny");
             assert_eq!(
                 response_error(reqwest::StatusCode::TOO_MANY_REQUESTS, true),
                 Error::ProviderRateLimited,
+            );
+            assert_eq!(
+                response_error(reqwest::StatusCode::NOT_FOUND, true),
+                Error::ProviderNoPrivateRoute,
+            );
+            assert_eq!(
+                response_error(reqwest::StatusCode::NOT_FOUND, false),
+                Error::InferenceFailed,
             );
         });
     }
@@ -706,7 +870,8 @@ mod tests {
                 .build()
                 .unwrap();
             infer(
-                client.post(ENDPOINT),
+                client.post("http://127.0.0.1:8080/v1/chat/completions"),
+                false,
                 None,
                 prompt(question, None, &retrieval.passages),
                 |text| {

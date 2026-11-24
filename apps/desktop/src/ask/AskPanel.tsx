@@ -20,9 +20,20 @@ import {
   localAskStatus,
   runAsk,
 } from "./ask-ipc";
-import { AskProjectPreferences } from "./AskPreferences";
-import { loadProjectAsk, mergeTurns, updateProjectAsk } from "./ask-history";
-import type { AskFeedback, AskPreferences, SavedTurn } from "./ask-history";
+import { AskLocalServer, AskProjectPreferences } from "./AskPreferences";
+import {
+  loadLocalServer,
+  loadProjectAsk,
+  mergeTurns,
+  saveLocalServer,
+  updateProjectAsk,
+} from "./ask-history";
+import type {
+  AskFeedback,
+  AskPreferences,
+  LocalServer,
+  SavedTurn,
+} from "./ask-history";
 import { AskIndex } from "./AskIndex";
 import { AskMarkdown } from "./AskMarkdown";
 import { CloudCredential } from "./CloudCredential";
@@ -72,6 +83,8 @@ export function AskPanel({
   const [preferences, setPreferences] = useState(project.preferences);
   const [retain, setRetain] = useState(project.retain);
   const [modelId, setModelId] = useState(project.preferences.modelId);
+  const [localServer, setLocalServer] = useState(loadLocalServer);
+  const localUrl = `http://${localServer.address}`;
   const auto = modelId === autoAskModel.id;
   const cloud = modelId === cloudAskModel.id;
   const [question, setQuestion] = useState("");
@@ -97,12 +110,27 @@ export function AskPanel({
   }, []);
 
   function probeLocal() {
-    void localAskStatus().then(setLocalStatus, () => setLocalStatus(undefined));
+    void localAskStatus(localUrl).then(setLocalStatus, () =>
+      setLocalStatus(undefined),
+    );
   }
 
   useEffect(() => {
-    if (visible) probeLocal();
-  }, [visible]);
+    if (!visible) return;
+    // Ignore a probe that finishes after the address changed.
+    let current = true;
+    void localAskStatus(localUrl).then(
+      (status) => {
+        if (current) setLocalStatus(status);
+      },
+      () => {
+        if (current) setLocalStatus(undefined);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [visible, localUrl]);
 
   // Follow streaming text only while the reader is at the bottom of the thread.
   useEffect(() => {
@@ -162,8 +190,26 @@ export function AskPanel({
   function savePreferences(next: AskPreferences) {
     if (persist((current) => ({ ...current, preferences: next }))) {
       setPreferences(next);
-      setNotice("Project preferences saved.");
+      setNotice("Conventions saved.");
     }
+  }
+
+  function chooseModel(next: string) {
+    setModelId(next);
+    persist((current) => ({
+      ...current,
+      preferences: { ...current.preferences, modelId: next },
+    }));
+  }
+
+  function saveLocal(next: LocalServer) {
+    try {
+      saveLocalServer(next);
+    } catch {
+      setNotice("Could not update local Ask storage.");
+      return;
+    }
+    setLocalServer(next);
   }
 
   function vote(turn: Turn, feedback: AskFeedback) {
@@ -208,6 +254,8 @@ export function AskPanel({
         workspaceId,
         modelId,
         question: trimmedQuestion,
+        localServer: localUrl,
+        ...(localServer.model ? { localModel: localServer.model } : {}),
         ...(preferences.conventions
           ? { conventions: preferences.conventions }
           : {}),
@@ -277,7 +325,10 @@ export function AskPanel({
         setQuestion((current) => current || trimmedQuestion);
       }
       if (cause === "MODEL_UNAVAILABLE") probeLocal();
-      update(id, () => ({ phase: "failed", error: askErrorMessage(cause) }));
+      update(id, () => ({
+        phase: "failed",
+        error: askErrorMessage(cause, localServer.address),
+      }));
     });
   }
 
@@ -329,12 +380,12 @@ export function AskPanel({
       ? !localDown
         ? ""
         : keySaved === false
-          ? "llama-server isn't running and no OpenRouter key is saved."
-          : "llama-server is unavailable, so Auto will ask before using the cloud."
+          ? `No local server is ready on ${localServer.address} and no OpenRouter key is saved.`
+          : `No local server is ready on ${localServer.address}, so Auto will ask before using the cloud.`
       : localStatus === "offline"
-        ? "llama-server isn't running on 127.0.0.1:8080."
+        ? `No local server is running on ${localServer.address}.`
         : localStatus === "loading"
-          ? "llama-server is still loading its model."
+          ? `The local server on ${localServer.address} is still loading its model.`
           : "";
   const localState =
     localStatus === "offline" || localStatus === "loading"
@@ -407,6 +458,13 @@ export function AskPanel({
         {(cloud || (auto && localDown)) && (
           <CloudCredential disabled={busy} onStatus={setKeySaved} />
         )}
+        {!cloud && (
+          <AskLocalServer
+            server={localServer}
+            disabled={busy}
+            save={saveLocal}
+          />
+        )}
         <AskIndex workspaceId={workspaceId} visible={visible} />
         {workspacePath && (
           <AskProjectPreferences
@@ -463,7 +521,7 @@ export function AskPanel({
                 name="model"
                 disabled={busy}
                 value={modelId}
-                onChange={(event) => setModelId(event.target.value)}
+                onChange={(event) => chooseModel(event.target.value)}
                 onFocus={probeLocal}
               >
                 <option value={autoAskModel.id}>{autoAskModel.label}</option>

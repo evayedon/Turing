@@ -12,6 +12,10 @@ export interface AskRequest {
   modelId: AskModel["id"];
   question: string;
   conventions?: string;
+  /** `http://<loopback>:<port>` of the local OpenAI-compatible server; Rust revalidates it. */
+  localServer: string;
+  /** Sent as the local request's `model` field when set (required by Ollama). */
+  localModel?: string;
 }
 
 export interface AskSource extends Pick<TextFile, "relativePath" | "version"> {
@@ -38,6 +42,7 @@ export type AskEvent =
 export type AskError =
   | "WORKSPACE_DENIED"
   | "INVALID_QUESTION"
+  | "INVALID_LOCAL_SERVER"
   | "BUSY"
   | "MODEL_UNAVAILABLE"
   | "INDEX_UNAVAILABLE"
@@ -49,7 +54,8 @@ export type AskError =
   | "CREDENTIAL_STORE"
   | "PROVIDER_UNAUTHORIZED"
   | "PROVIDER_RATE_LIMITED"
-  | "PROVIDER_UNAVAILABLE";
+  | "PROVIDER_UNAVAILABLE"
+  | "PROVIDER_NO_PRIVATE_ROUTE";
 
 export type AskCredentialAction =
   { kind: "status" } | { kind: "save"; key: string } | { kind: "remove" };
@@ -57,7 +63,7 @@ export type AskCredentialAction =
 export type AskIndexAction =
   "status" | "pause" | "resume" | "rebuild" | "disable";
 
-/** Reachability of the local llama-server, probed by the native host. */
+/** Reachability of the local model server, probed by the native host. */
 export type AskLocalStatus = "ready" | "loading" | "offline";
 
 export interface AskIndexStatus {

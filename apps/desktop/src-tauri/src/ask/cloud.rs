@@ -141,7 +141,7 @@ fn review(question: &str, conventions: Option<&str>, passages: &[Passage], bytes
         dialog_text(&clipped)
     };
     let mut review = format!(
-        "OpenRouter ({MODEL}) and its hosting provider will receive the question, the full text of the workspace lines listed below, and any saved conventions. This approval applies to one request ({} KB).\n\nQuestion: {}",
+        "OpenRouter ({MODEL}) and its hosting provider will receive the question, the full text of the workspace lines listed below, and any saved conventions. Providers that store or train on request data are excluded. This approval applies to one request ({} KB).\n\nQuestion: {}",
         bytes.div_ceil(1024),
         clip(question)
     );
@@ -241,6 +241,7 @@ mod tests {
         let review = review("50% <done>", Some("Tabs"), &passages, payload.len());
         assert!(review.contains("Question: 50\\u{25} \\u{3c}done\\u{3e}"));
         assert!(review.contains("Conventions: Tabs"));
+        assert!(review.contains("Providers that store or train on request data are excluded."));
         for index in 0..3 {
             assert!(review.contains(&format!("• src/{index}{}.rs:1–12", r"\u{25}")));
         }

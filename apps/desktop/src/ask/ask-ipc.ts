@@ -9,7 +9,7 @@ import type {
   AskRequest,
 } from "@turing/contracts";
 
-/** Routed by the native host: local when llama-server is ready, else cloud with consent. */
+/** Routed by the native host: local when the local server is ready, else cloud with consent. */
 export const autoAskModel = { id: "auto", label: "Auto (local first)" };
 
 export const localAskModel: AskModel = {
@@ -40,8 +40,8 @@ export function runAsk(
   });
 }
 
-export function localAskStatus() {
-  return invoke<AskLocalStatus>("ask_local_status");
+export function localAskStatus(localServer: string) {
+  return invoke<AskLocalStatus>("ask_local_status", { localServer });
 }
 
 export function cancelAsk(requestId: string) {

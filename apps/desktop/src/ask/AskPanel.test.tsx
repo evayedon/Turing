@@ -25,7 +25,10 @@ beforeEach(() => {
   vi.mocked(cloudCredential).mockReset().mockResolvedValue(false);
   vi.mocked(localAskStatus).mockReset().mockResolvedValue("ready");
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
 
 async function submit(question: string) {
   const user = userEvent.setup();
@@ -69,6 +72,7 @@ describe("Ask panel", () => {
         workspaceId: "workspace",
         modelId: "auto",
         question: "Where is access checked?",
+        localServer: "http://127.0.0.1:8080",
       },
       expect.any(Function),
     );
@@ -194,7 +198,7 @@ describe("Ask panel", () => {
     );
     await user.click(
       screen.getByRole("button", {
-        name: "Save conventions and selected model",
+        name: "Save conventions",
       }),
     );
     await user.click(
@@ -258,7 +262,7 @@ describe("Ask panel", () => {
     );
     await submit("Where is access checked?");
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "Start llama-server",
+      "Start the local model server on 127.0.0.1:8080",
     );
     await submit("Where is access checked?");
     const previous = run.mock.lastCall;
@@ -299,7 +303,7 @@ describe("Ask panel", () => {
     render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
     expect(
       await screen.findByText(
-        "llama-server isn't running and no OpenRouter key is saved.",
+        "No local server is ready on 127.0.0.1:8080 and no OpenRouter key is saved.",
       ),
     ).toBeTruthy();
     await userEvent
@@ -309,7 +313,7 @@ describe("Ask panel", () => {
         "llama.cpp",
       );
     expect(
-      await screen.findByText("llama-server isn't running on 127.0.0.1:8080."),
+      await screen.findByText("No local server is running on 127.0.0.1:8080."),
     ).toBeTruthy();
     expect(
       screen.getByRole("option", { name: "llama.cpp (local · offline)" }),
@@ -329,13 +333,80 @@ describe("Ask panel", () => {
     ).toBeTruthy();
   });
 
+  it("remembers the chosen model for the folder without saving preferences", async () => {
+    const workspacePath = "/test/model";
+    const first = render(
+      <AskPanel
+        workspaceId="workspace"
+        workspacePath={workspacePath}
+        openSource={vi.fn()}
+      />,
+    );
+    await userEvent
+      .setup()
+      .selectOptions(
+        screen.getByRole("combobox", { name: "Model" }),
+        "llama.cpp",
+      );
+    first.unmount();
+    render(
+      <AskPanel
+        workspaceId="workspace"
+        workspacePath={workspacePath}
+        openSource={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveProperty(
+      "value",
+      "llama.cpp",
+    );
+    localStorage.clear();
+  });
+
+  it("uses the configured local server for status, availability, and requests", async () => {
+    vi.mocked(localAskStatus).mockResolvedValue("offline");
+    render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Model" }),
+      "llama.cpp",
+    );
+    await user.click(screen.getByText(/Local server · 127\.0\.0\.1:8080/));
+    const address = screen.getByRole("textbox", {
+      name: "Local server address",
+    });
+    await user.clear(address);
+    await user.type(address, "example.com:11434");
+    await user.click(screen.getByRole("button", { name: "Save local server" }));
+    expect(screen.getByRole("alert").textContent).toContain("loopback");
+    await user.clear(address);
+    await user.type(address, "localhost:11434");
+    await user.type(
+      screen.getByRole("textbox", { name: "Local model name (optional)" }),
+      "llama3.2",
+    );
+    await user.click(screen.getByRole("button", { name: "Save local server" }));
+    expect(vi.mocked(localAskStatus)).toHaveBeenLastCalledWith(
+      "http://localhost:11434",
+    );
+    expect(
+      await screen.findByText("No local server is running on localhost:11434."),
+    ).toBeTruthy();
+    await submit("Where is access checked?");
+    expect(run.mock.lastCall?.[1]).toMatchObject({
+      localServer: "http://localhost:11434",
+      localModel: "llama3.2",
+    });
+    localStorage.clear();
+  });
+
   it("routes Auto to the cloud when llama-server is unavailable", async () => {
     vi.mocked(localAskStatus).mockResolvedValue("offline");
     vi.mocked(cloudCredential).mockResolvedValue(true);
     render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
     expect(
       await screen.findByText(
-        "llama-server is unavailable, so Auto will ask before using the cloud.",
+        "No local server is ready on 127.0.0.1:8080, so Auto will ask before using the cloud.",
       ),
     ).toBeTruthy();
     await submit("Where is the workspace?");

@@ -1127,16 +1127,27 @@ streaming text only while the reader is at the bottom of the conversation.
 ### Model availability
 
 The model picker shows whether each Ask model can answer before a request is
-sent. Rust probes llama-server's `GET /health` on `127.0.0.1:8080` with a
-one-second timeout when the panel opens, when the picker gains focus, and after
-a local model failure. It reports `ready`, `loading` (HTTP 503), or `offline`.
+sent. **Local server** in Turing AI sets the local OpenAI-compatible server
+address and an optional model name. They are saved once per device in local
+storage, not per folder, because the server belongs to the machine. The default
+is `127.0.0.1:8080` with no model name (llama-server). Ollama
+(`127.0.0.1:11434`) needs a model name, which Turing sends as the request's
+`model` field; LM Studio uses `127.0.0.1:1234`. Rust revalidates the address on
+every call: only `http://` with host `127.0.0.1`, `localhost`, or `[::1]` and an
+explicit port from 1 to 65535. Userinfo, paths, and queries are rejected with
+`INVALID_LOCAL_SERVER`, and Rust appends fixed paths.
+
+Rust probes `GET /health` with a one-second timeout when the panel opens, when
+the picker gains focus, when the address changes, and after a local model
+failure. A 404 falls back to `GET /v1/models` because Ollama has no `/health`.
+It reports `ready`, `loading` (HTTP 503 from `/health`), or `offline`.
 The cloud model reports **key needed** when no OpenRouter key is saved. Status
 is advisory: a request can still be attempted and reports its own error.
 
 ### Auto model routing
 
 **Auto (local first)** is the default model for folders without a saved model
-preference. For each request, Rust checks llama-server's `/health`. A ready local
+preference. For each request, Rust probes the configured local server as above. A ready local
 server answers the request. Otherwise Auto routes to Qwen3-Coder via OpenRouter,
 which still requires a saved key and the per-request **Send once** approval, so
 source never leaves the machine silently. The panel shows the choice while the
@@ -1152,6 +1163,9 @@ Service. The webview can save, remove, and check for a key.
 Each request opens a native confirmation that names the question, any saved
 conventions, the request size, and every workspace file range Turing proposes to
 send to `openrouter.ai`, which forwards it to a hosting provider. The request
+sets OpenRouter's `provider.data_collection` to `deny`, so providers that store
+or train on request data are excluded. When no such provider is available,
+OpenRouter returns 404 and Ask reports `PROVIDER_NO_PRIVATE_ROUTE`. The request
 carries the full text of those ranges, up to 24 KiB; lower-ranked excerpts are
 dropped to fit and the answer reports limited context. While the dialog is open,
 the Turing AI panel shows the same ranges as source chips that open the cited
@@ -1184,8 +1198,9 @@ is offered so broad questions still have workspace context.
 
 ### Ask project preferences and retention
 
-Inside Turing AI, **Project preferences and history** lets users save conventions
-and the selected model for this folder. A saved convention is included in the
+Ask remembers the last model chosen in the picker for each folder as soon as it
+changes. Inside Turing AI, **Project preferences and history** saves
+conventions for this folder with **Save conventions**. A saved convention is included in the
 next Ask request and appears in the cloud review. Conversation retention is off
 by default. Opting in keeps the last 20 completed answers, source references,
 and feedback ratings in the local desktop profile for that folder. Turning it

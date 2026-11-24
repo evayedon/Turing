@@ -22,6 +22,45 @@ export const defaultPreferences: AskPreferences = {
   conventions: "",
 };
 
+/** Device-wide: the local server belongs to this machine, not to a folder. */
+export interface LocalServer {
+  /** `host:port` with a loopback host; Rust revalidates the full URL. */
+  address: string;
+  model: string;
+}
+
+export const defaultLocalServer: LocalServer = {
+  address: "127.0.0.1:8080",
+  model: "",
+};
+
+const LOCAL_SERVER_KEY = "turing:ask-local-server:v1";
+
+export function validLocalAddress(address: string) {
+  const match = /^(?:127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/.exec(address);
+  return !!match && Number(match[1]) >= 1 && Number(match[1]) <= 65535;
+}
+
+export function loadLocalServer(): LocalServer {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(LOCAL_SERVER_KEY) ?? "null",
+    );
+    return record(value) &&
+      typeof value.address === "string" &&
+      validLocalAddress(value.address) &&
+      typeof value.model === "string"
+      ? { address: value.address, model: value.model.slice(0, 256) }
+      : defaultLocalServer;
+  } catch {
+    return defaultLocalServer;
+  }
+}
+
+export function saveLocalServer(server: LocalServer) {
+  localStorage.setItem(LOCAL_SERVER_KEY, JSON.stringify(server));
+}
+
 interface ProjectAsk {
   preferences: AskPreferences;
   retain: boolean;
