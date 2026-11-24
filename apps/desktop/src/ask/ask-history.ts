@@ -182,3 +182,78 @@ export function mergeTurns(
   }
   return [...turns.values()].slice(-MAX_TURNS);
 }
+
+/** Device-wide daily cloud token limit and measured usage by local date. */
+export interface CloudBudget {
+  limit?: number;
+  /** `YYYY-MM-DD` (local time) → measured input + output tokens. */
+  days: Record<string, number>;
+}
+
+const CLOUD_BUDGET_KEY = "turing:ask-cloud-budget:v1";
+const BUDGET_DAYS = 31;
+export const MAX_DAILY_TOKENS = 100_000_000;
+
+export function localDay(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** Returns the limit for valid input, `null` for invalid, `undefined` for none. */
+export function parseDailyLimit(text: string): number | undefined | null {
+  const value = text.trim().replace(/[,_\s]/g, "");
+  if (!value) return undefined;
+  if (!/^\d{1,9}$/.test(value)) return null;
+  const limit = Number(value);
+  return limit >= 1 && limit <= MAX_DAILY_TOKENS ? limit : null;
+}
+
+export function loadCloudBudget(): CloudBudget {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(CLOUD_BUDGET_KEY) ?? "null",
+    );
+    if (!record(value)) return { days: {} };
+    const days = record(value.days)
+      ? Object.fromEntries(
+          Object.entries(value.days).filter(
+            (entry): entry is [string, number] =>
+              /^\d{4}-\d{2}-\d{2}$/.test(entry[0]) && count(entry[1]),
+          ),
+        )
+      : {};
+    return count(value.limit) &&
+      value.limit >= 1 &&
+      value.limit <= MAX_DAILY_TOKENS
+      ? { limit: value.limit, days }
+      : { days };
+  } catch {
+    return { days: {} };
+  }
+}
+
+function saveCloudBudget(budget: CloudBudget) {
+  const days = Object.fromEntries(
+    Object.entries(budget.days)
+      .sort(([a], [b]) => (a < b ? 1 : -1))
+      .slice(0, BUDGET_DAYS),
+  );
+  localStorage.setItem(CLOUD_BUDGET_KEY, JSON.stringify({ ...budget, days }));
+}
+
+export function saveDailyLimit(limit: number | undefined) {
+  const { days } = loadCloudBudget();
+  saveCloudBudget(limit === undefined ? { days } : { limit, days });
+  return loadCloudBudget();
+}
+
+export function recordCloudUsage(tokens: number, date = new Date()) {
+  const budget = loadCloudBudget();
+  const day = localDay(date);
+  budget.days[day] = Math.min(
+    (budget.days[day] ?? 0) + tokens,
+    Number.MAX_SAFE_INTEGER,
+  );
+  saveCloudBudget(budget);
+  return loadCloudBudget();
+}

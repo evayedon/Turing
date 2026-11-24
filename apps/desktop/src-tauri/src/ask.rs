@@ -70,6 +70,8 @@ pub enum Event {
     /// The exact file ranges the pending cloud request would share.
     AwaitingCloudApproval {
         sources: Vec<Source>,
+        /// Payload bytes / 4, rounded up; not a measured token count.
+        estimated_input_tokens: usize,
     },
     CloudApproved,
     Delta {

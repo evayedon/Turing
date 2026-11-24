@@ -523,3 +523,18 @@
   color: var(--nebula-accent);
   border-color: var(--nebula-accent-border);
 }
+
+/* Inline confirmation before a cloud request once today's budget is used. */
+.ask-budget-confirm {
+  display: grid;
+  gap: 6px;
+  padding: 6px var(--nebula-s2);
+  font-size: var(--nebula-xs);
+  background: var(--nebula-raised);
+  border: 1px solid var(--nebula-warning);
+  border-radius: 6px;
+}
+
+.ask-budget-confirm p {
+  margin: 0;
+}

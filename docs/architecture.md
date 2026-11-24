@@ -1175,6 +1175,23 @@ Turing rechecks workspace authorization after approval and uses the same stream
 and source navigation as local Ask. When OpenRouter reports token counts, the panel
 shows them with the answer.
 
+### Cloud budget
+
+When **Qwen3-Coder via OpenRouter** or **Auto** is selected, **Cloud budget**
+sets an optional daily token limit (input plus output, a whole number from 1 to
+100,000,000) for this device. The limit and per-day measured usage, keyed by
+local date and pruned to the last 31 days, live in webview `localStorage` under
+`turing:ask-cloud-budget:v1`. Only usage that OpenRouter reports for a completed
+cloud answer is recorded; answers show it as measured. Before the native review,
+Rust sends `estimatedInputTokens` (payload bytes / 4, rounded up) in the
+`awaitingCloudApproval` event, and both the review text and the panel label it as
+an estimate. Once today's measured usage reaches the limit, the panel asks
+**Send anyway** or **Cancel** inline before a cloud request; Cancel keeps the
+question in the composer. Auto's route is chosen natively, so the panel asks when
+the local server is not reported ready. Local requests are never blocked. The
+budget is advisory and frontend-enforced; the per-request native consent still
+gates every cloud send.
+
 ### Ask about selection
 
 Select lines in a saved workspace file and choose **Ask Turing AI About

@@ -1,8 +1,13 @@
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
-import { Server } from "lucide-react";
-import { validLocalAddress } from "./ask-history";
-import type { AskPreferences, LocalServer } from "./ask-history";
+import { Gauge, Server } from "lucide-react";
+import {
+  MAX_DAILY_TOKENS,
+  localDay,
+  parseDailyLimit,
+  validLocalAddress,
+} from "./ask-history";
+import type { AskPreferences, CloudBudget, LocalServer } from "./ask-history";
 import { askErrorMessage } from "./ask-errors";
 
 export function AskProjectPreferences({
@@ -132,6 +137,78 @@ export function AskLocalServer({
           <button type="submit" disabled={disabled}>
             Save local server
           </button>
+        </div>
+      </form>
+      {error && (
+        <p className="ask-error" role="alert">
+          {error}
+        </p>
+      )}
+    </details>
+  );
+}
+
+export function budgetUsage(budget: CloudBudget) {
+  const used = budget.days[localDay()] ?? 0;
+  const amount =
+    budget.limit === undefined
+      ? `${used.toLocaleString()} tokens`
+      : `${used.toLocaleString()} of ${budget.limit.toLocaleString()} tokens`;
+  return {
+    amount,
+    exceeded: budget.limit !== undefined && used >= budget.limit,
+    text: `Today: ${amount} (measured)`,
+  };
+}
+
+export function AskCloudBudget({
+  budget,
+  save,
+}: {
+  budget: CloudBudget;
+  save: (limit: number | undefined) => void;
+}) {
+  const field = useId();
+  const [limit, setLimit] = useState(budget.limit?.toString() ?? "");
+  const [error, setError] = useState("");
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const parsed = parseDailyLimit(limit);
+    if (parsed === null) {
+      setError(
+        `Enter a whole number of tokens from 1 to ${MAX_DAILY_TOKENS.toLocaleString()}, or leave it empty for no limit.`,
+      );
+      return;
+    }
+    setError("");
+    setLimit(parsed?.toString() ?? "");
+    save(parsed);
+  }
+
+  return (
+    <details className="ask-credentials">
+      <summary>
+        <Gauge size={13} aria-hidden="true" />
+        Cloud budget · {budgetUsage(budget).text}
+      </summary>
+      <form onSubmit={submit}>
+        <label htmlFor={field}>Daily token limit (optional)</label>
+        <input
+          id={field}
+          value={limit}
+          inputMode="numeric"
+          maxLength={16}
+          autoComplete="off"
+          onChange={(event) => setLimit(event.target.value)}
+        />
+        <p>
+          Counts input and output tokens that OpenRouter reports for cloud
+          answers on this device. Turing asks before sending once today&apos;s
+          limit is used.
+        </p>
+        <div className="ask-actions">
+          <button type="submit">Save budget</button>
         </div>
       </form>
       {error && (

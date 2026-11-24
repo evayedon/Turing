@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AskEvent } from "@turing/contracts";
 import { expectAccessible } from "../test/axe";
 import { AskPanel } from "./AskPanel";
+import { localDay } from "./ask-history";
 import { cancelAsk, cloudCredential, localAskStatus, runAsk } from "./ask-ipc";
 
 vi.mock("./ask-ipc", async (original) => ({
@@ -131,6 +132,7 @@ describe("Ask panel", () => {
     expect(run.mock.lastCall?.[1].modelId).toBe("openrouter-qwen3-coder");
     deliver({
       kind: "awaitingCloudApproval",
+      estimatedInputTokens: 812,
       sources: [
         {
           relativePath: "src/workspace.rs",
@@ -146,16 +148,20 @@ describe("Ask panel", () => {
     expect(
       screen.getByText("Review the request in the sharing dialog."),
     ).toBeTruthy();
+    expect(screen.getByText("≈812 input tokens (estimate)")).toBeTruthy();
     await act(async () => deny("CLOUD_CONSENT_DECLINED"));
-    expect(screen.getByRole("textbox")).toHaveProperty(
-      "value",
-      "Where is the workspace?",
-    );
+    expect(
+      screen.getByRole("textbox", { name: "Ask about this workspace" }),
+    ).toHaveProperty("value", "Where is the workspace?");
     expect(screen.queryByRole("list", { name: "Conversation" })).toBeNull();
     expect(screen.getByText("Cloud sharing canceled.")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Ask" }));
-    deliver({ kind: "awaitingCloudApproval", sources: [] });
+    deliver({
+      kind: "awaitingCloudApproval",
+      sources: [],
+      estimatedInputTokens: 10,
+    });
     deliver({ kind: "cloudApproved" });
     deliver({ kind: "delta", text: "Answer" });
     deliver({
@@ -165,7 +171,9 @@ describe("Ask panel", () => {
       indexFreshness: "current",
       usage: { inputTokens: 41, outputTokens: 9 },
     });
-    expect(screen.getByText("41 input tokens · 9 output tokens")).toBeTruthy();
+    expect(
+      screen.getByText("41 input tokens · 9 output tokens (measured)"),
+    ).toBeTruthy();
   });
 
   it("retains completed answers and feedback only after opt-in and restores them for the same folder", async () => {
@@ -411,7 +419,11 @@ describe("Ask panel", () => {
     ).toBeTruthy();
     await submit("Where is the workspace?");
     deliver({ kind: "routed", location: "cloud" });
-    deliver({ kind: "awaitingCloudApproval", sources: [] });
+    deliver({
+      kind: "awaitingCloudApproval",
+      sources: [],
+      estimatedInputTokens: 10,
+    });
     deliver({ kind: "cloudApproved" });
     expect(
       screen.getByText("Preparing or generating cloud answer…"),
@@ -426,5 +438,156 @@ describe("Ask panel", () => {
     expect(
       screen.getByText("Answered by Qwen3-Coder via OpenRouter (cloud)"),
     ).toBeTruthy();
+  });
+
+  describe("cloud budget", () => {
+    const completedWith = (inputTokens: number, outputTokens: number) =>
+      deliver({
+        kind: "completed",
+        sources: [],
+        indexCoverage: "complete",
+        indexFreshness: "current",
+        usage: { inputTokens, outputTokens },
+      });
+    const budgetKey = "turing:ask-cloud-budget:v1";
+    const today = localDay();
+
+    async function chooseCloud() {
+      await userEvent
+        .setup()
+        .selectOptions(
+          screen.getByRole("combobox", { name: "Model" }),
+          "openrouter-qwen3-coder",
+        );
+    }
+
+    it("validates the limit and records measured cloud usage per local day", async () => {
+      localStorage.setItem(
+        budgetKey,
+        JSON.stringify({
+          days: Object.fromEntries(
+            Array.from({ length: 40 }, (_, index) => [
+              `2000-01-${String(index + 1).padStart(2, "0")}`,
+              1,
+            ]),
+          ),
+        }),
+      );
+      const { container } = render(
+        <AskPanel workspaceId="workspace" openSource={vi.fn()} />,
+      );
+      await chooseCloud();
+      const user = userEvent.setup();
+      await user.click(screen.getByText(/Cloud budget/));
+      const limit = screen.getByRole("textbox", {
+        name: "Daily token limit (optional)",
+      });
+      for (const bad of ["-5", "1.5", "0", "abc", "100000001"]) {
+        await user.clear(limit);
+        await user.type(limit, bad);
+        await user.click(screen.getByRole("button", { name: "Save budget" }));
+        expect(screen.getByRole("alert").textContent).toContain("whole number");
+      }
+      await user.clear(limit);
+      await user.type(limit, "500");
+      await user.click(screen.getByRole("button", { name: "Save budget" }));
+      expect(
+        screen.getByText("Cloud budget · Today: 0 of 500 tokens (measured)"),
+      ).toBeTruthy();
+      await expectAccessible(container);
+
+      await submit("Where is the workspace?");
+      completedWith(41, 9);
+      expect(
+        screen.getByText("Cloud budget · Today: 50 of 500 tokens (measured)"),
+      ).toBeTruthy();
+
+      // Local answers never count against the cloud budget.
+      await user.selectOptions(
+        screen.getByRole("combobox", { name: "Model" }),
+        "llama.cpp",
+      );
+      await submit("Local question");
+      completedWith(100, 100);
+
+      const stored = JSON.parse(localStorage.getItem(budgetKey) ?? "{}") as {
+        limit: number;
+        days: Record<string, number>;
+      };
+      expect(stored.limit).toBe(500);
+      expect(stored.days[today]).toBe(50);
+      expect(Object.keys(stored.days)).toHaveLength(31);
+    });
+
+    function overBudget() {
+      localStorage.setItem(
+        budgetKey,
+        JSON.stringify({ limit: 100, days: { [today]: 120 } }),
+      );
+    }
+
+    it("asks before a cloud request once today's budget is used; Cancel restores the question", async () => {
+      overBudget();
+      const { container } = render(
+        <AskPanel workspaceId="workspace" openSource={vi.fn()} />,
+      );
+      await chooseCloud();
+      const user = await submit("Over budget?");
+      expect(run).not.toHaveBeenCalled();
+      const dialog = screen.getByRole("alertdialog", {
+        name: "Cloud budget reached",
+      });
+      expect(dialog.textContent).toContain(
+        "Today's cloud budget is used: 120 of 100 tokens. Send anyway?",
+      );
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Send anyway" }),
+      );
+      await expectAccessible(container);
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      const composer = screen.getByRole("textbox", {
+        name: "Ask about this workspace",
+      });
+      expect(composer).toHaveProperty("value", "Over budget?");
+      expect(document.activeElement).toBe(composer);
+      expect(run).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+      await user.keyboard("{Enter}");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(run.mock.lastCall?.[1].question).toBe("Over budget?");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    it("asks for Auto only when the local server is not ready, never for local", async () => {
+      overBudget();
+      vi.mocked(localAskStatus).mockResolvedValue("offline");
+      const offline = render(
+        <AskPanel workspaceId="workspace" openSource={vi.fn()} />,
+      );
+      await screen.findByText(/so Auto will ask before using the cloud/);
+      await submit("Auto offline");
+      expect(screen.getByRole("alertdialog")).toBeTruthy();
+      expect(run).not.toHaveBeenCalled();
+      await userEvent
+        .setup()
+        .selectOptions(
+          screen.getByRole("combobox", { name: "Model" }),
+          "llama.cpp",
+        );
+      await userEvent
+        .setup()
+        .click(screen.getByRole("button", { name: "Ask" }));
+      expect(run).toHaveBeenCalledTimes(1);
+      offline.unmount();
+
+      vi.mocked(localAskStatus).mockResolvedValue("ready");
+      render(<AskPanel workspaceId="workspace" openSource={vi.fn()} />);
+      await act(async () => {});
+      await submit("Auto ready");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(run).toHaveBeenCalledTimes(2);
+    });
   });
 });

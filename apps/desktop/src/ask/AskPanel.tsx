@@ -21,11 +21,19 @@ import {
   localAskStatus,
   runAsk,
 } from "./ask-ipc";
-import { AskLocalServer, AskProjectPreferences } from "./AskPreferences";
 import {
+  AskCloudBudget,
+  AskLocalServer,
+  AskProjectPreferences,
+  budgetUsage,
+} from "./AskPreferences";
+import {
+  loadCloudBudget,
   loadLocalServer,
   loadProjectAsk,
   mergeTurns,
+  recordCloudUsage,
+  saveDailyLimit,
   saveLocalServer,
   updateProjectAsk,
 } from "./ask-history";
@@ -55,6 +63,7 @@ type Turn = {
   feedback?: AskFeedback;
   route?: "local" | "cloud";
   sharing?: AskSource[];
+  estimate?: number;
 };
 
 const SUGGESTIONS = [
@@ -103,6 +112,10 @@ export function AskPanel({
   const [notice, setNotice] = useState("");
   const [localStatus, setLocalStatus] = useState<AskLocalStatus>();
   const [keySaved, setKeySaved] = useState<boolean>();
+  const [budget, setBudget] = useState(loadCloudBudget);
+  const [overBudget, setOverBudget] = useState(false);
+  const budgetPrompt = useId();
+  const sendAnyway = useRef<HTMLButtonElement>(null);
   const latest = turns.at(-1);
   const busy =
     latest?.phase === "running" ||
@@ -127,6 +140,10 @@ export function AskPanel({
   useEffect(() => {
     if (focusRequest) composer.current?.focus();
   }, [focusRequest]);
+
+  useEffect(() => {
+    if (overBudget) sendAnyway.current?.focus();
+  }, [overBudget]);
 
   useEffect(() => {
     if (!visible) return;
@@ -215,6 +232,17 @@ export function AskPanel({
     }));
   }
 
+  function saveLimit(limit: number | undefined) {
+    try {
+      setBudget(saveDailyLimit(limit));
+      setNotice(
+        limit === undefined ? "Cloud budget removed." : "Cloud budget saved.",
+      );
+    } catch {
+      setNotice("Could not update local Ask storage.");
+    }
+  }
+
   function saveLocal(next: LocalServer) {
     try {
       saveLocalServer(next);
@@ -236,13 +264,20 @@ export function AskPanel({
       }));
   }
 
-  function submit(event?: FormEvent<HTMLFormElement>) {
+  function submit(event?: FormEvent<HTMLFormElement>, confirmed = false) {
     event?.preventDefault();
     if (!trimmedQuestion || active.current) return;
     if (new TextEncoder().encode(trimmedQuestion).length > 2048) {
       setNotice(askErrorMessage("INVALID_QUESTION"));
       return;
     }
+    // Auto's route is decided natively; assume cloud whenever local is not ready.
+    const mayUseCloud = cloud || (auto && localStatus !== "ready");
+    if (!confirmed && mayUseCloud && budgetUsage(budget).exceeded) {
+      setOverBudget(true);
+      return;
+    }
+    setOverBudget(false);
 
     const id = crypto.randomUUID();
     active.current = id;
@@ -262,6 +297,7 @@ export function AskPanel({
     ]);
 
     let answer = "";
+    let route: Turn["route"] = auto ? undefined : cloud ? "cloud" : "local";
     void runAsk(
       id,
       {
@@ -284,6 +320,7 @@ export function AskPanel({
           return;
         }
         if (message.kind === "routed") {
+          route = message.location;
           update(id, () => ({ route: message.location }));
           return;
         }
@@ -298,14 +335,26 @@ export function AskPanel({
                 : message.kind === "awaitingCloudApproval"
                   ? "approval"
                   : "running",
-            sharing:
-              message.kind === "awaitingCloudApproval"
-                ? message.sources
-                : undefined,
+            ...(message.kind === "awaitingCloudApproval"
+              ? {
+                  sharing: message.sources,
+                  estimate: message.estimatedInputTokens,
+                }
+              : { sharing: undefined, estimate: undefined }),
           }));
           return;
         }
         active.current = undefined;
+        if (message.kind === "completed" && route === "cloud" && message.usage)
+          try {
+            setBudget(
+              recordCloudUsage(
+                message.usage.inputTokens + message.usage.outputTokens,
+              ),
+            );
+          } catch {
+            setNotice("Could not update local Ask storage.");
+          }
         if (message.kind === "completed" && retain) {
           persist((current) =>
             current.retain
@@ -473,6 +522,7 @@ export function AskPanel({
         {(cloud || (auto && localDown)) && (
           <CloudCredential disabled={busy} onStatus={setKeySaved} />
         )}
+        {(cloud || auto) && <AskCloudBudget budget={budget} save={saveLimit} />}
         {!cloud && (
           <AskLocalServer
             server={localServer}
@@ -500,6 +550,43 @@ export function AskPanel({
         <div className="ask-status" role="status">
           {notice || status || availability}
         </div>
+        {overBudget && (
+          <div
+            className="ask-budget-confirm"
+            role="alertdialog"
+            aria-label="Cloud budget reached"
+            aria-describedby={budgetPrompt}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setOverBudget(false);
+                composer.current?.focus();
+              }
+            }}
+          >
+            <p id={budgetPrompt}>
+              Today&apos;s cloud budget is used: {budgetUsage(budget).amount}.
+              Send anyway?
+            </p>
+            <div className="ask-actions">
+              <button
+                type="button"
+                ref={sendAnyway}
+                onClick={() => submit(undefined, true)}
+              >
+                Send anyway
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOverBudget(false);
+                  composer.current?.focus();
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         <form className="ask-composer" onSubmit={submit}>
           {attachment && (
             <AttachmentChip
@@ -620,6 +707,9 @@ function TurnView({
               {turn.sharing.length > 0 && (
                 <SourceChips sources={turn.sharing} open={openSource} />
               )}
+              {turn.estimate !== undefined && (
+                <p>≈{turn.estimate.toLocaleString()} input tokens (estimate)</p>
+              )}
             </section>
           )}
           {turn.answer && (
@@ -659,7 +749,7 @@ function TurnView({
               {result.usage && (
                 <p className="ask-usage">
                   {result.usage.inputTokens} input tokens ·{" "}
-                  {result.usage.outputTokens} output tokens
+                  {result.usage.outputTokens} output tokens (measured)
                 </p>
               )}
               <div className="ask-actions" aria-label="Answer feedback">

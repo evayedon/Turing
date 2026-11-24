@@ -106,12 +106,7 @@ pub(super) async fn approve(
     check: &impl Fn() -> Result<(), Error>,
 ) -> Result<String, Error> {
     events
-        .send(Event::AwaitingCloudApproval {
-            sources: passages
-                .iter()
-                .map(|passage| passage.source.clone())
-                .collect(),
-        })
+        .send(approval_event(passages, payload.len()))
         .map_err(|_| Error::Cancelled)?;
     let review = review(question, conventions, passages, payload.len());
     let window = window.clone();
@@ -135,6 +130,21 @@ pub(super) async fn approve(
     .await
 }
 
+/// A rough pre-send estimate (about four bytes per token); OpenRouter reports measured usage.
+fn estimated_tokens(bytes: usize) -> usize {
+    bytes.div_ceil(4)
+}
+
+fn approval_event(passages: &[Passage], bytes: usize) -> Event {
+    Event::AwaitingCloudApproval {
+        sources: passages
+            .iter()
+            .map(|passage| passage.source.clone())
+            .collect(),
+        estimated_input_tokens: estimated_tokens(bytes),
+    }
+}
+
 fn review(question: &str, conventions: Option<&str>, passages: &[Passage], bytes: usize) -> String {
     let clip = |text: &str| {
         let mut clipped: String = text.chars().take(REVIEW_TEXT_CHARS).collect();
@@ -144,8 +154,9 @@ fn review(question: &str, conventions: Option<&str>, passages: &[Passage], bytes
         dialog_text(&clipped)
     };
     let mut review = format!(
-        "OpenRouter ({MODEL}) and its hosting provider will receive the question, the full text of the workspace lines listed below, and any saved conventions. Providers that store or train on request data are excluded. This approval applies to one request ({} KB).\n\nQuestion: {}",
+        "OpenRouter ({MODEL}) and its hosting provider will receive the question, the full text of the workspace lines listed below, and any saved conventions. Providers that store or train on request data are excluded. This approval applies to one request ({} KB, ≈{} input tokens (estimate)).\n\nQuestion: {}",
         bytes.div_ceil(1024),
+        estimated_tokens(bytes),
         clip(question)
     );
     if let Some(conventions) = conventions {
@@ -255,7 +266,15 @@ mod tests {
             assert!(review.contains(&format!("• src/{index}{}.rs:1–12", r"\u{25}")));
         }
         assert!(!review.contains("src/3"));
-        assert!(review.contains(&format!("({} KB)", payload.len().div_ceil(1024))));
+        assert!(review.contains(&format!(
+            "({} KB, ≈{} input tokens (estimate))",
+            payload.len().div_ceil(1024),
+            payload.len().div_ceil(4)
+        )));
+        let event = serde_json::to_value(approval_event(&passages, payload.len())).unwrap();
+        assert_eq!(event["kind"], "awaitingCloudApproval");
+        assert_eq!(event["estimatedInputTokens"], payload.len().div_ceil(4));
+        assert_eq!(event["sources"].as_array().unwrap().len(), 3);
     }
 
     #[test]

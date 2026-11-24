@@ -28,7 +28,12 @@ export interface AskSource extends Pick<TextFile, "relativePath" | "version"> {
 
 export type AskEvent =
   | { kind: "routed"; location: AskModel["location"] }
-  | { kind: "awaitingCloudApproval"; sources: AskSource[] }
+  | {
+      kind: "awaitingCloudApproval";
+      sources: AskSource[];
+      /** Payload bytes / 4, rounded up: an estimate, not a measured count. */
+      estimatedInputTokens: number;
+    }
   | { kind: "cloudApproved" }
   | { kind: "delta"; text: string }
   | {
