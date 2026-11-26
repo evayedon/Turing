@@ -33,11 +33,11 @@ fn prepare(command: &mut Command, cwd: &Dir, _: &Path) {
 }
 
 #[cfg(windows)]
-fn prepare(command: &mut Command, _: &Dir, staging: &Path) {
+fn prepare(command: &mut Command, _: &Dir, cwd_path: &Path) {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
     command
-        .current_dir(staging)
+        .current_dir(cwd_path)
         .creation_flags(CREATE_NO_WINDOW);
 }
 
@@ -185,7 +185,7 @@ fn version_output(state: &State) -> Option<String> {
     Some(String::from_utf8_lossy(&output).into_owned())
 }
 
-fn supervise(
+pub(super) fn supervise(
     command: &mut Command,
     cwd: &Dir,
     staging: &Path,

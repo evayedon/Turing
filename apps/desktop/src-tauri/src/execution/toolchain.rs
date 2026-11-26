@@ -26,7 +26,7 @@ fn candidates(language: Language) -> (&'static [&'static str], ExecutionError) {
     }
 }
 
-fn directories(path: Option<&OsStr>) -> impl Iterator<Item = PathBuf> + '_ {
+pub(super) fn directories(path: Option<&OsStr>) -> impl Iterator<Item = PathBuf> + '_ {
     path.into_iter()
         .flat_map(std::env::split_paths)
         .filter(|dir| {
@@ -75,62 +75,7 @@ struct Job<'a> {
 impl Job<'_> {
     fn command(&self, executable: impl AsRef<OsStr>) -> Command {
         let mut command = Command::new(executable);
-        command.env_clear();
-        // Keep platform and installed toolchain discovery available without
-        // passing application credentials or tool-specific startup options.
-        for key in [
-            "HOME",
-            "USERPROFILE",
-            "SystemRoot",
-            "WINDIR",
-            "LOCALAPPDATA",
-            "APPDATA",
-            "SDKROOT",
-            "INCLUDE",
-            "LIB",
-            "LIBPATH",
-            "DEVELOPER_DIR",
-            "JAVA_HOME",
-            "RUSTUP_HOME",
-            "DOTNET_ROOT",
-            "DOTNET_ROOT_X64",
-            "DOTNET_ROOT_ARM64",
-            // Windows toolchains (rustc/MSVC, vswhere, the Windows SDK)
-            // locate their installations through these; without them rustc
-            // falls back to whatever `link.exe` is first on PATH.
-            "ProgramFiles",
-            "ProgramFiles(x86)",
-            "ProgramW6432",
-            "ProgramData",
-            "CommonProgramFiles",
-            "CommonProgramFiles(x86)",
-            "PROCESSOR_ARCHITECTURE",
-            "NUMBER_OF_PROCESSORS",
-            "ComSpec",
-            "VSINSTALLDIR",
-            "VCINSTALLDIR",
-            "VCToolsInstallDir",
-            "WindowsSdkDir",
-            "WindowsSDKVersion",
-        ] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        command
-            .env("PATH", &self.path)
-            .env("TMPDIR", self.staging)
-            .env("TMP", self.staging)
-            .env("TEMP", self.staging)
-            .env("LC_MESSAGES", "C")
-            .env(
-                "LC_CTYPE",
-                if cfg!(target_os = "macos") {
-                    "en_US.UTF-8"
-                } else {
-                    "C.UTF-8"
-                },
-            );
+        super::baseline_env(&mut command, &self.path, self.staging);
         command
     }
 

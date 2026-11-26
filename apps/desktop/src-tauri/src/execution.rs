@@ -1,3 +1,5 @@
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod argv;
 mod process;
 mod toolchain;
 
@@ -7,8 +9,10 @@ use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
+    ffi::OsStr,
     fs,
     path::Path,
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
         Arc, Mutex, MutexGuard,
@@ -105,7 +109,7 @@ impl Phase {
     }
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Stream {
     BuildStdout,
@@ -352,6 +356,66 @@ enum Outcome {
     Ran(Option<i32>),
     BuildFailed(Option<i32>),
     Stopped,
+}
+
+/// The environment allowlist shared by Run & Build and agent commands.
+pub(crate) fn baseline_env(command: &mut Command, path: &OsStr, temp: &Path) {
+    command.env_clear();
+    // Keep platform and installed toolchain discovery available without
+    // passing application credentials or tool-specific startup options.
+    for key in [
+        "HOME",
+        "USERPROFILE",
+        "SystemRoot",
+        "WINDIR",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "SDKROOT",
+        "INCLUDE",
+        "LIB",
+        "LIBPATH",
+        "DEVELOPER_DIR",
+        "JAVA_HOME",
+        "RUSTUP_HOME",
+        "DOTNET_ROOT",
+        "DOTNET_ROOT_X64",
+        "DOTNET_ROOT_ARM64",
+        // Windows toolchains (rustc/MSVC, vswhere, the Windows SDK)
+        // locate their installations through these; without them rustc
+        // falls back to whatever `link.exe` is first on PATH.
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "ProgramData",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+        "ComSpec",
+        "VSINSTALLDIR",
+        "VCINSTALLDIR",
+        "VCToolsInstallDir",
+        "WindowsSdkDir",
+        "WindowsSDKVersion",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command
+        .env("PATH", path)
+        .env("TMPDIR", temp)
+        .env("TMP", temp)
+        .env("TEMP", temp)
+        .env("LC_MESSAGES", "C")
+        .env(
+            "LC_CTYPE",
+            if cfg!(target_os = "macos") {
+                "en_US.UTF-8"
+            } else {
+                "C.UTF-8"
+            },
+        );
 }
 
 fn is_executable(path: &Path) -> bool {
