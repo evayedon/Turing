@@ -61,7 +61,7 @@ pub(super) fn validate_content(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_snapshot(directory: &Dir, name: &str, writable: bool) -> Result<Snapshot> {
+pub(super) fn read_snapshot(directory: &Dir, name: &str, writable: bool) -> Result<Snapshot> {
     read_snapshot_metered(directory, name, writable, MAX_TEXT_BYTES, &mut 0)
 }
 

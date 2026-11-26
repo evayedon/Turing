@@ -1,3 +1,6 @@
+// Not wired into commands until the agent loop task lands.
+#[cfg_attr(not(test), allow(dead_code))]
+mod agent;
 pub(crate) mod ask;
 mod file;
 mod mutations;
