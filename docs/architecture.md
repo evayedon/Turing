@@ -1124,6 +1124,28 @@ Raw HTML in model output stays literal text. A citation such as `[2]` becomes a
 button that opens the second cited source at its line range. The thread follows
 streaming text only while the reader is at the bottom of the conversation.
 
+### Supervised Agent (v0.3)
+
+_Implemented progressively by the v0.3 plan; check against the code._ The agent loop runs in the Rust host (SAD ADR-011), with no separate runtime.
+
+Modules under `apps/desktop/src-tauri/src/`:
+
+- `agent.rs`: `AgentService`, commands, events and errors.
+- `agent/policy.rs`: pure `decide()`, command classification, secret and build-config path lists.
+- `agent/checkpoint.rs`: durable manifest and blobs, rollback, crash recovery.
+- `agent/model.rs`: OpenAI-compatible tool-call client.
+- `agent/tools.rs`: strict tool parsing and execution.
+- `agent/task.rs`: state machine, limits and the loop.
+- `agent/approval.rs`: native approval dialogs.
+- `execution/argv.rs` and `execution/sandbox.rs`: argv runner and test sandbox.
+- `workspace/agent.rs`: registry methods for agent writes.
+
+Policy-gate rule: every tool call passes one Rust policy gate. Model text, file contents and tool output never change a decision, and approvals are native dialogs that the webview cannot grant.
+
+Checkpoints are stored before each first write to a path, under `<app_local_data_dir>/agent-checkpoints/<task-id>/`.
+
+Test runs are sandboxed per OS: macOS `sandbox-exec` profile; Linux Landlock, otherwise `bwrap`; Windows AppContainer or a restricted token. Without a sandbox, each run needs a native approval that says it is unsandboxed. Network is off by default.
+
 ### Model availability
 
 The model picker shows whether each Ask model can answer before a request is

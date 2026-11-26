@@ -4,15 +4,15 @@
 
 Turing is a cross-platform, AI-native IDE with a professional editor and the **Turing Nebula** dark workbench. Build a dependable, secure IDE foundation before adding AI features.
 
-**Current phase:** Turing **v0.2 Alpha: Turing Intelligence** (read-only Ask, local and cloud models, Auto routing, workspace index, opt-in history and preferences). v0.1 Turing Core is implemented. v0.2 acceptance requires `docs/testing/v0.2-acceptance.md` on native builds. Do not assume a milestone is accepted solely because code was generated.
+**Current phase:** Turing **v0.3 Alpha: Supervised Agent** (Agent mode with plan approval, checkpointed edits, sandboxed tests, review with Keep/Roll back). v0.2 is implemented; v0.3 acceptance requires `docs/testing/v0.3-acceptance.md` on native builds. Do not assume a milestone is accepted solely because code was generated.
 
 ## Stack and repository
 
 - **Desktop:** Tauri 2 and Rust; **frontend:** React, TypeScript, Vite, Zustand; **editor:** Monaco.
 - **Package management:** pnpm workspaces. Use the existing lockfile and package scripts.
 - **Layout:** `apps/desktop` (React UI and `src-tauri` native host), `packages/contracts` (typed boundaries), `packages/design-system` (Nebula tokens), `docs` (specifications), `.github/workflows` (CI).
-- **AI (v0.2):** Rust owns Ask inference through OpenAI-compatible endpoints: local llama-server on `127.0.0.1:8080` and Qwen3-Coder via OpenRouter. Keys live in the OS credential store. Cloud requests need per-request user consent.
-- Future phases may add Python/FastAPI, agents, extensions, and SQLite persistence. Do not introduce these ahead of their planned work packages.
+- **AI (v0.2/v0.3):** Rust owns Ask inference and the v0.3 agent loop (ADR-011) through OpenAI-compatible endpoints: local llama-server on `127.0.0.1:8080` and Qwen3-Coder via OpenRouter. Keys live in the OS credential store. Cloud requests need per-request user consent.
+- Future phases may add Python, extensions, and SQLite persistence. Do not introduce these ahead of their planned work packages.
 
 ## Source of truth and context use
 

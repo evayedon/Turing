@@ -12,14 +12,14 @@ Turing shall be IDE-first, local-first, modular, secure under supervised autonom
 
 - **Presentation:** React/TypeScript, Monaco, Nebula workspace, Zustand, AI/graph panels.
 - **Native core:** Tauri 2/Rust, command gateway, filesystem, Git, PTY, LSP/DAP managers, policy engine, extension manager.
-- **AI runtime:** Python/FastAPI, orchestrator, agent state machine, adaptive router, context retrieval, Evolution.
+- **AI runtime:** Python/FastAPI, orchestrator, adaptive router, context retrieval, Evolution (later phases). The v0.3 agent state machine runs in the Rust host (ADR-011).
 - **Storage:** SQLite, text/vector indexes, code graph, OS credential store.
 - **Providers:** local inference (Ollama/llama.cpp candidates), cloud APIs, future Turing LLM.
   All privileged agent actions must traverse the native policy gateway.
 
 ## 3. Process and lifecycle design
 
-The Tauri/Rust process owns application lifecycle and managed subprocesses. React runs in the desktop WebView. A separately managed Python service provides AI and communicates over an authenticated local channel; loopback is the initial proposal, subject to security validation. LSP, DAP, extensions and model processes are separately managed where appropriate. AI service failure must not stop the IDE.
+The Tauri/Rust process owns application lifecycle and managed subprocesses. React runs in the desktop WebView. A separately managed Python service provides AI and communicates over an authenticated local channel; loopback is the initial proposal, subject to security validation. LSP, DAP, extensions and model processes are separately managed where appropriate. AI service failure must not stop the IDE. For v0.3 the agent loop runs in the Rust process and exposes no authenticated local API; the Python service and its local channel remain later-phase.
 
 ## 4. Proposed monorepo
 
@@ -52,10 +52,12 @@ Modules: workspace, filesystem, terminal, git, debugger, language_servers, permi
 
 - Orchestrator: chat, context, streaming and cancellation.
 - Router: model selection by task, user choice, privacy, latency and cost.
-- Agent: plan, permission requests, execution, verification and history.
+- Agent: plan, permission requests, execution, verification and history. _Superseded for v0.3 by ADR-011: the agent loop runs in the Rust host._
 - Context: text/symbol/semantic/graph retrieval with source references.
 - Evolution: local memory, feedback and evaluated improvement.
-  Agent lifecycle: Created → Planning → AwaitingApproval (if needed) → Executing → Verifying → Completed; cancellation and failure transitions are persistent and bounded.
+  Agent lifecycle (v0.3): Planning → AwaitingPlanApproval → Executing ⇄ Verifying → Review → Kept | RolledBack, plus Cancelled; cancellation and limit transitions are bounded.
+
+  **ADR-011 (v0.3):** the agent loop runs in the Rust host. It supersedes the Python agent runtime for v0.3. The Python orchestrator, router and Evolution remain later-phase.
 
 ## 8. Security architecture
 
@@ -83,7 +85,7 @@ Windows: signed installer/package. macOS: signed/notarized application. Linux: p
 
 ## 14. Architecture decision records
 
-ADR-001 Tauri/React/Rust; ADR-002 AI service lifecycle/IPC; ADR-003 SQLite migrations; ADR-004 permissions; ADR-005 model interface; ADR-006 context/graph; ADR-007 extension runtime; ADR-008 packaging/updates; ADR-009 licensing; ADR-010 LSP/DAP support.
+ADR-001 Tauri/React/Rust; ADR-002 AI service lifecycle/IPC; ADR-003 SQLite migrations; ADR-004 permissions; ADR-005 model interface; ADR-006 context/graph; ADR-007 extension runtime; ADR-008 packaging/updates; ADR-009 licensing; ADR-010 LSP/DAP support; ADR-011 Rust agent loop for v0.3 (supersedes the Python agent runtime).
 
 ## 15. Implementation stages
 
@@ -91,7 +93,7 @@ ADR-001 Tauri/React/Rust; ADR-002 AI service lifecycle/IPC; ADR-003 SQLite migra
 2. Nebula UI, Monaco, files and recovery.
 3. Terminal, Git, initial LSP/debugging.
 4. AI runtime, model adapters, indexing.
-5. Supervised agent and rollback.
+5. Supervised agent and rollback (v0.3: Rust agent loop, ADR-011).
 6. Extensions, MCP, memory and evaluations.
 7. Production hardening across platforms.
 
