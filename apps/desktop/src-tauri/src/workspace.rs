@@ -485,11 +485,20 @@ fn open_picked_directory(selected: &Path) -> Result<(std::path::PathBuf, Dir)> {
 fn valid_component(name: &str) -> bool {
     !name.is_empty()
         && !matches!(name, "." | "..")
+        && !short_name(name)
         && !name.ends_with(['.', ' '])
         && !name.contains(['/', '\\', ':', '\0'])
         && Path::new(name)
             .components()
             .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+/// Windows 8.3 short names (`GIT~1`) can alias `.git` or a secret directory on
+/// NTFS, so a `~` followed by a digit is refused on every platform.
+pub(crate) fn short_name(name: &str) -> bool {
+    name.split('~')
+        .skip(1)
+        .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 pub(crate) fn relative_parts(path: &str) -> Result<Vec<&str>> {
