@@ -140,20 +140,44 @@ struct Scan<'a> {
     bytes: u64,
 }
 
-fn eligible(name: &str) -> bool {
+/// Files that may hold credentials. Shared with the agent policy gate.
+pub(crate) fn secret_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    if [
+    ["secret", "credential", "password", "private"]
+        .iter()
+        .any(|part| name.contains(part))
+        || matches!(name.as_str(), ".env" | ".npmrc" | ".pypirc" | ".netrc")
+        || name.starts_with(".env.")
+        || name.starts_with("id_rsa")
+        || name.starts_with("id_ed25519")
+        || [".pem", ".key", ".p12", ".pfx"]
+            .iter()
+            .any(|extension| name.ends_with(extension))
+}
+
+/// Directories that may hold credentials. Shared with the agent policy gate.
+pub(crate) fn secret_directory(name: &str) -> bool {
+    [
         "secret",
-        "credential",
-        "password",
+        "secrets",
+        "credentials",
         "private",
-        "generated",
-        "min.js",
-        "min.css",
-        "lock.",
+        ".ssh",
+        ".aws",
+        ".gnupg",
     ]
     .iter()
-    .any(|part| name.contains(part))
+    .any(|part| name.eq_ignore_ascii_case(part))
+}
+
+fn eligible(name: &str) -> bool {
+    if secret_name(name) {
+        return false;
+    }
+    let name = name.to_ascii_lowercase();
+    if ["generated", "min.js", "min.css", "lock."]
+        .iter()
+        .any(|part| name.contains(part))
     {
         return false;
     }
@@ -185,17 +209,10 @@ fn excluded_content(content: &str) -> bool {
 
 fn eligible_directory(name: &str) -> bool {
     !name.starts_with('.')
-        && ![
-            "vendor",
-            "generated",
-            "secret",
-            "secrets",
-            "credentials",
-            "private",
-            "out",
-        ]
-        .iter()
-        .any(|part| name.eq_ignore_ascii_case(part))
+        && !secret_directory(name)
+        && !["vendor", "generated", "out"]
+            .iter()
+            .any(|part| name.eq_ignore_ascii_case(part))
 }
 
 impl Walk for Scan<'_> {

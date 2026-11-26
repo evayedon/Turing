@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Not wired into commands until the agent loop task lands.
+#[cfg_attr(not(test), allow(dead_code))]
+mod agent;
 mod ask;
 mod commands;
 #[cfg(test)]
