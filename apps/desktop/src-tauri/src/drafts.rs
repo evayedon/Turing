@@ -225,7 +225,7 @@ fn validate(entry: &Draft) -> Result<()> {
     Ok(())
 }
 
-fn sync_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     match File::open(path)?.sync_all() {
         Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP)) => (),
@@ -236,7 +236,7 @@ fn sync_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn private_dir(path: &Path) -> io::Result<()> {
     let builder = fs::DirBuilder::new();
     #[cfg(unix)]
     let builder = {
