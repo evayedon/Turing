@@ -139,8 +139,8 @@ fn valid_path(path: &str) -> bool {
     relative_parts(path).is_ok_and(|parts| !parts.is_empty())
 }
 
-/// The entry key for `path`: case-folded where the default file systems are case-insensitive
-/// (macOS, Windows), so a second spelling of one file maps to its first entry.
+/// Case-folded where the default file systems are case-insensitive (macOS, Windows). Used only to
+/// detect a second spelling, which is refused: on a case-sensitive volume it is another file.
 fn key(path: &str) -> String {
     if cfg!(any(target_os = "macos", windows)) {
         path.to_lowercase()
@@ -281,8 +281,19 @@ impl Checkpoint {
                 return Err(invalid("original cannot be restored by rollback"));
             }
         }
-        if self.entry(path).is_some() {
-            return Ok(());
+        if let Some(entry) = self
+            .manifest
+            .entries
+            .iter()
+            .find(|entry| key(&entry.path) == key(path))
+        {
+            if entry.path == path {
+                return Ok(());
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path differs only in case from a recorded path",
+            ));
         }
         let (original, last_agent_version) = match original {
             None => (Original::Absent, None),
@@ -314,7 +325,7 @@ impl Checkpoint {
             .manifest
             .entries
             .iter()
-            .position(|entry| key(&entry.path) == key(path))
+            .position(|entry| entry.path == path)
             .ok_or_else(|| invalid("path was not recorded before the write"))?;
         self.update(|manifest| {
             manifest.entries[index].last_agent_version = version.map(str::to_owned)
@@ -490,7 +501,7 @@ impl Checkpoint {
         self.manifest
             .entries
             .iter()
-            .find(|entry| key(&entry.path) == key(path))
+            .find(|entry| entry.path == path)
     }
 
     /// Reads a blob and verifies its hash.
@@ -1017,7 +1028,7 @@ mod tests {
 
     #[cfg(any(target_os = "macos", windows))]
     #[test]
-    fn a_second_spelling_maps_to_the_first_entry_on_case_insensitive_targets() {
+    fn a_second_spelling_is_refused_before_the_write_on_case_insensitive_targets() {
         let f = fixture();
         fs::write(f.folder.path().join("a.txt"), "original").unwrap();
         let mut checkpoint = f.checkpoint("A");
@@ -1025,15 +1036,21 @@ mod tests {
         checkpoint
             .record("a.txt", Some((b"original", &version)))
             .unwrap();
-        // The agent's own content must never become the "original".
-        checkpoint.record("A.TXT", Some((b"agent", "v2"))).unwrap();
-        checkpoint.note_write("A.txt", Some("v2")).unwrap();
+        // On a case-sensitive volume `A.TXT` is another file; merging would lose its original.
+        for spelling in ["A.TXT", "A.txt"] {
+            let error = checkpoint
+                .record(spelling, Some((b"agent", "v2")))
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{spelling}");
+            assert!(checkpoint.note_write(spelling, Some("v2")).is_err());
+        }
+        checkpoint.record("a.txt", Some((b"agent", "v2"))).unwrap();
         assert_eq!(
             checkpoint.changed_paths(),
             vec![changed("a.txt", ChangeKind::Modified)]
         );
         assert_eq!(
-            checkpoint.original("A.txt").unwrap(),
+            checkpoint.original("a.txt").unwrap(),
             Some(b"original".to_vec())
         );
         let reopened = Checkpoint::open(f.app_data.path(), checkpoint.task_id()).unwrap();
