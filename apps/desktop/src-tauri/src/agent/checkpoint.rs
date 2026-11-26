@@ -6,12 +6,12 @@
 
 use crate::{
     drafts::{private_dir, sync_dir},
-    workspace::{relative_parts, Registry, WorkspaceError, MAX_TEXT_BYTES},
+    workspace::{relative_parts, validate_save_content, Registry, WorkspaceError, MAX_TEXT_BYTES},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -103,11 +103,27 @@ pub(crate) struct RollbackReport {
     pub complete: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RecoverySummary {
     pub task_id: Uuid,
     pub files: Vec<ChangedFile>,
+}
+
+/// One leftover checkpoint for the startup Roll back / Keep offer.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum Recovery {
+    Unfinished(RecoverySummary),
+    /// Cannot be opened (damaged manifest or blob); kept on disk so the developer is told.
+    Corrupt {
+        task_id: Uuid,
+        reason: String,
+    },
 }
 
 pub(crate) struct Checkpoint {
@@ -121,6 +137,16 @@ fn invalid(message: &str) -> io::Error {
 
 fn valid_path(path: &str) -> bool {
     relative_parts(path).is_ok_and(|parts| !parts.is_empty())
+}
+
+/// The entry key for `path`: case-folded where the default file systems are case-insensitive
+/// (macOS, Windows), so a second spelling of one file maps to its first entry.
+fn key(path: &str) -> String {
+    if cfg!(any(target_os = "macos", windows)) {
+        path.to_lowercase()
+    } else {
+        path.to_owned()
+    }
 }
 
 fn valid_blob(name: &str) -> bool {
@@ -140,8 +166,19 @@ fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     if !metadata.is_file() || metadata.len() > limit {
         return Err(invalid("invalid checkpoint file"));
     }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(invalid("invalid checkpoint file"));
+    }
     let mut bytes = Vec::new();
-    File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    file.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
         return Err(invalid("invalid checkpoint file"));
     }
@@ -217,7 +254,7 @@ impl Checkpoint {
         for (index, entry) in checkpoint.manifest.entries.iter().enumerate() {
             let duplicate = checkpoint.manifest.entries[..index]
                 .iter()
-                .any(|other| other.path == entry.path);
+                .any(|other| key(&other.path) == key(&entry.path));
             if !valid_path(&entry.path) || duplicate {
                 return Err(invalid("invalid checkpoint entry"));
             }
@@ -229,10 +266,20 @@ impl Checkpoint {
     }
 
     /// Durably records the original bytes of `path` before its first write; no-op if already
-    /// recorded.
+    /// recorded. Refuses an original that rollback could not write back (too large, not UTF-8 or
+    /// containing NUL), so the caller must refuse the agent's write instead.
     pub(crate) fn record(&mut self, path: &str, original: Option<(&[u8], &str)>) -> io::Result<()> {
         if !valid_path(path) {
             return Err(invalid("path outside the workspace"));
+        }
+        if let Some((bytes, _)) = original {
+            if std::str::from_utf8(bytes)
+                .map_err(drop)
+                .and_then(|text| validate_save_content(text).map_err(drop))
+                .is_err()
+            {
+                return Err(invalid("original cannot be restored by rollback"));
+            }
         }
         if self.entry(path).is_some() {
             return Ok(());
@@ -267,7 +314,7 @@ impl Checkpoint {
             .manifest
             .entries
             .iter()
-            .position(|entry| entry.path == path)
+            .position(|entry| key(&entry.path) == key(path))
             .ok_or_else(|| invalid("path was not recorded before the write"))?;
         self.update(|manifest| {
             manifest.entries[index].last_agent_version = version.map(str::to_owned)
@@ -364,14 +411,22 @@ impl Checkpoint {
         let complete = remaining.is_empty();
         if complete {
             // Every path is restored; a leftover directory would only re-offer no-op work.
-            let _ = fs::remove_dir_all(&self.dir);
+            if let Err(error) = fs::remove_dir_all(&self.dir) {
+                eprintln!(
+                    "turing agent checkpoint: cannot remove a rolled-back checkpoint: {error}"
+                );
+            }
             self.manifest.entries.clear();
             self.manifest.created_dirs.clear();
         } else {
-            let _ = self.update(|manifest| {
+            // On failure the stored manifest still lists every entry; rerunning is a no-op for
+            // the restored ones.
+            if let Err(error) = self.update(|manifest| {
                 manifest.entries = remaining;
                 manifest.created_dirs = dirs;
-            });
+            }) {
+                eprintln!("turing agent checkpoint: cannot record rollback progress: {error}");
+            }
         }
         RollbackReport { files, complete }
     }
@@ -435,7 +490,7 @@ impl Checkpoint {
         self.manifest
             .entries
             .iter()
-            .find(|entry| entry.path == path)
+            .find(|entry| key(&entry.path) == key(path))
     }
 
     /// Reads a blob and verifies its hash.
@@ -466,23 +521,64 @@ impl Checkpoint {
     }
 }
 
-/// Checkpoints left behind for `workspace_identity` (crashed or unresolved tasks). Corrupt or
-/// unreadable checkpoints are skipped and left on disk.
-pub(crate) fn unfinished(app_data: &Path, workspace_identity: &str) -> Vec<RecoverySummary> {
+/// Checkpoints left behind for `workspace_identity` (crashed or unresolved tasks). A checkpoint
+/// that cannot be opened is reported as `Corrupt` unless its manifest names another workspace;
+/// nothing is deleted.
+pub(crate) fn unfinished(app_data: &Path, workspace_identity: &str) -> Vec<Recovery> {
     let Ok(entries) = fs::read_dir(app_data.join(DIR)) else {
         return Vec::new();
     };
-    let mut found: Vec<RecoverySummary> = entries
+    let mut found: Vec<Recovery> = entries
         .filter_map(|entry| Uuid::parse_str(entry.ok()?.file_name().to_str()?).ok())
-        .filter_map(|task_id| Checkpoint::open(app_data, task_id).ok())
-        .filter(|checkpoint| checkpoint.manifest.workspace_identity == workspace_identity)
-        .map(|checkpoint| RecoverySummary {
-            task_id: checkpoint.task_id(),
-            files: checkpoint.changed_paths(),
+        .filter_map(|task_id| match Checkpoint::open(app_data, task_id) {
+            Ok(checkpoint) => {
+                (checkpoint.manifest.workspace_identity == workspace_identity).then(|| {
+                    Recovery::Unfinished(RecoverySummary {
+                        task_id,
+                        files: checkpoint.changed_paths(),
+                    })
+                })
+            }
+            Err(error) => corrupt(app_data, task_id, workspace_identity, error),
         })
         .collect();
-    found.sort_by_key(|summary| summary.task_id);
+    found.sort_by_key(|recovery| match recovery {
+        Recovery::Unfinished(summary) => summary.task_id,
+        Recovery::Corrupt { task_id, .. } => *task_id,
+    });
     found
+}
+
+fn corrupt(
+    app_data: &Path,
+    task_id: Uuid,
+    workspace_identity: &str,
+    error: io::Error,
+) -> Option<Recovery> {
+    let dir = task_dir(app_data, task_id);
+    let manifest = match read_limited(&dir.join(MANIFEST), MAX_MANIFEST) {
+        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
+        // A crash before the first manifest save: blobs are only written after it, so an empty
+        // `blobs/` means nothing was recorded and nothing needs rolling back.
+        Err(missing)
+            if missing.kind() == io::ErrorKind::NotFound
+                && fs::read_dir(dir.join("blobs"))
+                    .map_or(true, |mut blobs| blobs.next().is_none()) =>
+        {
+            return None
+        }
+        Err(_) => None,
+    };
+    let owner = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("workspaceIdentity")?.as_str());
+    if owner.is_some_and(|owner| owner != workspace_identity) {
+        return None;
+    }
+    Some(Recovery::Corrupt {
+        task_id,
+        reason: error.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -766,8 +862,7 @@ mod tests {
                 .unwrap();
             checkpoint.task_id()
         };
-        let found = unfinished(f.app_data.path(), "A");
-        assert_eq!(found.iter().map(|s| s.task_id).collect::<Vec<_>>(), [task]);
+        assert_eq!(unfinished_ids(f.app_data.path(), "A"), [task]);
         let mut checkpoint = Checkpoint::open(f.app_data.path(), task).unwrap();
         let report = f.rollback(&mut checkpoint, &mut |_| panic!("unchanged file"));
         assert!(report.complete);
@@ -798,28 +893,161 @@ mod tests {
         assert!(!f.folder.path().join("new.txt").exists());
     }
 
+    fn unfinished_ids(app_data: &Path, identity: &str) -> Vec<Uuid> {
+        unfinished(app_data, identity)
+            .iter()
+            .map(|recovery| match recovery {
+                Recovery::Unfinished(summary) => summary.task_id,
+                Recovery::Corrupt { .. } => panic!("unexpected corrupt checkpoint"),
+            })
+            .collect()
+    }
+
     #[test]
-    fn unfinished_lists_only_matching_workspace_and_ignores_corrupt_manifests() {
+    fn unfinished_lists_matching_workspace_and_surfaces_corrupt_checkpoints() {
         let f = fixture();
         let mut a = f.checkpoint("A");
         a.record("a.txt", Some((b"a", "v"))).unwrap();
         let mut b = f.checkpoint("B");
         b.record("a.txt", Some((b"b", "v"))).unwrap();
+        let tamper = |checkpoint: &Checkpoint, bytes: &[u8]| {
+            let blob = task_dir(f.app_data.path(), checkpoint.task_id())
+                .join("blobs")
+                .join(format!("{:x}", Sha256::digest(bytes)));
+            fs::write(blob, "tampered").unwrap();
+        };
         let mut corrupt = f.checkpoint("A");
         corrupt.record("c.txt", Some((b"c", "v"))).unwrap();
-        let blob = task_dir(f.app_data.path(), corrupt.task_id())
-            .join("blobs")
-            .join(format!("{:x}", Sha256::digest(b"c")));
-        fs::write(blob, "tampered").unwrap();
+        tamper(&corrupt, b"c");
+        // Another workspace's damaged checkpoint is not ours to report.
+        let mut other_corrupt = f.checkpoint("B");
+        other_corrupt.record("c.txt", Some((b"c", "v"))).unwrap();
+        tamper(&other_corrupt, b"c");
+        // An unreadable manifest cannot be attributed, so every workspace hears about it.
+        let unreadable = f.checkpoint("B");
+        fs::write(
+            task_dir(f.app_data.path(), unreadable.task_id()).join("manifest.json"),
+            "{not json",
+        )
+        .unwrap();
+        // A crash before the first manifest save leaves nothing to roll back.
+        let empty = Uuid::new_v4();
+        fs::create_dir_all(task_dir(f.app_data.path(), empty).join("blobs")).unwrap();
+        // A lost manifest with blobs present is damage, not an empty crash.
+        let lost = f.checkpoint("A");
+        fs::write(
+            task_dir(f.app_data.path(), lost.task_id()).join("blobs/orphan"),
+            "x",
+        )
+        .unwrap();
+        fs::remove_file(task_dir(f.app_data.path(), lost.task_id()).join("manifest.json")).unwrap();
         fs::create_dir_all(f.app_data.path().join("agent-checkpoints/not-a-uuid")).unwrap();
 
         let found = unfinished(f.app_data.path(), "A");
-        assert_eq!(
-            found.iter().map(|s| s.task_id).collect::<Vec<_>>(),
-            [a.task_id()]
-        );
-        assert_eq!(found[0].files, vec![changed("a.txt", ChangeKind::Modified)]);
+        let mut corrupt_ids = Vec::new();
+        let mut unfinished_ids = Vec::new();
+        for recovery in &found {
+            match recovery {
+                Recovery::Unfinished(summary) => {
+                    assert_eq!(summary.files, vec![changed("a.txt", ChangeKind::Modified)]);
+                    unfinished_ids.push(summary.task_id);
+                }
+                Recovery::Corrupt { task_id, reason } => {
+                    assert!(!reason.is_empty());
+                    corrupt_ids.push(*task_id);
+                }
+            }
+        }
+        assert_eq!(unfinished_ids, [a.task_id()]);
+        let mut expected = vec![corrupt.task_id(), unreadable.task_id(), lost.task_id()];
+        expected.sort();
+        assert_eq!(corrupt_ids, expected);
+        // Never deleted automatically.
+        assert!(task_dir(f.app_data.path(), corrupt.task_id()).exists());
+        assert!(task_dir(f.app_data.path(), unreadable.task_id()).exists());
         assert!(unfinished(tempfile::tempdir().unwrap().path(), "A").is_empty());
+    }
+
+    #[test]
+    fn record_refuses_what_rollback_cannot_restore_before_the_write() {
+        let f = fixture();
+        let mut checkpoint = f.checkpoint("A");
+        let oversize = vec![b'a'; MAX_TEXT_BYTES as usize + 1];
+        for bytes in [&oversize[..], b"\xff\xfe binary", b"nul\0byte"] {
+            assert!(checkpoint.record("big.bin", Some((bytes, "v"))).is_err());
+        }
+        assert!(checkpoint.changed_paths().is_empty());
+        let blobs = task_dir(f.app_data.path(), checkpoint.task_id()).join("blobs");
+        assert_eq!(fs::read_dir(&blobs).unwrap().count(), 0);
+
+        // The largest accepted original still opens and is offered for recovery.
+        let largest = vec![b'a'; MAX_TEXT_BYTES as usize];
+        checkpoint
+            .record("large.txt", Some((&largest, "v")))
+            .unwrap();
+        assert_eq!(
+            unfinished_ids(f.app_data.path(), "A"),
+            [checkpoint.task_id()]
+        );
+    }
+
+    #[test]
+    fn non_ascii_original_round_trips_through_crash_recovery() {
+        let f = fixture();
+        let original = "caf\u{e9} \u{1f600}\r\nline two\r\n";
+        fs::write(f.folder.path().join("u.txt"), original).unwrap();
+        let task = {
+            let mut checkpoint = f.checkpoint("A");
+            f.agent_write(&mut checkpoint, "u.txt", "agent");
+            checkpoint.task_id()
+        };
+        assert_eq!(unfinished_ids(f.app_data.path(), "A"), [task]);
+        let mut checkpoint = Checkpoint::open(f.app_data.path(), task).unwrap();
+        assert_eq!(
+            checkpoint.original("u.txt").unwrap(),
+            Some(original.as_bytes().to_vec())
+        );
+        let report = f.rollback(&mut checkpoint, &mut |_| panic!("agent-owned"));
+        assert!(report.complete);
+        assert_eq!(
+            fs::read(f.folder.path().join("u.txt")).unwrap(),
+            original.as_bytes()
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_second_spelling_maps_to_the_first_entry_on_case_insensitive_targets() {
+        let f = fixture();
+        fs::write(f.folder.path().join("a.txt"), "original").unwrap();
+        let mut checkpoint = f.checkpoint("A");
+        let version = f.version("a.txt");
+        checkpoint
+            .record("a.txt", Some((b"original", &version)))
+            .unwrap();
+        // The agent's own content must never become the "original".
+        checkpoint.record("A.TXT", Some((b"agent", "v2"))).unwrap();
+        checkpoint.note_write("A.txt", Some("v2")).unwrap();
+        assert_eq!(
+            checkpoint.changed_paths(),
+            vec![changed("a.txt", ChangeKind::Modified)]
+        );
+        assert_eq!(
+            checkpoint.original("A.txt").unwrap(),
+            Some(b"original".to_vec())
+        );
+        let reopened = Checkpoint::open(f.app_data.path(), checkpoint.task_id()).unwrap();
+        assert_eq!(reopened.changed_paths().len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spellings_stay_distinct_on_case_sensitive_targets() {
+        let f = fixture();
+        let mut checkpoint = f.checkpoint("A");
+        checkpoint.record("a.txt", None).unwrap();
+        checkpoint.record("A.txt", None).unwrap();
+        assert_eq!(checkpoint.changed_paths().len(), 2);
     }
 
     #[test]
