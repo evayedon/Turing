@@ -485,20 +485,11 @@ fn open_picked_directory(selected: &Path) -> Result<(std::path::PathBuf, Dir)> {
 fn valid_component(name: &str) -> bool {
     !name.is_empty()
         && !matches!(name, "." | "..")
-        && !short_name(name)
         && !name.ends_with(['.', ' '])
         && !name.contains(['/', '\\', ':', '\0'])
         && Path::new(name)
             .components()
             .all(|part| matches!(part, std::path::Component::Normal(_)))
-}
-
-/// Windows 8.3 short names (`GIT~1`) can alias `.git` or a secret directory on
-/// NTFS, so a `~` followed by a digit is refused on every platform.
-pub(crate) fn short_name(name: &str) -> bool {
-    name.split('~')
-        .skip(1)
-        .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 pub(crate) fn relative_parts(path: &str) -> Result<Vec<&str>> {
@@ -609,6 +600,24 @@ mod tests {
             .unwrap();
         assert_eq!(file.content, "Turing ✓");
         assert_eq!(file.encoding, "utf-8");
+    }
+
+    #[test]
+    fn names_with_a_tilde_and_digit_are_listed_and_readable() {
+        // Only the agent policy refuses 8.3-style names; the workbench must not hide them.
+        let (folder, registry, workspace) = approved();
+        fs::write(folder.path().join("report~2.txt"), "two").unwrap();
+        fs::write(folder.path().join("x.~1~"), "backup").unwrap();
+        let names: Vec<_> = registry
+            .list(OWNER, &workspace.id, "")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert!(names.contains(&"report~2.txt".to_owned()), "{names:?}");
+        assert!(names.contains(&"x.~1~".to_owned()), "{names:?}");
+        let file = registry.read(OWNER, &workspace.id, "report~2.txt").unwrap();
+        assert_eq!(file.content, "two");
     }
 
     #[test]

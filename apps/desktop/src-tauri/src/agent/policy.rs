@@ -5,7 +5,7 @@
 
 use crate::workspace::{
     ask::{secret_directory, secret_name},
-    relative_parts, short_name,
+    relative_parts,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -268,6 +268,15 @@ pub(crate) fn decide(
 
 // `Err` short-circuits with the decision; `Ok` means "nothing against it yet".
 type Check = Result<(), Decision>;
+
+/// Windows 8.3 short names (`GIT~1`) can alias `.git` or a secret directory on
+/// NTFS, so the agent refuses any component with `~` followed by a digit, on
+/// every platform. The workbench itself still shows such files.
+fn short_name(name: &str) -> bool {
+    name.split('~')
+        .skip(1)
+        .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+}
 
 fn readable(path: &str) -> Check {
     if path.split('/').any(short_name) {
@@ -1160,7 +1169,8 @@ mod tests {
                 "{action:?}"
             );
         }
-        assert!(crate::workspace::relative_parts("GIT~1/hooks").is_err());
+        // The workspace layer accepts these names; only the agent refuses them.
+        assert!(crate::workspace::relative_parts("GIT~1/hooks").is_ok());
         assert!(crate::workspace::relative_parts("src/a~b.rs").is_ok());
         assert_eq!(
             decide(Executing, &s, &Edit { path: "src/a~b.rs" }, &none()),
