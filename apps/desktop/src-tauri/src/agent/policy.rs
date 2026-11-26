@@ -59,7 +59,8 @@ pub(crate) enum AskReason {
     Command(CommandClass),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ordered by strictness, so combining classes keeps the strictest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CommandClass {
     Ordinary,
     Dependency,
@@ -216,17 +217,18 @@ const GIT_HISTORY: &[&str] = &[
 
 const GIT_DENIED: &[&str] = &["push", "reset", "rebase"];
 
-const SHELLS: &[&str] = &[
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "dash",
-    "ksh",
-    "cmd",
-    "powershell",
-    "pwsh",
-    "nu",
+/// Shells whose inline code is not inspected; always denied.
+const SHELLS: &[&str] = &["ksh", "cmd", "powershell", "pwsh", "nu"];
+
+/// Interpreters that can run inline code (`-c`, `-e`, `--eval`). They always
+/// ask, and are denied when the inline code names a denied Git operation.
+const INTERPRETERS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "fish", "python", "python3", "node", "perl", "ruby",
+];
+
+/// Programs that run another command given in their arguments.
+const WRAPPERS: &[&str] = &[
+    "env", "nohup", "time", "nice", "xargs", "command", "exec", "sudo", "doas",
 ];
 
 pub(crate) fn decide(
@@ -268,17 +270,17 @@ fn readable(path: &str) -> Check {
     if secret_path(path) {
         return Err(Decision::Deny(Denial::SecretFile));
     }
-    Ok(())
-}
-
-fn writable(path: &str, dirty: &HashSet<String>) -> Check {
-    readable(path)?;
     if path
         .split('/')
         .any(|part| part.eq_ignore_ascii_case(".git"))
     {
         return Err(Decision::Deny(Denial::GitDirectory));
     }
+    Ok(())
+}
+
+fn writable(path: &str, dirty: &HashSet<String>) -> Check {
+    readable(path)?;
     // An unkeyable path fails closed: it is treated as dirty.
     if dirty_key(path).is_none_or(|key| dirty.contains(&key)) {
         return Err(Decision::Deny(Denial::DirtyInEditor));
@@ -360,10 +362,35 @@ pub(crate) fn action_key(action: &Action) -> ActionKey {
 }
 
 /// Classifies a command for its approval dialog, or denies it outright.
-/// shortcut: wrappers other than `env` (`nohup`, `xargs`, interpreters with
-/// `-c`/`-e`) are classified by their own name; every command still needs a
-/// native approval of its exact argv.
+///
+/// A wrapper (`env`, `nohup`, `sudo`, ...) is unwrapped by classifying every
+/// suffix of its arguments, so no wrapper flag parsing can hide the inner
+/// command. A stray word can only make the result stricter.
 pub(crate) fn classify_command(argv: &[String]) -> Result<CommandClass, Denial> {
+    let Some(first) = argv.first() else {
+        return Err(Denial::EmptyArgv);
+    };
+    if !WRAPPERS.contains(&program_name(first).as_str()) {
+        return classify_direct(argv);
+    }
+    let mut class = CommandClass::Ordinary;
+    for start in 0..argv.len() {
+        let suffix = &argv[start..];
+        let program = program_name(&suffix[0]);
+        let inner = if program == "env" {
+            env_options(&suffix[1..]).map(|()| CommandClass::Ordinary)
+        } else if WRAPPERS.contains(&program.as_str()) {
+            Ok(CommandClass::Ordinary)
+        } else {
+            classify_direct(suffix)
+        };
+        class = class.max(inner?);
+    }
+    Ok(class)
+}
+
+/// Classifies a command that is not a wrapper.
+fn classify_direct(argv: &[String]) -> Result<CommandClass, Denial> {
     let Some(first) = argv.first() else {
         return Err(Denial::EmptyArgv);
     };
@@ -372,8 +399,10 @@ pub(crate) fn classify_command(argv: &[String]) -> Result<CommandClass, Denial> 
     if SHELLS.contains(&program.as_str()) {
         return Err(Denial::ShellInterpreter);
     }
+    if INTERPRETERS.contains(&program.as_str()) || program.starts_with("python") {
+        return inline_code(rest);
+    }
     match program.as_str() {
-        "env" => classify_env(rest),
         "git" => classify_git(rest),
         name if NETWORK_PROGRAMS.contains(&name) => Ok(CommandClass::Network),
         name => {
@@ -393,6 +422,29 @@ pub(crate) fn classify_command(argv: &[String]) -> Result<CommandClass, Denial> 
     }
 }
 
+/// Denies an interpreter run whose arguments contain a denied Git operation
+/// as a token sequence; otherwise it is an ordinary command that asks.
+/// The whole argument list is scanned, so flag order cannot hide the code.
+fn inline_code(args: &[String]) -> Result<CommandClass, Denial> {
+    let tokens: Vec<String> = args
+        .iter()
+        .flat_map(|arg| {
+            arg.split(|c: char| c.is_whitespace() || "'\"`;&|()<>{}[],$".contains(c))
+                .filter(|token| !token.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if program_name(token) == "git"
+            && classify_git(&tokens[index + 1..]) == Err(Denial::DeniedGit)
+        {
+            return Err(Denial::DeniedGit);
+        }
+    }
+    Ok(CommandClass::Ordinary)
+}
+
 fn program_name(program: &str) -> String {
     let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let base = base.to_ascii_lowercase();
@@ -402,26 +454,20 @@ fn program_name(program: &str) -> String {
         .map_or_else(|| base.clone(), str::to_owned)
 }
 
-fn classify_env(args: &[String]) -> Result<CommandClass, Denial> {
+/// Rejects `env` options that can re-split a string into a command (`-S`).
+fn env_options(args: &[String]) -> Result<(), Denial> {
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         match arg.as_str() {
             "-i" | "--ignore-environment" => index += 1,
             "-u" => index += 2,
-            "--" => {
-                index += 1;
-                break;
-            }
-            // `-S` and other options can re-split a string into a command.
+            "--" => break,
             option if option.starts_with('-') => return Err(Denial::ShellInterpreter),
             assignment if assignment.contains('=') => index += 1,
             _ => break,
         }
     }
-    match args.get(index..) {
-        Some(command) if !command.is_empty() => classify_command(command),
-        _ => Ok(CommandClass::Ordinary),
-    }
+    Ok(())
 }
 
 fn classify_git(args: &[String]) -> Result<CommandClass, Denial> {
@@ -801,13 +847,22 @@ mod tests {
             classify_command(&argv(&["curl", "https://x"])),
             Ok(CommandClass::Network)
         );
-        for sh in [
-            &["sh", "-c", "git push"][..],
-            &["bash", "-lc", "x"],
-            &["cmd", "/c", "x"],
-            &["powershell", "-Command", "x"],
+        // Fix round 1: POSIX shells with inline code ask; their inline git is still checked.
+        assert_eq!(
+            classify_command(&argv(&["sh", "-c", "git push"])),
+            Err(Denial::DeniedGit)
+        );
+        for a in [
+            &["bash", "-lc", "x"][..],
             &["env", "FOO=1", "sh", "-c", "x"],
         ] {
+            assert_eq!(
+                classify_command(&argv(a)),
+                Ok(CommandClass::Ordinary),
+                "{a:?}"
+            );
+        }
+        for sh in [&["cmd", "/c", "x"][..], &["powershell", "-Command", "x"]] {
             assert_eq!(
                 classify_command(&argv(sh)),
                 Err(Denial::ShellInterpreter),
@@ -944,8 +999,86 @@ mod tests {
             Err(Denial::UnknownGitSubcommand)
         );
         assert_eq!(
-            classify_command(&argv(&["C:\\bin\\Bash.EXE"])),
+            classify_command(&argv(&["C:\\bin\\PwSh.EXE"])),
             Err(Denial::ShellInterpreter)
+        );
+    }
+
+    #[test]
+    fn wrappers_are_unwrapped_and_inline_code_is_checked_for_denied_git() {
+        let t = tests_argv();
+        let s = scope(Some(&t), true);
+        for a in [
+            &["nohup", "git", "push"][..],
+            &["xargs", "git", "push", "origin"],
+            &["env", "FOO=1", "nice", "-n", "5", "git", "reset", "--hard"],
+            &["sh", "-c", "git push origin main"],
+            &[
+                "sudo", "-u", "me", "time", "-p", "command", "exec", "doas", "git", "rebase",
+            ],
+            &["xargs", "--max-procs", "2", "git", "push"],
+            &["python3", "-c", "import os; os.system('git push')"],
+            &[
+                "node",
+                "-e",
+                "require('child_process').execSync(\"git -C . reset\")",
+            ],
+            &["bash", "-c", "ls;git push"],
+            &["nohup", "env", "-S", "git push"],
+        ] {
+            assert_eq!(
+                decide(Executing, &s, &RunCommand { argv: &argv(a) }, &none()),
+                Decision::Deny(if a.contains(&"-S") {
+                    Denial::ShellInterpreter
+                } else {
+                    Denial::DeniedGit
+                }),
+                "{a:?}"
+            );
+        }
+        for a in [
+            &["bash", "-c", "ls"][..],
+            &["python3", "-c", "print(1)"],
+            &["perl", "-e", "print 1"],
+            &["ruby", "-e", "puts 1"],
+            &["node", "--eval", "1"],
+        ] {
+            assert_eq!(
+                decide(Executing, &s, &RunCommand { argv: &argv(a) }, &none()),
+                Decision::Ask(AskReason::Command(CommandClass::Ordinary)),
+                "{a:?}"
+            );
+        }
+        assert_eq!(
+            classify_command(&argv(&["nohup", "npm", "install", "x"])),
+            Ok(CommandClass::Dependency)
+        );
+        assert_eq!(
+            classify_command(&argv(&["sudo", "git", "commit"])),
+            Ok(CommandClass::GitHistory)
+        );
+        assert_eq!(
+            classify_command(&argv(&["env", "A=1", "git", "-C", "x", "status"])),
+            Ok(CommandClass::Ordinary)
+        );
+    }
+
+    #[test]
+    fn the_git_directory_is_never_read() {
+        let t = tests_argv();
+        let s = scope(Some(&t), true);
+        for p in [".git/config", "sub/.GIT/HEAD"] {
+            for phase in [Planning, Executing] {
+                assert_eq!(
+                    decide(phase, &s, &Read { path: p }, &none()),
+                    Decision::Deny(Denial::GitDirectory),
+                    "{p}"
+                );
+            }
+        }
+        assert_eq!(
+            decide(Planning, &s, &List { path: ".git" }, &none()),
+            Decision::Deny(Denial::GitDirectory)
         );
     }
 }
