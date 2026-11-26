@@ -69,18 +69,18 @@ impl Registry {
         if file::read_snapshot(&directory, &staging, false)
             .is_ok_and(|snapshot| snapshot.version == expected_version)
         {
-            directory.remove_file(&staging)?;
-            return Ok(());
+            let Err(error) = directory.remove_file(&staging) else {
+                return Ok(());
+            };
+            restore(&directory, &staging, name)?;
+            return Err(error.into());
         }
-        // shortcut: check-then-rename can lose to a third writer; NOREPLACE rename if that matters.
-        if matches!(directory.symlink_metadata(name), Err(error) if error.kind() == io::ErrorKind::NotFound)
-        {
-            let _ = directory.rename(&staging, &directory, name);
-        }
+        restore(&directory, &staging, name)?;
         Err(WorkspaceError::SaveRace)
     }
 
-    /// Removes an empty directory the agent created (rollback only); never follows links.
+    /// Removes an empty directory (used by rollback for directories the agent created); never
+    /// follows links. It does not itself know which directories the agent created.
     pub(crate) fn agent_remove_empty_dir(
         &self,
         owner: &str,
@@ -132,13 +132,26 @@ fn create_parents(root: &Dir, parents: &[&str], created: &mut Vec<(Dir, usize)>)
         directory = match open_child_dir(&directory, name) {
             Err(WorkspaceError::NotFound) => {
                 directory.create_dir(name)?;
-                let child = open_child_dir(&directory, name)?;
+                // Record before opening so a directory swapped for a link is still cleaned up.
                 created.push((directory, index));
-                child
+                let (parent, _) = created.last().ok_or(WorkspaceError::IoError)?;
+                open_child_dir(parent, name)?
             }
             other => other?,
         };
     }
+    Ok(())
+}
+
+/// Puts a staged entry back under `name` only if that name is still free. An exclusive hard link
+/// never replaces a third writer's entry; on failure the original stays under `staging` and the
+/// caller gets `SaveRace` (whose message points at the `.turing-save-*` recovery file).
+fn restore(directory: &Dir, staging: &str, name: &str) -> Result<()> {
+    directory
+        .hard_link(staging, directory, name)
+        .map_err(|_| WorkspaceError::SaveRace)?;
+    // Both names now hold the same inode, so a failed unlink loses nothing.
+    directory.remove_file(staging)?;
     Ok(())
 }
 
@@ -343,6 +356,36 @@ mod tests {
             assert!(outside.path().exists());
             assert!(folder.path().join("link").exists());
         }
+    }
+
+    #[test]
+    fn restore_never_overwrites_an_entry_that_took_the_name() {
+        let folder = tempfile::tempdir().unwrap();
+        let directory =
+            cap_std::fs::Dir::open_ambient_dir(folder.path(), cap_std::ambient_authority())
+                .unwrap();
+        fs::write(folder.path().join(".staged"), "original").unwrap();
+        fs::write(folder.path().join("name"), "third writer").unwrap();
+        assert_eq!(
+            super::restore(&directory, ".staged", "name"),
+            Err(WorkspaceError::SaveRace)
+        );
+        assert_eq!(
+            fs::read_to_string(folder.path().join("name")).unwrap(),
+            "third writer"
+        );
+        assert_eq!(
+            fs::read_to_string(folder.path().join(".staged")).unwrap(),
+            "original"
+        );
+
+        fs::remove_file(folder.path().join("name")).unwrap();
+        super::restore(&directory, ".staged", "name").unwrap();
+        assert_eq!(
+            fs::read_to_string(folder.path().join("name")).unwrap(),
+            "original"
+        );
+        assert!(!folder.path().join(".staged").exists());
     }
 
     #[test]
