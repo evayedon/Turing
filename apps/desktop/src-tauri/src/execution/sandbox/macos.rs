@@ -21,6 +21,7 @@ const PROFILE: &str = r#"
     (subpath "/opt/homebrew") (subpath "/opt/local")
     (literal "/private/etc/localtime") (literal "/private/etc/hosts")
     (literal "/private/etc/resolv.conf") (literal "/private/etc/passwd")
+    (subpath "/private/etc/ssl")
     (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom")
     (literal (param "PROGRAM"))
     (subpath (param "WORKSPACE")) (subpath (param "TASK_TMP"))
@@ -28,9 +29,12 @@ const PROFILE: &str = r#"
     (subpath (string-append (param "HOME") "/.cargo/registry"))
     (subpath (string-append (param "HOME") "/.cargo/git"))
     (subpath (string-append (param "HOME") "/.rustup/toolchains"))
+    (literal (string-append (param "HOME") "/.rustup/settings.toml"))
     (subpath (string-append (param "HOME") "/.nvm/versions"))
     (subpath (string-append (param "HOME") "/.npm/_cacache"))
     (subpath (string-append (param "HOME") "/Library/pnpm"))
+    (subpath (string-append (param "HOME") "/Library/Caches/pnpm"))
+    (subpath (string-append (param "HOME") "/Library/Caches/pip"))
     (subpath (string-append (param "HOME") "/go/pkg/mod")))
 (allow file-write*
     (literal "/dev/null") (subpath (param "WORKSPACE")) (subpath (param "TASK_TMP")))
@@ -40,7 +44,26 @@ const NETWORK: &str = r#"
 (allow network-outbound network-inbound (remote ip))
 (allow network-bind (local ip))
 (allow mach-lookup (global-name "com.apple.mDNSResponder"))
+(allow file-write*
+    (subpath (string-append (param "HOME") "/.cargo/registry"))
+    (subpath (string-append (param "HOME") "/.cargo/git"))
+    (subpath (string-append (param "HOME") "/.npm/_cacache"))
+    (subpath (string-append (param "HOME") "/Library/pnpm/store"))
+    (subpath (string-append (param "HOME") "/Library/Caches/pnpm"))
+    (subpath (string-append (param "HOME") "/Library/Caches/pip"))
+    (subpath (string-append (param "HOME") "/go/pkg/mod")))
 "#;
+
+const PREFIX: &str = r#"
+(allow file-read* (subpath (param "PREFIX")))
+"#;
+
+// Last, so it overrides the workspace write rule. A `.git` entry at any depth, in any case,
+// stays read-only: hooks or config planted there would run unsandboxed later.
+const GIT: &str = r##"
+(deny file-write* (require-all
+    (subpath (param "WORKSPACE")) (regex #"/\.[gG][iI][tT](/|$)")))
+"##;
 
 fn directory_id(path: &Path) -> Option<(u64, u64)> {
     let metadata = fs::metadata(path).ok()?;
@@ -67,6 +90,7 @@ pub(super) struct Policy {
     home: PathBuf,
     program: PathBuf,
     invocation: PathBuf,
+    prefix: Option<PathBuf>,
     network: bool,
 }
 
@@ -94,6 +118,7 @@ impl Policy {
             temp_id: directory_id(&temp)?,
             workspace,
             temp,
+            prefix: super::install_prefix(program, &home),
             home,
             program: program.canonicalize().ok()?,
             invocation: program.to_path_buf(),
@@ -125,24 +150,73 @@ impl Policy {
     }
 
     pub(super) fn command(&self, _cwd: &Dir, args: &[String]) -> std::io::Result<Command> {
+        let scan = super::scan(&self.workspace, &self.temp)?;
         let mut command = Command::new("/usr/bin/sandbox-exec");
-        let profile = if self.network {
-            [PROFILE, NETWORK].concat()
-        } else {
-            PROFILE.to_owned()
-        };
+        let mut profile = PROFILE.to_owned();
+        if self.network {
+            profile.push_str(NETWORK);
+        }
+        if self.prefix.is_some() {
+            profile.push_str(PREFIX);
+        }
+        profile.push_str(GIT);
+        // Paths reach the profile only as parameters, never as profile text.
+        let mut parameters = vec![
+            ("WORKSPACE".to_owned(), &self.workspace),
+            ("TASK_TMP".to_owned(), &self.temp),
+            ("HOME".to_owned(), &self.home),
+            ("PROGRAM".to_owned(), &self.program),
+        ];
+        parameters.extend(self.prefix.iter().map(|path| ("PREFIX".to_owned(), path)));
+        if !scan.shared.is_empty() {
+            profile.push_str("(deny file-write*");
+            for (index, path) in scan.shared.iter().enumerate() {
+                profile.push_str(&format!(" (literal (param \"SHARED{index}\"))"));
+                parameters.push((format!("SHARED{index}"), path));
+            }
+            profile.push_str(")\n");
+        }
         command.args(["-p", &profile]);
-        for (name, path) in [
-            ("WORKSPACE=", &self.workspace),
-            ("TASK_TMP=", &self.temp),
-            ("HOME=", &self.home),
-            ("PROGRAM=", &self.program),
-        ] {
+        for (name, path) in parameters {
             let mut parameter = OsString::from(name);
+            parameter.push("=");
             parameter.push(path);
             command.arg("-D").arg(parameter);
         }
         command.arg(&self.invocation).args(args);
         Ok(command)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_text_carries_no_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let [workspace, temp, home] = ["w\")(allow default)", "t", "h"].map(|name| {
+            let path = root.path().join(name);
+            fs::create_dir(&path).unwrap();
+            path
+        });
+        let shared = root.path().join("store");
+        fs::write(&shared, "").unwrap();
+        fs::hard_link(&shared, workspace.join("linked")).unwrap();
+        let policy = Policy::new(&workspace, &temp, Some(&home), Path::new("/bin/sh"), true)
+            .expect("policy");
+        let command = policy
+            .command(
+                &Dir::open_ambient_dir(&workspace, cap_std::ambient_authority()).unwrap(),
+                &[],
+            )
+            .unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        let profile = args[1].to_str().unwrap();
+        assert!(!profile.contains("allow default"));
+        assert!(profile.contains("SHARED0"));
+        assert!(args
+            .iter()
+            .any(|arg| arg.to_str().unwrap().ends_with("/linked")));
     }
 }

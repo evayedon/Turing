@@ -21,8 +21,8 @@ use windows_sys::Win32::{
     },
     Security::{
         Authorization::{
-            GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-            REVOKE_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+            GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, DENY_ACCESS, EXPLICIT_ACCESS_W,
+            GRANT_ACCESS, REVOKE_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
         },
         CreateWellKnownSid, FreeSid,
         Isolation::{
@@ -34,10 +34,11 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION, DELETE,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        READ_CONTROL, WRITE_DAC,
+        FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA, FILE_WRITE_EA, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         Pipes::CreatePipe,
@@ -56,15 +57,47 @@ use crate::terminal::platform::{guard_handle, ProcessGuard};
 
 const READ: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 const WRITE: u32 = READ | FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD;
+/// Every way to change an object, without the SYNCHRONIZE and READ_CONTROL bits in
+/// FILE_GENERIC_WRITE, which reads need. On a directory these bits also cover adding entries.
+const MODIFY: u32 = FILE_WRITE_DATA
+    | FILE_APPEND_DATA
+    | FILE_WRITE_EA
+    | FILE_WRITE_ATTRIBUTES
+    | DELETE
+    | FILE_DELETE_CHILD
+    | WRITE_DAC
+    | WRITE_OWNER;
+/// Read grants below the profile: program and library trees only, never configuration that
+/// can hold credentials (`.cargo/credentials.toml`, global npm or pnpm config). Node-family
+/// programs run unsandboxed on Windows, so their trees are not granted.
 const TOOLCHAINS: &[&str] = &[
     ".cargo/bin",
     ".cargo/git",
     ".cargo/registry",
     ".rustup/toolchains",
     ".rustup/settings.toml",
-    ".nvm/versions",
     "go/pkg/mod",
+    "AppData/Local/pip/Cache",
 ];
+/// Download caches, writable only when the plan allows network access.
+const CACHE_WRITES: &[&str] = &[
+    ".cargo/git",
+    ".cargo/registry",
+    "go/pkg/mod",
+    "AppData/Local/pip/Cache",
+];
+
+#[derive(Clone, Copy)]
+enum Ace {
+    /// Inherited by every child of a directory.
+    Allow(u32),
+    /// Inherited by every child of a directory.
+    Deny(u32),
+    /// This object only.
+    DenyHere(u32),
+    /// Removes every explicit entry for the SID.
+    Revoke,
+}
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain([0]).collect()
@@ -177,16 +210,22 @@ fn final_path(handle: HANDLE) -> io::Result<PathBuf> {
     )))
 }
 
-fn check_inheritance_scope(root: &Path) -> io::Result<()> {
+/// Returns every entry named `.git` (any case) below `root`.
+fn check_inheritance_scope(root: &Path) -> io::Result<Vec<PathBuf>> {
     // Inheritable DACL changes can affect existing children. Reject links
     // rather than granting access to an object with a name outside the scope.
+    let mut git = Vec::new();
     let mut directories = vec![root.to_path_buf()];
     while let Some(path) = directories.pop() {
         for entry in fs::read_dir(path)? {
-            let path = entry?.path();
+            let entry = entry?;
+            let path = entry.path();
             let metadata = fs::symlink_metadata(&path)?;
             if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 return Err(invalid());
+            }
+            if entry.file_name().eq_ignore_ascii_case(".git") {
+                git.push(path.clone());
             }
             if metadata.is_dir() {
                 directories.push(path);
@@ -202,10 +241,10 @@ fn check_inheritance_scope(root: &Path) -> io::Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(git)
 }
 
-fn acl(file: &File, sid: PSID, rights: Option<u32>) -> io::Result<()> {
+fn acl(file: &File, sid: PSID, ace: Ace) -> io::Result<()> {
     let mut descriptor = LocalBuffer(null_mut());
     let mut old = null_mut();
     let handle = file.as_raw_handle();
@@ -223,24 +262,27 @@ fn acl(file: &File, sid: PSID, rights: Option<u32>) -> io::Result<()> {
     }
     // Null DACLs are unrestricted. Never replace one with a new ACL here.
     if old.is_null() {
-        return if rights.is_none() {
+        return if matches!(ace, Ace::Revoke) {
             Ok(())
         } else {
             Err(invalid())
         };
     }
+    let inherit = if file.metadata()?.is_dir() {
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT
+    } else {
+        0
+    };
+    let (mode, rights, inheritance) = match ace {
+        Ace::Allow(rights) => (GRANT_ACCESS, rights, inherit),
+        Ace::Deny(rights) => (DENY_ACCESS, rights, inherit),
+        Ace::DenyHere(rights) => (DENY_ACCESS, rights, 0),
+        Ace::Revoke => (REVOKE_ACCESS, 0, inherit),
+    };
     let mut entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: rights.unwrap_or(0),
-        grfAccessMode: if rights.is_some() {
-            GRANT_ACCESS
-        } else {
-            REVOKE_ACCESS
-        },
-        grfInheritance: if file.metadata()?.is_dir() {
-            SUB_CONTAINERS_AND_OBJECTS_INHERIT
-        } else {
-            0
-        },
+        grfAccessPermissions: rights,
+        grfAccessMode: mode,
+        grfInheritance: inheritance,
         ..Default::default()
     };
     entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -263,13 +305,20 @@ fn acl(file: &File, sid: PSID, rights: Option<u32>) -> io::Result<()> {
     }
 }
 
+/// Whether the exact program file gets a read grant. Programs elsewhere (Program Files, a CI
+/// tool cache) keep their existing ACL: when the container cannot read one, the self-check
+/// fails and the run needs the unsandboxed approval. No ACE is ever added to a system file.
+fn grants_program_file(program: &Path, workspace: &Path, temp: &Path, home: &Path) -> bool {
+    program.starts_with(home) && !program.starts_with(workspace) && !program.starts_with(temp)
+}
+
 pub(super) fn revoke(task: Uuid, grants: &[String]) -> io::Result<()> {
     let name = profile_name(task);
     let mut sid = Sid(null_mut());
     hresult(unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid.0) })?;
     let mut failure = None;
     for path in grants.iter().rev().map(Path::new) {
-        match grant_handle(path).and_then(|file| acl(&file, sid.0, None)) {
+        match grant_handle(path).and_then(|file| acl(&file, sid.0, Ace::Revoke)) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
@@ -302,7 +351,7 @@ impl Drop for Policy {
         // Use the held handles for cleanup, even if path lookup would fail.
         // The durable list is retained by the checkpoint for another attempt.
         for file in self.grants.iter().rev() {
-            let _ = acl(file, self.sid.0, None);
+            let _ = acl(file, self.sid.0, Ace::Revoke);
         }
         unsafe { DeleteAppContainerProfile(profile_name(self.task).as_ptr()) };
     }
@@ -360,52 +409,59 @@ impl Policy {
             program: program.clone(),
             network,
         };
-        policy.grant(&workspace, root, WRITE, record)?;
-        policy.grant(&temp, grant_handle(&temp)?, WRITE, record)?;
+        let git = policy.grant(&workspace, root, Ace::Allow(WRITE), record)?;
+        // `.git` stays read-only: hooks or config planted there would run unsandboxed later.
+        // Its parent loses the delete-child right, which would allow renaming it away.
+        for path in git {
+            let parent = path.parent().ok_or_else(invalid)?.to_path_buf();
+            policy.grant(&path, grant_handle(&path)?, Ace::Deny(MODIFY), record)?;
+            policy.grant(
+                &parent,
+                grant_handle(&parent)?,
+                Ace::DenyHere(FILE_DELETE_CHILD),
+                record,
+            )?;
+        }
+        policy.grant(&temp, grant_handle(&temp)?, Ace::Allow(WRITE), record)?;
 
-        let mut reads = TOOLCHAINS
-            .iter()
-            .map(|path| home.join(path))
-            .collect::<Vec<_>>();
-        reads.extend([
-            home.join("AppData/Roaming/npm"),
-            home.join("AppData/Local/pnpm"),
-            home.join("AppData/Local/npm-cache/_cacache"),
-        ]);
-        for path in reads {
+        for suffix in TOOLCHAINS {
+            let path = home.join(suffix);
             if path.starts_with(&workspace) || path.starts_with(&temp) {
                 continue;
             }
+            let rights = if network && CACHE_WRITES.contains(suffix) {
+                WRITE
+            } else {
+                READ
+            };
             if path.canonicalize().is_ok_and(|canonical| canonical == path) {
-                policy.grant(&path, grant_handle(&path)?, READ, record)?;
+                policy.grant(&path, grant_handle(&path)?, Ace::Allow(rights), record)?;
             }
         }
-        // The program may live in a CI tool cache or a standalone installation.
-        // Grant the exact file when outside the workspace and scratch scope.
-        if !program.starts_with(&workspace) && !program.starts_with(&temp) {
-            policy.grant(&program, grant_handle(&program)?, READ, record)?;
+        if grants_program_file(&program, &workspace, &temp, &home) {
+            policy.grant(&program, grant_handle(&program)?, Ace::Allow(READ), record)?;
         }
         Ok(policy)
     }
 
+    /// Returns the `.git` entries below a directory grant.
     fn grant(
         &mut self,
         path: &Path,
         file: File,
-        rights: u32,
+        ace: Ace,
         record: &mut dyn FnMut(&Path) -> io::Result<()>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Vec<PathBuf>> {
         path.to_str().ok_or_else(invalid)?;
-        if file.metadata()?.is_dir() {
-            check_inheritance_scope(path)?;
-        }
+        let git = if file.metadata()?.is_dir() && matches!(ace, Ace::Allow(_)) {
+            check_inheritance_scope(path)?
+        } else {
+            Vec::new()
+        };
         record(path)?;
         self.grants.push(file);
-        acl(
-            self.grants.last().ok_or_else(invalid)?,
-            self.sid.0,
-            Some(rights),
-        )
+        acl(self.grants.last().ok_or_else(invalid)?, self.sid.0, ace)?;
+        Ok(git)
     }
 
     pub(super) fn matches(
@@ -749,6 +805,11 @@ mod tests {
     }
 
     fn has_allow_ace(path: &Path, sid: PSID) -> bool {
+        has_ace(path, sid, 0)
+    }
+
+    /// `kind` is the ACE type: 0 allows, 1 denies.
+    fn has_ace(path: &Path, sid: PSID, kind: u8) -> bool {
         let file = grant_handle(path).unwrap();
         let mut descriptor = LocalBuffer(null_mut());
         let mut acl = null_mut();
@@ -768,7 +829,8 @@ mod tests {
                 let mut entry = null_mut();
                 assert_ne!(GetAce(acl, index, &mut entry), 0);
                 let ace = entry.cast::<ACCESS_ALLOWED_ACE>();
-                (*ace).Header.AceType == 0 && EqualSid((&raw mut (*ace).SidStart).cast(), sid) != 0
+                (*ace).Header.AceType == kind
+                    && EqualSid((&raw mut (*ace).SidStart).cast(), sid) != 0
             })
         }
     }
@@ -891,6 +953,114 @@ mod tests {
             )
         })
         .expect("cleanup should leave the profile name free");
+        unsafe { std::mem::ManuallyDrop::drop(&mut policy) };
+    }
+
+    #[test]
+    fn grants_a_program_file_only_inside_the_profile() {
+        let [workspace, temp, home] = [
+            r"D:\code\app",
+            r"C:\Users\dev\AppData\Local\Temp\t",
+            r"C:\Users\dev",
+        ]
+        .map(Path::new);
+        for (program, granted) in [
+            (r"C:\Users\dev\.cargo\bin\cargo.exe", true),
+            (r"C:\Users\dev\tools\python.exe", true),
+            (r"C:\Program Files\nodejs\node.exe", false),
+            (r"C:\hostedtoolcache\windows\Python\python.exe", false),
+            (r"C:\Windows\System32\cmd.exe", false),
+            (r"D:\code\app\bin\tool.exe", false),
+            (r"C:\Users\dev\AppData\Local\Temp\t\tool.exe", false),
+        ] {
+            assert_eq!(
+                grants_program_file(Path::new(program), workspace, temp, home),
+                granted,
+                "{program}"
+            );
+        }
+    }
+
+    #[test]
+    fn grants_no_node_trees_credentials_or_files_outside_the_profile() {
+        let fixture = Fixture::new();
+        for path in [
+            ".cargo/bin",
+            ".nvm/versions/node/v24/etc",
+            "AppData/Roaming/npm/etc",
+            "AppData/Local/pnpm/config",
+            "AppData/Local/npm-cache/_cacache",
+        ] {
+            fs::create_dir_all(fixture.home.join(path)).unwrap();
+        }
+        for file in [
+            ".cargo/credentials.toml",
+            ".nvm/versions/node/v24/etc/npmrc",
+            "AppData/Roaming/npm/etc/npmrc",
+            "AppData/Local/pnpm/config/rc",
+            ".npmrc",
+        ] {
+            fs::write(fixture.home.join(file), "_authToken=fixture").unwrap();
+        }
+        let mut recorded = Vec::new();
+        let policy = fixture
+            .policy(Uuid::new_v4(), &mut |path| {
+                recorded.push(path.to_path_buf());
+                Ok(())
+            })
+            .unwrap();
+        assert!(recorded.contains(&fixture.home.join(".cargo/bin")));
+        for path in &recorded {
+            assert!(
+                path.starts_with(&fixture.workspace)
+                    || path.starts_with(&fixture.temp)
+                    || path.starts_with(&fixture.home),
+                "{path:?}"
+            );
+            let text = path.to_string_lossy().to_ascii_lowercase();
+            for leak in ["npm", "pnpm", "nvm", "credentials"] {
+                assert!(!text.contains(leak), "{path:?}");
+            }
+        }
+        // The fixture program sits outside the profile, as Program Files does.
+        assert!(!recorded.contains(&fixture.program));
+        drop(policy);
+    }
+
+    #[test]
+    fn git_entries_get_a_deny_ace_that_revocation_removes() {
+        let fixture = Fixture::new();
+        for dir in [".git/hooks", "nested/.GIT"] {
+            fs::create_dir_all(fixture.workspace.join(dir)).unwrap();
+        }
+        let task = Uuid::new_v4();
+        let mut recorded = Vec::new();
+        let mut policy = std::mem::ManuallyDrop::new(
+            fixture
+                .policy(task, &mut |path| {
+                    recorded.push(path.to_str().unwrap().to_owned());
+                    Ok(())
+                })
+                .unwrap(),
+        );
+        let sid = policy.sid.0;
+        let logged = |path: &Path| recorded.iter().any(|entry| Path::new(entry) == path);
+        // `.git/hooks` inherits the deny entry; each `.git` and its parent are logged.
+        for path in [".git", ".git/hooks", "nested/.GIT"] {
+            assert!(has_ace(&fixture.workspace.join(path), sid, 1), "{path}");
+        }
+        for path in [".git", "nested/.GIT", "nested"] {
+            assert!(logged(&fixture.workspace.join(path)), "{path}");
+        }
+        policy.grants.clear();
+        revoke(task, &recorded).unwrap();
+        for path in [".", ".git", ".git/hooks", "nested", "nested/.GIT"] {
+            let path = fixture.workspace.join(path);
+            assert!(
+                !has_ace(&path, sid, 0) && !has_ace(&path, sid, 1),
+                "{path:?}"
+            );
+        }
         unsafe { std::mem::ManuallyDrop::drop(&mut policy) };
     }
 }

@@ -1,7 +1,7 @@
 use cap_std::fs::{Dir, MetadataExt as _};
 use std::{
     fs::{self, File},
-    io,
+    io::{self, Write as _},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{fs::MetadataExt as _, process::CommandExt},
@@ -10,7 +10,8 @@ use std::{
     process::Command,
 };
 
-pub(super) const UNAVAILABLE: &str = "Linux Landlock ABI 4+ or bubblewrap required";
+pub(super) const UNAVAILABLE: &str =
+    "Linux sandbox needs bubblewrap (or Landlock ABI 4+ for a folder without .git or shared hard links)";
 
 // Restrict host reads to system toolchains and named caches. In particular,
 // /run, /proc, /sys and a mirror of the host root would expose unrelated data.
@@ -41,9 +42,21 @@ const HOME_READS: &[&str] = &[
     ".cargo/git",
     ".cargo/registry",
     ".rustup/toolchains",
+    ".rustup/settings.toml",
     ".nvm/versions",
     ".npm/_cacache",
     ".local/share/pnpm/store",
+    ".cache/pnpm",
+    ".cache/pip",
+    "go/pkg/mod",
+];
+/// Download caches, writable only when the plan allows network access.
+const CACHE_WRITES: &[&str] = &[
+    ".cargo/git",
+    ".cargo/registry",
+    ".npm/_cacache",
+    ".local/share/pnpm/store",
+    ".cache/pnpm",
     ".cache/pip",
     "go/pkg/mod",
 ];
@@ -81,10 +94,11 @@ fn landlock_abi() -> i32 {
     unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0, 0, 1) as i32 }
 }
 
+/// bubblewrap first: its network namespace and read-only binds cover what Landlock cannot.
 fn candidates(abi: i32, network: bool, bubblewrap: bool) -> impl Iterator<Item = Kind> {
     [
-        (abi >= if network { 3 } else { 4 }).then_some(Kind::Landlock(abi)),
         bubblewrap.then_some(Kind::Bubblewrap),
+        (abi >= if network { 3 } else { 4 }).then_some(Kind::Landlock(abi)),
     ]
     .into_iter()
     .flatten()
@@ -125,13 +139,15 @@ pub(super) struct Policy {
     invocation: PathBuf,
     program: PathBuf,
     reads: Vec<PathBuf>,
+    /// Existing download caches, writable because the network is on.
+    writes: Vec<PathBuf>,
     network: bool,
 }
 
 impl Policy {
     pub(super) fn label(&self) -> &'static str {
         match self.kind {
-            Kind::Landlock(_) => "Linux Landlock",
+            Kind::Landlock(_) => "Landlock (network: TCP only)",
             Kind::Bubblewrap => "bubblewrap",
         }
     }
@@ -154,13 +170,22 @@ impl Policy {
         {
             return None;
         }
+        let named = |suffixes: &'static [&'static str]| {
+            suffixes.iter().filter_map(|suffix| {
+                let path = home.join(suffix);
+                let resolved = path.canonicalize().ok()?;
+                // A home cache symlink must not grant new access outside its named subtree.
+                (resolved == path).then_some(path)
+            })
+        };
         let mut reads: Vec<PathBuf> = SYSTEM_READS.iter().map(PathBuf::from).collect();
-        reads.extend(HOME_READS.iter().filter_map(|suffix| {
-            let path = home.join(suffix);
-            let resolved = path.canonicalize().ok()?;
-            // A home cache symlink must not grant new access outside its named subtree.
-            (resolved == path).then_some(path)
-        }));
+        reads.extend(named(HOME_READS));
+        reads.extend(super::install_prefix(program, &home));
+        let writes = if network {
+            named(CACHE_WRITES).collect()
+        } else {
+            Vec::new()
+        };
         Some(Self {
             kind,
             workspace_id: identity(&workspace).ok()?,
@@ -170,6 +195,7 @@ impl Policy {
             invocation: program.to_owned(),
             program: program.canonicalize().ok()?,
             reads,
+            writes,
             network,
         })
     }
@@ -195,12 +221,24 @@ impl Policy {
     }
 
     pub(super) fn command(&self, cwd: &Dir, args: &[String]) -> io::Result<Command> {
-        let mut command = match self.kind {
-            Kind::Landlock(abi) => self.landlock(cwd, abi, args)?,
-            Kind::Bubblewrap => self.bubblewrap(args),
-        };
-        restrict_sockets(&mut command, self.network)?;
-        Ok(command)
+        let scan = super::scan(&self.workspace, &self.temp)?;
+        let filter = socket_filter(self.network)?;
+        match self.kind {
+            Kind::Landlock(abi) => {
+                // Landlock only adds access beneath a path and cannot carve out `.git` or a
+                // shared file below the writable workspace, so it refuses such a workspace.
+                if !scan.git.is_empty() || !scan.shared.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "Landlock cannot keep .git or shared hard links read-only",
+                    ));
+                }
+                let mut command = self.landlock(cwd, abi, args)?;
+                restrict_sockets(&mut command, filter);
+                Ok(command)
+            }
+            Kind::Bubblewrap => self.bubblewrap(args, &scan, &filter),
+        }
     }
 
     fn landlock(&self, cwd: &Dir, abi: i32, args: &[String]) -> io::Result<Command> {
@@ -232,6 +270,9 @@ impl Policy {
                 add_path(&fd, path, EXECUTE | READ_FILE | READ_DIR)?;
             }
         }
+        for path in &self.writes {
+            add_path(&fd, path, FS_ABI_3)?;
+        }
         for path in DEVICES {
             add_path(&fd, Path::new(path), READ_FILE | WRITE_FILE)?;
         }
@@ -262,7 +303,12 @@ impl Policy {
         Ok(command)
     }
 
-    fn bubblewrap(&self, args: &[String]) -> Command {
+    fn bubblewrap(
+        &self,
+        args: &[String],
+        scan: &super::Scan,
+        filter: &[libc::sock_filter],
+    ) -> io::Result<Command> {
         let mut command = Command::new("/usr/bin/bwrap");
         command.args([
             "--die-with-parent",
@@ -274,6 +320,8 @@ impl Policy {
             "ALL",
             "--dev",
             "/dev",
+            "--proc",
+            "/proc",
         ]);
         if !self.network {
             command.arg("--unshare-net");
@@ -286,7 +334,12 @@ impl Policy {
             .chain([self.program.as_path()])
         {
             if path.exists() {
-                command.arg("--ro-bind").arg(path).arg(path);
+                let bind = if self.writes.iter().any(|write| write == path) {
+                    "--bind"
+                } else {
+                    "--ro-bind"
+                };
+                command.arg(bind).arg(path).arg(path);
             }
         }
         if self.invocation != self.program
@@ -303,14 +356,49 @@ impl Policy {
         for path in [&self.workspace, &self.temp] {
             command.arg("--bind").arg(path).arg(path);
         }
+        // Later mounts cover earlier ones. Directory links named `.git` are skipped: binding
+        // one would mount its target, which may lie outside the workspace.
+        for path in scan.git.iter().chain(&scan.shared) {
+            if !fs::symlink_metadata(path)?.file_type().is_symlink() {
+                command.arg("--ro-bind").arg(path).arg(path);
+            }
+        }
+        // bwrap applies the filter to the program only, after its own namespace setup (which
+        // needs a netlink socket), and sets no_new_privs itself.
+        let program = seccomp_program(filter)?;
         command
+            .arg("--seccomp")
+            .arg(program.as_raw_fd().to_string())
             .arg("--chdir")
             .arg(&self.workspace)
             .arg("--")
             .arg(&self.invocation)
             .args(args);
-        command
+        unsafe {
+            command.pre_exec(move || {
+                // Inherit the filter descriptor into bwrap only.
+                if libc::fcntl(program.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(command)
     }
+}
+
+/// A pipe holding the compiled filter, for `bwrap --seccomp`.
+fn seccomp_program(filter: &[libc::sock_filter]) -> io::Result<OwnedFd> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (read, mut write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(filter.as_ptr().cast::<u8>(), size_of_val(filter)) };
+    // A few hundred bytes, well within the pipe buffer.
+    write.write_all(bytes)?;
+    Ok(read)
 }
 
 fn open_path(path: &Path) -> io::Result<File> {
@@ -354,7 +442,7 @@ fn add_rule(ruleset: &OwnedFd, parent_fd: i32, access: u64) -> io::Result<()> {
 
 // Landlock mediates TCP, but does not block UDP or abstract Unix sockets.
 // seccomp also blocks io_uring setup, which can issue socket operations.
-fn restrict_sockets(command: &mut Command, network: bool) -> io::Result<()> {
+fn socket_filter(network: bool) -> io::Result<Vec<libc::sock_filter>> {
     let arch = if cfg!(target_arch = "x86_64") {
         0xc000_003e
     } else if cfg!(target_arch = "aarch64") {
@@ -395,6 +483,10 @@ fn restrict_sockets(command: &mut Command, network: bool) -> io::Result<()> {
     } else {
         filter.push(op(RETURN, 0, 0, DENY));
     }
+    Ok(filter)
+}
+
+fn restrict_sockets(command: &mut Command, filter: Vec<libc::sock_filter>) {
     unsafe {
         command.pre_exec(move || {
             let program = libc::sock_fprog {
@@ -409,7 +501,6 @@ fn restrict_sockets(command: &mut Command, network: bool) -> io::Result<()> {
             Ok(())
         });
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -417,9 +508,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selects_landlock_only_when_the_required_abi_is_available() {
+    fn prefers_bubblewrap_and_selects_landlock_only_with_the_required_abi() {
         for (abi, online, bwrap, expected) in [
             (4, false, false, "landlock"),
+            (4, false, true, "bwrap"),
             (3, false, false, "none"),
             (3, false, true, "bwrap"),
             (3, true, false, "landlock"),

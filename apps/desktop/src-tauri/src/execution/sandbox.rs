@@ -80,6 +80,83 @@ pub(crate) fn detect_for_program(
 use super::ExecutionError;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::{baseline_env, process, Progress};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::PathBuf;
+
+/// A path-based sandbox cannot protect more shared files than this without slowing every run.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const MAX_SHARED_FILES: usize = 1000;
+
+/// Entries in the writable roots that path rules alone would leave writable.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Debug, Default)]
+struct Scan {
+    /// Regular files with a hard link outside the scanned roots, such as a pnpm store file.
+    /// Writing through the workspace name would change the shared file.
+    shared: Vec<PathBuf>,
+    /// Every workspace entry named `.git` (any case), which must stay read-only.
+    git: Vec<PathBuf>,
+}
+
+/// Walks the workspace and task directory without following links. Fails closed if a
+/// directory cannot be read or too many shared files would need their own rule.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn scan(workspace: &Path, temp: &Path) -> io::Result<Scan> {
+    use std::{collections::HashMap, os::unix::fs::MetadataExt};
+
+    let mut result = Scan::default();
+    let mut links: HashMap<(u64, u64), (u64, Vec<PathBuf>)> = HashMap::new();
+    let mut directories = vec![(workspace.to_path_buf(), true), (temp.to_path_buf(), false)];
+    while let Some((directory, in_workspace)) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if in_workspace && entry.file_name().eq_ignore_ascii_case(".git") {
+                // Read-only as a whole, so nothing beneath needs its own rule.
+                result.git.push(entry.path());
+            } else if kind.is_dir() {
+                directories.push((entry.path(), in_workspace));
+            } else if kind.is_file() {
+                let metadata = entry.metadata()?;
+                if metadata.nlink() > 1 {
+                    links
+                        .entry((metadata.dev(), metadata.ino()))
+                        .or_insert_with(|| (metadata.nlink(), Vec::new()))
+                        .1
+                        .push(entry.path());
+                }
+            }
+        }
+    }
+    // A file whose every name is inside the roots (Cargo's `target` links) changes nothing else.
+    result.shared = links
+        .into_values()
+        .filter(|(count, names)| (names.len() as u64) < *count)
+        .flat_map(|(_, names)| names)
+        .collect();
+    if result.shared.len() > MAX_SHARED_FILES {
+        return Err(io::Error::other("too many hard-linked files to protect"));
+    }
+    Ok(result)
+}
+
+/// The installation prefix of a program found in a `bin` directory (for example a Node or
+/// Python install that also holds the program's libraries), readable inside the sandbox. A
+/// prefix at, above or directly below home (`~/.cargo`, `~/.local`) would expose unrelated
+/// configuration and credentials, so it is never granted.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn install_prefix(invocation: &Path, home: &Path) -> Option<PathBuf> {
+    let bin = invocation.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let prefix = bin.parent()?.canonicalize().ok()?;
+    let too_broad = home.starts_with(&prefix)
+        || prefix
+            .strip_prefix(home)
+            .is_ok_and(|rest| rest.components().count() < 2);
+    (!too_broad).then_some(prefix)
+}
 
 pub(crate) enum Availability {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -134,7 +211,7 @@ impl Sandbox {
                     &Progress::new(None),
                     &AtomicBool::new(false),
                     false,
-                    Duration::from_secs(5),
+                    Duration::from_secs(20),
                 )
                 .ok()??;
                 status.success().then_some(Self { policy })
@@ -283,7 +360,7 @@ mod tests {
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod conformance {
     use super::*;
-    use crate::execution::argv::{resolve_program, run_argv, ArgvOutcome, ArgvRun};
+    use crate::execution::argv::{self, resolve_program, run_argv, ArgvOutcome, ArgvRun};
     use cap_std::{ambient_authority, fs::Dir};
     use std::{fs, net::TcpListener, sync::atomic::AtomicBool, time::Duration};
 
@@ -293,6 +370,24 @@ mod conformance {
         temp: std::path::PathBuf,
         home: std::path::PathBuf,
         node: std::path::PathBuf,
+        #[cfg(windows)]
+        _path: PathGuard,
+    }
+
+    /// Windows grants no ACE outside the profile, workspace and task directory, so the test
+    /// runs a copy of Node from the fixture's home, found first on `PATH`. The Windows CI step
+    /// runs `execution::` tests one at a time.
+    #[cfg(windows)]
+    struct PathGuard(Option<std::ffi::OsString>);
+
+    #[cfg(windows)]
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
     }
 
     impl Fixture {
@@ -310,23 +405,40 @@ mod conformance {
                 fs::create_dir(path).unwrap();
             }
             let node = resolve_program("node", std::env::var_os("PATH").as_deref()).unwrap();
+            #[cfg(windows)]
+            let (node, _path) = {
+                let bin = home.join("bin");
+                fs::create_dir(&bin).unwrap();
+                fs::copy(&node, bin.join("node.exe")).unwrap();
+                let old = std::env::var_os("PATH");
+                let mut path = vec![bin.clone()];
+                path.extend(old.iter().flat_map(std::env::split_paths));
+                std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+                (bin.join("node.exe"), PathGuard(old))
+            };
             Self {
                 root,
                 workspace,
                 temp,
                 home,
                 node,
+                #[cfg(windows)]
+                _path,
             }
         }
 
         fn detect(&self, network: bool) -> Option<Sandbox> {
+            self.detect_program(&self.node, &self.home, network)
+        }
+
+        fn detect_program(&self, program: &Path, home: &Path, network: bool) -> Option<Sandbox> {
             let cwd = Dir::open_ambient_dir(&self.workspace, ambient_authority()).unwrap();
             match Sandbox::detect(
                 &cwd,
                 &self.workspace,
                 &self.temp,
-                Some(&self.home),
-                &self.node,
+                Some(home),
+                program,
                 network,
                 TaskGrants {
                     task_id: Uuid::new_v4(),
@@ -355,12 +467,22 @@ mod conformance {
         ) -> ArgvOutcome {
             let mut argv = vec!["node".into(), "-e".into(), script.into()];
             argv.extend(args.iter().map(|path| path.to_str().unwrap().to_owned()));
+            self.run_argv(sandbox, network, &argv, Duration::from_secs(30))
+        }
+
+        fn run_argv(
+            &self,
+            sandbox: &Sandbox,
+            network: bool,
+            argv: &[String],
+            timeout: Duration,
+        ) -> ArgvOutcome {
             run_argv(ArgvRun {
-                argv: &argv,
+                argv,
                 cwd: &Dir::open_ambient_dir(&self.workspace, ambient_authority()).unwrap(),
                 cwd_path: &self.workspace,
                 temp: &self.temp,
-                timeout: Duration::from_secs(5),
+                timeout,
                 network,
                 sandbox: Some(sandbox),
                 stopped: &AtomicBool::new(false),
@@ -498,9 +620,8 @@ mod conformance {
         ));
         // A program outside the Node family keeps the AppContainer. A renamed copy of
         // node.exe is a portable executable that answers the `--version` self-check.
-        let bin = fixture.root.path().join("bin");
-        fs::create_dir(&bin).unwrap();
-        let runner = bin.join("runner.exe");
+        // It lives in the profile tree: no ACE is ever added outside it (or the workspace).
+        let runner = fixture.home.join("bin/runner.exe");
         fs::copy(&fixture.node, &runner).unwrap();
         assert!(matches!(
             detect_for_program(&fixture, &runner),
@@ -571,5 +692,207 @@ mod conformance {
             receiver.recv(&mut [0; 5]).unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock,
         );
+    }
+
+    const WRITE: &str = "require('fs').writeFileSync(process.argv[1], 'probe')";
+
+    #[test]
+    fn git_metadata_is_read_only_at_any_depth_and_case() {
+        let fixture = Fixture::new();
+        for dir in [".git/hooks", "nested/.GIT"] {
+            fs::create_dir_all(fixture.workspace.join(dir)).unwrap();
+        }
+        let Some(sandbox) = fixture.detect(false) else {
+            return;
+        };
+        for path in [".git/hooks/pre-commit", ".git/config", "nested/.GIT/config"] {
+            let path = fixture.workspace.join(path);
+            let result = fixture.run(&sandbox, false, WRITE, &[&path]);
+            assert!(result.exit_code.is_some_and(|code| code != 0), "{path:?}");
+            assert!(!path.exists(), "{path:?}");
+        }
+        let rename = "require('fs').renameSync(process.argv[1], process.argv[2])";
+        let moved = fixture.workspace.join("moved");
+        let result = fixture.run(
+            &sandbox,
+            false,
+            rename,
+            &[&fixture.workspace.join(".git"), &moved],
+        );
+        assert!(result.exit_code.is_some_and(|code| code != 0));
+        assert!(fixture.workspace.join(".git/hooks").is_dir() && !moved.exists());
+        let ordinary = fixture.workspace.join("src.txt");
+        let result = fixture.run(&sandbox, false, WRITE, &[&ordinary]);
+        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+    }
+
+    #[test]
+    fn writing_through_a_hard_link_never_changes_the_outside_file() {
+        let fixture = Fixture::new();
+        let store = fixture.root.path().join("store-file");
+        fs::write(&store, "store").unwrap();
+        let linked = fixture.workspace.join("node_modules/.pnpm/pkg/index.js");
+        fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        fs::hard_link(&store, &linked).unwrap();
+        // Both names inside the workspace, like Cargo's `target` links, stay writable.
+        let inner = fixture.workspace.join("target-a");
+        fs::write(&inner, "inner").unwrap();
+        fs::hard_link(&inner, fixture.workspace.join("target-b")).unwrap();
+        if cfg!(windows) {
+            // Windows refuses a workspace with hard links before granting anything.
+            let cwd = Dir::open_ambient_dir(&fixture.workspace, ambient_authority()).unwrap();
+            assert!(matches!(
+                Sandbox::detect(
+                    &cwd,
+                    &fixture.workspace,
+                    &fixture.temp,
+                    Some(&fixture.home),
+                    &fixture.node,
+                    false,
+                    TaskGrants {
+                        task_id: Uuid::new_v4(),
+                        record: &mut |_| Ok(()),
+                    },
+                ),
+                Availability::Unavailable(_)
+            ));
+            return;
+        }
+        let Some(sandbox) = fixture.detect(false) else {
+            return;
+        };
+        let result = fixture.run(&sandbox, false, WRITE, &[&linked]);
+        assert!(result.exit_code.is_some_and(|code| code != 0));
+        assert_eq!(fs::read_to_string(&store).unwrap(), "store");
+        let result = fixture.run(&sandbox, false, WRITE, &[&inner]);
+        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+    }
+
+    #[test]
+    fn toolchain_caches_are_writable_only_with_network_on() {
+        let fixture = Fixture::new();
+        let registry = fixture.home.join(".cargo/registry");
+        fs::create_dir_all(&registry).unwrap();
+        let entry = registry.join("downloaded.crate");
+        let Some(offline) = fixture.detect(false) else {
+            return;
+        };
+        let result = fixture.run(&offline, false, WRITE, &[&entry]);
+        assert!(result.exit_code.is_some_and(|code| code != 0));
+        assert!(!entry.exists());
+        // Revoke the offline grants first, as one task holds one sandbox at a time.
+        drop(offline);
+        let online = fixture.detect(true).expect("online sandbox self-check");
+        let result = fixture.run(&online, true, WRITE, &[&entry]);
+        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+        assert!(entry.is_file());
+    }
+
+    fn real_home() -> std::path::PathBuf {
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .expect("home directory")
+            .into()
+    }
+
+    /// A real toolchain: `cargo test` builds and runs a dependency-free crate offline.
+    #[test]
+    fn runs_cargo_test_on_a_temp_crate_offline() {
+        let fixture = Fixture::new();
+        let Ok(cargo) = resolve_program("cargo", std::env::var_os("PATH").as_deref()) else {
+            eprintln!("Sandbox conformance skipped: cargo is not installed");
+            return;
+        };
+        fs::create_dir(fixture.workspace.join("src")).unwrap();
+        fs::write(
+            fixture.workspace.join("Cargo.toml"),
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            fixture.workspace.join("src/lib.rs"),
+            "#[test]\nfn adds() { assert_eq!(2 + 3, 5); }\n",
+        )
+        .unwrap();
+        let Some(sandbox) = fixture.detect_program(&cargo, &real_home(), false) else {
+            return;
+        };
+        let argv = ["cargo", "test", "--offline"].map(String::from);
+        let result = fixture.run_argv(&sandbox, false, &argv, argv::COMMAND_TIMEOUT);
+        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+        assert!(result.sandboxed);
+        assert!(
+            result.stdout.contains("test adds ... ok"),
+            "{}",
+            result.stdout
+        );
+    }
+
+    /// A real Node toolchain: `npm test` runs a dependency-free package. Node-family programs
+    /// run unsandboxed on Windows by design.
+    #[test]
+    fn runs_npm_test_on_a_temp_package() {
+        let fixture = Fixture::new();
+        let npm = resolve_program("npm", std::env::var_os("PATH").as_deref()).unwrap();
+        if cfg!(windows) {
+            assert!(matches!(
+                detect_for_program(&fixture, &npm),
+                Availability::Unavailable(WINDOWS_NODE_UNSANDBOXED)
+            ));
+            return;
+        }
+        fs::write(
+            fixture.workspace.join("package.json"),
+            r#"{"name":"probe","version":"1.0.0","scripts":{"test":"node test.js"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            fixture.workspace.join("test.js"),
+            "require('assert').strictEqual(2 + 3, 5); console.log('probe passed');\n",
+        )
+        .unwrap();
+        let Some(sandbox) = fixture.detect_program(&npm, &real_home(), false) else {
+            return;
+        };
+        let argv = ["npm", "test"].map(String::from);
+        let result = fixture.run_argv(&sandbox, false, &argv, argv::COMMAND_TIMEOUT);
+        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+        assert!(result.stdout.contains("probe passed"), "{}", result.stdout);
+    }
+
+    /// CI installs bubblewrap, so both Linux mechanisms run here, not just the preferred one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_linux_mechanism_confines_writes() {
+        let fixture = Fixture::new();
+        let outside = fixture.root.path().join("outside");
+        let labels: Vec<_> = platform::policies(
+            &fixture.workspace,
+            &fixture.temp,
+            Some(&fixture.home),
+            &fixture.node,
+            false,
+        )
+        .map(|policy| Sandbox { policy })
+        .filter(|sandbox| {
+            let inside = fixture.workspace.join("inside");
+            let result = fixture.run(sandbox, false, WRITE, &[&inside]);
+            eprintln!(
+                "{}: {:?} {}",
+                sandbox.label(),
+                result.exit_code,
+                result.stderr
+            );
+            result.exit_code == Some(0)
+        })
+        .map(|sandbox| {
+            let result = fixture.run(&sandbox, false, WRITE, &[&outside]);
+            assert!(result.exit_code.is_some_and(|code| code != 0));
+            assert!(!outside.exists());
+            sandbox.label()
+        })
+        .collect();
+        if std::env::var_os("TURING_CI_REQUIRE_SANDBOX").is_some() {
+            assert_eq!(labels, ["bubblewrap", "Landlock (network: TCP only)"]);
+        }
     }
 }

@@ -1144,7 +1144,13 @@ Policy-gate rule: every tool call passes one Rust policy gate. Model text, file 
 
 Checkpoints are stored before each first write to a path, under `<app_local_data_dir>/agent-checkpoints/<task-id>/`.
 
-Test runs are sandboxed per OS: macOS `sandbox-exec` profile; Linux Landlock, otherwise `bwrap`; Windows AppContainer or a restricted token. Without a sandbox, each run needs a native approval that says it is unsandboxed. Network is off by default.
+Test runs are sandboxed per OS: macOS `sandbox-exec` profile; Linux bubblewrap (network namespace, read-only binds), otherwise Landlock, disclosed as "Landlock (network: TCP only)"; Windows AppContainer. The plan dialog shows the mechanism label. Without a sandbox, each run needs a native approval that says it is unsandboxed. Node-family programs always run unsandboxed on Windows.
+
+- Network is off by default. With network on, the download caches (Cargo registry and git, npm and pnpm stores and caches, pip, Go modules) become writable; offline they are read-only.
+- `.git`, at any depth and in any case, is read-only inside the sandbox (a deny rule on macOS, read-only binds under bubblewrap, a deny ACE plus no delete-child right on its parent on Windows). Landlock cannot carve it out, so a workspace with `.git` needs bubblewrap.
+- A file in the workspace hard-linked to a name outside it (a pnpm store file) is read-only: a per-file deny rule on macOS, a read-only bind under bubblewrap. Landlock refuses such a workspace and Windows refuses any hard link.
+- Windows adds ACEs only in the user profile, the workspace and the task directory. A program elsewhere keeps its ACL; if the container cannot run it, the self-check fails and the run needs the unsandboxed approval.
+- Every end path (Keep, complete or partial rollback, crash recovery, a corrupt checkpoint) revokes the logged Windows grants and deletes the AppContainer profile before the grant log is deleted. A failed revocation keeps the log.
 
 ### Model availability
 
