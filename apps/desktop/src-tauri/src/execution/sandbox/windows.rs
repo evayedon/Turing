@@ -21,24 +21,24 @@ use windows_sys::Win32::{
     },
     Security::{
         Authorization::{
-            GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, DENY_ACCESS, EXPLICIT_ACCESS_W,
-            GRANT_ACCESS, REVOKE_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+            GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+            SE_FILE_OBJECT, TRUSTEE_IS_SID,
         },
-        CreateWellKnownSid, FreeSid,
+        CreateWellKnownSid, DeleteAce, EqualSid, FreeSid, GetAce,
         Isolation::{
             CreateAppContainerProfile, DeleteAppContainerProfile,
             DeriveAppContainerSidFromAppContainerName,
         },
-        WinCapabilityInternetClientSid, DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
-        SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        WinCapabilityInternetClientSid, ACCESS_ALLOWED_ACE, DACL_SECURITY_INFORMATION, PSID,
+        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT,
     },
     Storage::FileSystem::{
         GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION, DELETE,
-        FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE,
-        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
-        FILE_WRITE_DATA, FILE_WRITE_EA, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        READ_CONTROL, WRITE_DAC,
     },
     System::{
         Pipes::CreatePipe,
@@ -57,16 +57,6 @@ use crate::terminal::platform::{guard_handle, ProcessGuard};
 
 const READ: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
 const WRITE: u32 = READ | FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD;
-/// Every way to change an object, without the SYNCHRONIZE and READ_CONTROL bits in
-/// FILE_GENERIC_WRITE, which reads need. On a directory these bits also cover adding entries.
-const MODIFY: u32 = FILE_WRITE_DATA
-    | FILE_APPEND_DATA
-    | FILE_WRITE_EA
-    | FILE_WRITE_ATTRIBUTES
-    | DELETE
-    | FILE_DELETE_CHILD
-    | WRITE_DAC
-    | WRITE_OWNER;
 /// Read grants below the profile: program and library trees only, never configuration that
 /// can hold credentials (`.cargo/credentials.toml`, global npm or pnpm config). Node-family
 /// programs run unsandboxed on Windows, so their trees are not granted.
@@ -91,10 +81,6 @@ const CACHE_WRITES: &[&str] = &[
 enum Ace {
     /// Inherited by every child of a directory.
     Allow(u32),
-    /// Inherited by every child of a directory.
-    Deny(u32),
-    /// This object only.
-    DenyHere(u32),
     /// Removes every explicit entry for the SID.
     Revoke,
 }
@@ -268,21 +254,46 @@ fn acl(file: &File, sid: PSID, ace: Ace) -> io::Result<()> {
             Err(invalid())
         };
     }
-    let inherit = if file.metadata()?.is_dir() {
-        SUB_CONTAINERS_AND_OBJECTS_INHERIT
-    } else {
-        0
-    };
-    let (mode, rights, inheritance) = match ace {
-        Ace::Allow(rights) => (GRANT_ACCESS, rights, inherit),
-        Ace::Deny(rights) => (DENY_ACCESS, rights, inherit),
-        Ace::DenyHere(rights) => (DENY_ACCESS, rights, 0),
-        Ace::Revoke => (REVOKE_ACCESS, 0, inherit),
+    if matches!(ace, Ace::Revoke) {
+        // Remove both kinds of ACE, including entries written by an older
+        // version that used a deny ACE alongside the workspace grant.
+        for index in (0..u32::from(unsafe { (*old).AceCount })).rev() {
+            let mut entry = null_mut();
+            if unsafe { GetAce(old, index, &mut entry) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let entry = entry.cast::<ACCESS_ALLOWED_ACE>();
+            let matches = unsafe {
+                matches!((*entry).Header.AceType, 0 | 1)
+                    && EqualSid((&raw mut (*entry).SidStart).cast(), sid) != 0
+            };
+            if matches && unsafe { DeleteAce(old, index) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        return unsafe {
+            win32(SetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                old,
+                null_mut(),
+            ))
+        };
+    }
+    let Ace::Allow(rights) = ace else {
+        return Err(invalid());
     };
     let mut entry = EXPLICIT_ACCESS_W {
         grfAccessPermissions: rights,
-        grfAccessMode: mode,
-        grfInheritance: inheritance,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: if file.metadata()?.is_dir() {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            0
+        },
         ..Default::default()
     };
     entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -409,19 +420,7 @@ impl Policy {
             program: program.clone(),
             network,
         };
-        let git = policy.grant(&workspace, root, Ace::Allow(WRITE), record)?;
-        // `.git` stays read-only: hooks or config planted there would run unsandboxed later.
-        // Its parent loses the delete-child right, which would allow renaming it away.
-        for path in git {
-            let parent = path.parent().ok_or_else(invalid)?.to_path_buf();
-            policy.grant(&path, grant_handle(&path)?, Ace::Deny(MODIFY), record)?;
-            policy.grant(
-                &parent,
-                grant_handle(&parent)?,
-                Ace::DenyHere(FILE_DELETE_CHILD),
-                record,
-            )?;
-        }
+        policy.grant(&workspace, root, Ace::Allow(WRITE), record)?;
         policy.grant(&temp, grant_handle(&temp)?, Ace::Allow(WRITE), record)?;
 
         for suffix in TOOLCHAINS {
@@ -444,24 +443,28 @@ impl Policy {
         Ok(policy)
     }
 
-    /// Returns the `.git` entries below a directory grant.
     fn grant(
         &mut self,
         path: &Path,
         file: File,
         ace: Ace,
         record: &mut dyn FnMut(&Path) -> io::Result<()>,
-    ) -> io::Result<Vec<PathBuf>> {
+    ) -> io::Result<()> {
         path.to_str().ok_or_else(invalid)?;
-        let git = if file.metadata()?.is_dir() && matches!(ace, Ace::Allow(_)) {
-            check_inheritance_scope(path)?
-        } else {
-            Vec::new()
-        };
+        if file.metadata()?.is_dir() && matches!(ace, Ace::Allow(_)) {
+            let git = check_inheritance_scope(path)?;
+            if path == self.workspace && !git.is_empty() {
+                // Windows could still write through a descendant of the
+                // inherited allow, so refuse this workspace before granting.
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "AppContainer cannot protect Git metadata inside this workspace",
+                ));
+            }
+        }
         record(path)?;
         self.grants.push(file);
-        acl(self.grants.last().ok_or_else(invalid)?, self.sid.0, ace)?;
-        Ok(git)
+        acl(self.grants.last().ok_or_else(invalid)?, self.sid.0, ace)
     }
 
     pub(super) fn matches(
@@ -770,10 +773,7 @@ fn command_line(program: &Path, command: &Command) -> io::Result<(Vec<u16>, Vec<
 mod tests {
     use super::*;
     use cap_std::ambient_authority;
-    use windows_sys::Win32::{
-        Security::{EqualSid, GetAce, ACCESS_ALLOWED_ACE},
-        UI::Shell::CommandLineToArgvW,
-    };
+    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
 
     #[test]
     fn windows_argv_round_trips() {
@@ -1028,39 +1028,15 @@ mod tests {
     }
 
     #[test]
-    fn git_entries_get_a_deny_ace_that_revocation_removes() {
+    fn refuses_git_workspaces_before_granting_access() {
         let fixture = Fixture::new();
-        for dir in [".git/hooks", "nested/.GIT"] {
-            fs::create_dir_all(fixture.workspace.join(dir)).unwrap();
-        }
-        let task = Uuid::new_v4();
-        let mut recorded = Vec::new();
-        let mut policy = std::mem::ManuallyDrop::new(
-            fixture
-                .policy(task, &mut |path| {
-                    recorded.push(path.to_str().unwrap().to_owned());
-                    Ok(())
-                })
-                .unwrap(),
-        );
-        let sid = policy.sid.0;
-        let logged = |path: &Path| recorded.iter().any(|entry| Path::new(entry) == path);
-        // `.git/hooks` inherits the deny entry; each `.git` and its parent are logged.
-        for path in [".git", ".git/hooks", "nested/.GIT"] {
-            assert!(has_ace(&fixture.workspace.join(path), sid, 1), "{path}");
-        }
-        for path in [".git", "nested/.GIT", "nested"] {
-            assert!(logged(&fixture.workspace.join(path)), "{path}");
-        }
-        policy.grants.clear();
-        revoke(task, &recorded).unwrap();
-        for path in [".", ".git", ".git/hooks", "nested", "nested/.GIT"] {
-            let path = fixture.workspace.join(path);
-            assert!(
-                !has_ace(&path, sid, 0) && !has_ace(&path, sid, 1),
-                "{path:?}"
-            );
-        }
-        unsafe { std::mem::ManuallyDrop::drop(&mut policy) };
+        fs::create_dir_all(fixture.workspace.join("nested/.GIT/hooks")).unwrap();
+        let mut grants = Vec::new();
+        let result = fixture.policy(Uuid::new_v4(), &mut |path| {
+            grants.push(path.to_path_buf());
+            Ok(())
+        });
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Unsupported);
+        assert!(grants.is_empty());
     }
 }
