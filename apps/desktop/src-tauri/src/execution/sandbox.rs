@@ -359,6 +359,50 @@ mod conformance {
         }
     }
 
+    /// Test runners load script files, and Node resolves the real path of each
+    /// module by checking every ancestor directory, unlike `node -e`.
+    #[test]
+    fn runs_a_script_file_that_requires_a_workspace_module() {
+        let fixture = Fixture::new();
+        let Some(sandbox) = fixture.detect(false) else {
+            return;
+        };
+        fs::create_dir(fixture.workspace.join("src")).unwrap();
+        fs::write(
+            fixture.workspace.join("src/lib.js"),
+            "module.exports = 5;\n",
+        )
+        .unwrap();
+        fs::write(
+            fixture.workspace.join("main.js"),
+            "console.log('loaded', require('./src/lib'));\n",
+        )
+        .unwrap();
+        let result = fixture.run(
+            &sandbox,
+            false,
+            "require(require('path').resolve(process.argv[1]))",
+            &[Path::new("main.js")],
+        );
+        if result.exit_code != Some(0) {
+            // Name the directory the sandbox cannot stat, so CI shows the cause.
+            let probe = fixture.run(
+                &sandbox,
+                false,
+                "const path = require('path'); let dir = path.resolve(process.argv[1]); \
+                 for (;;) { try { require('fs').lstatSync(dir); console.log('ok', dir); } \
+                 catch (error) { console.log(error.code, dir); } \
+                 const parent = path.dirname(dir); if (parent === dir) break; dir = parent; }",
+                &[Path::new("main.js")],
+            );
+            panic!(
+                "exit {:?}\nstderr: {}\nancestor lstat probe:\n{}",
+                result.exit_code, result.stderr, probe.stdout
+            );
+        }
+        assert!(result.stdout.contains("loaded 5"), "{}", result.stdout);
+    }
+
     #[test]
     fn network_access_requires_the_network_policy() {
         let fixture = Fixture::new();

@@ -115,7 +115,7 @@ impl Fixture {
         fs::write(workspace.path().join("src/sum.js"), ORIGINAL_SUM).unwrap();
         fs::write(
             workspace.path().join("check.js"),
-            "process.exit(require('./src/sum')(2,3) === 5 ? 0 : 1);",
+            "const sum = require('./src/sum')(2,3); console.log('sum', sum); process.exit(sum === 5 ? 0 : 1);",
         )
         .unwrap();
         fs::write(workspace.path().join(".env"), "fixture-secret-do-not-send").unwrap();
@@ -250,8 +250,14 @@ fn plan_edit_fail_fix_pass_review_rollback() {
         .iter()
         .filter(|e| e["kind"] == "command")
         .collect::<Vec<_>>();
-    assert_eq!(commands[0]["outcome"]["exitCode"], 1);
-    assert_eq!(commands[1]["outcome"]["exitCode"], 0);
+    // The wrong fix must fail by running and computing 7, not by Node failing to start.
+    for (command, exit, sum) in [(commands[0], 1, "sum 7"), (commands[1], 0, "sum 5")] {
+        let outcome = &command["outcome"];
+        assert!(
+            outcome["exitCode"] == exit && outcome["stdout"].as_str().unwrap().contains(sum),
+            "expected exit {exit} printing {sum:?}, got {outcome}"
+        );
+    }
     let review = events.iter().find(|e| e["kind"] == "review").unwrap();
     assert_eq!(review["verification"]["status"], "passed");
     assert_eq!(review["files"].as_array().unwrap().len(), 2);
