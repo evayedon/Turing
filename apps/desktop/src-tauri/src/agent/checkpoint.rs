@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{self, Read, Write},
+    ops::Deref,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -389,10 +390,11 @@ impl Checkpoint {
     /// Restores every recorded path, newest first. A file that is not as the agent left it and
     /// differs from the original is only overwritten or removed when `confirm_overwrite` agrees.
     /// Every write is version-checked, so a change racing the rollback fails instead of being
-    /// lost. Unfinished entries stay in the manifest for a later attempt.
-    pub(crate) fn rollback(
+    /// lost. Unfinished entries stay in the manifest for a later attempt. `lock` acquires the
+    /// registry; it is released while `confirm_overwrite` is asking the developer.
+    pub(crate) fn rollback<R: Deref<Target = Registry>>(
         &mut self,
-        registry: &Registry,
+        lock: &dyn Fn() -> Option<R>,
         owner: &str,
         id: &str,
         confirm_overwrite: &mut dyn FnMut(&str) -> bool,
@@ -400,7 +402,7 @@ impl Checkpoint {
         let mut files = Vec::new();
         let mut remaining = Vec::new();
         for entry in self.manifest.entries.iter().rev() {
-            let outcome = self.restore(entry, registry, owner, id, confirm_overwrite);
+            let outcome = self.restore(entry, lock, owner, id, confirm_overwrite);
             if matches!(outcome, RestoreOutcome::Skipped | RestoreOutcome::Failed) {
                 remaining.push(entry.clone());
             }
@@ -410,13 +412,20 @@ impl Checkpoint {
             });
         }
         let mut dirs = Vec::new();
+        let registry = lock();
         for dir in self.manifest.created_dirs.iter().rev() {
-            match registry.agent_remove_empty_dir(owner, id, dir) {
+            let removed = registry
+                .as_ref()
+                .map_or(Err(WorkspaceError::PermissionDenied), |registry| {
+                    registry.agent_remove_empty_dir(owner, id, dir)
+                });
+            match removed {
                 Ok(()) | Err(WorkspaceError::NotFound) => (),
                 // Not empty (the developer's files), a link or a non-directory: leave it.
                 Err(_) => dirs.push(dir.clone()),
             }
         }
+        drop(registry);
         remaining.reverse();
         dirs.reverse();
         let complete = remaining.is_empty();
@@ -450,15 +459,18 @@ impl Checkpoint {
         fs::remove_dir_all(&self.dir)
     }
 
-    fn restore(
+    fn restore<R: Deref<Target = Registry>>(
         &self,
         entry: &Entry,
-        registry: &Registry,
+        lock: &dyn Fn() -> Option<R>,
         owner: &str,
         id: &str,
         confirm_overwrite: &mut dyn FnMut(&str) -> bool,
     ) -> RestoreOutcome {
         let path = entry.path.as_str();
+        let Some(mut registry) = lock() else {
+            return RestoreOutcome::Failed;
+        };
         let current = match registry.read(owner, id, path) {
             Ok(file) => Some(file),
             Err(WorkspaceError::NotFound) => None,
@@ -481,8 +493,16 @@ impl Checkpoint {
         }
         let agent_owned = current.as_ref().map(|file| file.version.as_str())
             == entry.last_agent_version.as_deref();
-        if !agent_owned && !confirm_overwrite(path) {
-            return RestoreOutcome::Skipped;
+        if !agent_owned {
+            drop(registry);
+            if !confirm_overwrite(path) {
+                return RestoreOutcome::Skipped;
+            }
+            // The writes below are checked against the version the developer was asked about.
+            registry = match lock() {
+                Some(registry) => registry,
+                None => return RestoreOutcome::Failed,
+            };
         }
         let result = match (original, current) {
             (Some(text), Some(current)) => registry
@@ -678,7 +698,7 @@ mod tests {
             checkpoint: &mut Checkpoint,
             confirm: &mut dyn FnMut(&str) -> bool,
         ) -> RollbackReport {
-            checkpoint.rollback(&self.registry, OWNER, &self.id, confirm)
+            checkpoint.rollback(&|| Some(&self.registry), OWNER, &self.id, confirm)
         }
 
         fn text(&self, path: &str) -> String {

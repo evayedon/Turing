@@ -22,7 +22,13 @@ struct Stub {
     approve_actions: bool,
     prompts: Mutex<Vec<(AskReason, String)>>,
     planned: Mutex<Option<Planned>>,
+    decision: ReviewDecision,
+    on_action: Option<Hook>,
+    on_overwrite: Option<Hook>,
+    overwrites: Mutex<Vec<String>>,
 }
+
+type Hook = Box<dyn Fn() + Send + Sync>;
 
 impl Default for Stub {
     fn default() -> Self {
@@ -37,6 +43,10 @@ impl Default for Stub {
             approve_actions: true,
             prompts: Mutex::default(),
             planned: Mutex::default(),
+            decision: ReviewDecision::Keep,
+            on_action: None,
+            on_overwrite: None,
+            overwrites: Mutex::default(),
         }
     }
 }
@@ -78,7 +88,7 @@ impl Host for Stub {
         })
     }
     fn review_decision(&self) -> Result<ReviewDecision, AgentError> {
-        Ok(ReviewDecision::Keep)
+        Ok(self.decision)
     }
 }
 
@@ -101,10 +111,17 @@ impl Approver for Stub {
     }
     fn action(&self, reason: AskReason, summary: &str) -> bool {
         self.prompts.lock().unwrap().push((reason, summary.into()));
+        if let Some(hook) = &self.on_action {
+            hook();
+        }
         self.approve_actions
     }
-    fn overwrite_after_agent(&self, _: &str) -> bool {
-        false
+    fn overwrite_after_agent(&self, path: &str) -> bool {
+        self.overwrites.lock().unwrap().push(path.into());
+        if let Some(hook) = &self.on_overwrite {
+            hook();
+        }
+        true
     }
 }
 
@@ -183,7 +200,7 @@ impl Verifier for FakeVerifier {
 struct Fixture {
     workspace: tempfile::TempDir,
     app_data: tempfile::TempDir,
-    service: WorkspaceService,
+    service: Arc<WorkspaceService>,
     id: String,
     task: Uuid,
 }
@@ -196,7 +213,7 @@ impl Fixture {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         }
-        let service = WorkspaceService::default();
+        let service = Arc::new(WorkspaceService::default());
         let id = service
             .registry()
             .unwrap()
@@ -625,23 +642,31 @@ fn dirty_files_are_never_written() {
     );
 }
 
+/// Long enough that planning on a slow runner stays inside the budget.
+const WALL_CLOCK_SECS: u64 = 3;
+
+/// Holds the caller past the wall-clock budget without depending on scheduler timing.
+fn past_the_wall_clock() {
+    std::thread::sleep(Duration::from_millis(WALL_CLOCK_SECS * 1000 + 100));
+}
+
 #[test]
 fn stops_at_each_limit_and_reviews_with_the_reason() {
     for (limits, limit) in [
         (json!({"modelCalls":2}), "modelCalls"),
         (json!({"toolCalls":3}), "toolCalls"),
         (json!({"totalTokens":10}), "tokens"),
-        (json!({"wallClockSecs":1}), "wallClock"),
+        (json!({"wallClockSecs":WALL_CLOCK_SECS}), "wallClock"),
     ] {
         let fixture = Fixture::new(&[("a.txt", "a\n")]);
         let stub = Stub::default();
         let mut verifier = FakeVerifier::new(true, &[]);
-        // Holding the only command past the one-second budget passes the deadline
-        // without depending on scheduler timing.
-        verifier.on_run = Some(Box::new(|_| {
-            std::thread::sleep(Duration::from_millis(1100));
-            None
-        }));
+        if limit == "wallClock" {
+            verifier.on_run = Some(Box::new(|_| {
+                past_the_wall_clock();
+                None
+            }));
+        }
         let mut script = vec![
             plan(Some(limits)),
             one("run_command", json!({"argv":["ls"]})),
@@ -662,8 +687,11 @@ fn stops_at_each_limit_and_reviews_with_the_reason() {
 fn invalid_tool_calls_count_toward_the_tool_limit() {
     let fixture = Fixture::new(&[("a.txt", "a\n")]);
     let stub = Stub::default();
-    let mut script = vec![plan(Some(json!({"toolCalls":3})))];
-    script.extend((0..5).map(|_| one("read_file", json!({"approved":true}))));
+    // 60 tool calls per task, planning included: submit_plan is the first.
+    let invalid = (0..60)
+        .map(|_| call("read_file", json!({"approved":true})))
+        .collect();
+    let script = vec![plan(None), calls(invalid), finish()];
     assert_eq!(
         fixture
             .run(script, &stub, &mut FakeVerifier::new(true, &[]))
@@ -671,12 +699,110 @@ fn invalid_tool_calls_count_toward_the_tool_limit() {
         Ok(())
     );
     let events = stub.events();
-    assert_eq!(refused(&events), ["INVALID_ARGUMENTS"; 3]);
+    assert_eq!(refused(&events), ["INVALID_ARGUMENTS"; 59]);
     assert_review(
         &events,
         ReviewReason::Limit { limit: "toolCalls" },
         Verification::NoCommand,
     );
+}
+
+#[test]
+fn cancel_during_an_approval_dialog_stops_without_a_refusal() {
+    let fixture = Fixture::new(&[("a.txt", "a\n")]);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let stub = Stub {
+        cancelled: cancel,
+        on_action: Some(Box::new(move || flag.store(true, Relaxed))),
+        ..Stub::default()
+    };
+    let mut verifier = FakeVerifier::new(true, &[]);
+    let (result, requests) = fixture.run(
+        vec![
+            plan(None),
+            one("run_command", json!({"argv":["ls"]})),
+            finish(),
+        ],
+        &stub,
+        &mut verifier,
+    );
+    assert_eq!(result, Ok(()));
+    let events = stub.events();
+    assert!(refused(&events).is_empty());
+    assert!(verifier.runs().is_empty());
+    assert_eq!(requests.len(), 2);
+    assert_review(&events, ReviewReason::Cancelled, Verification::NoCommand);
+}
+
+#[test]
+fn wall_clock_during_an_approval_dialog_reaches_the_limit() {
+    let fixture = Fixture::new(&[("a.txt", "a\n")]);
+    let stub = Stub {
+        on_action: Some(Box::new(past_the_wall_clock)),
+        ..Stub::default()
+    };
+    let mut verifier = FakeVerifier::new(true, &[]);
+    let (result, _) = fixture.run(
+        vec![
+            plan(Some(json!({ "wallClockSecs": WALL_CLOCK_SECS }))),
+            one("run_command", json!({"argv":["ls"]})),
+            finish(),
+        ],
+        &stub,
+        &mut verifier,
+    );
+    assert_eq!(result, Ok(()));
+    let events = stub.events();
+    assert!(refused(&events).is_empty());
+    assert!(verifier.runs().is_empty());
+    assert_review(
+        &events,
+        ReviewReason::Limit { limit: "wallClock" },
+        Verification::NoCommand,
+    );
+}
+
+#[test]
+fn rollback_asks_about_overwrites_without_holding_the_workspace_lock() {
+    let fixture = Fixture::new(&[("a.txt", "a\n")]);
+    let service = Arc::clone(&fixture.service);
+    let stub = Stub {
+        decision: ReviewDecision::RollBack,
+        // Locking from another thread proves the prompt does not hold the registry.
+        on_overwrite: Some(Box::new(move || {
+            let service = Arc::clone(&service);
+            let (sent, received) = std::sync::mpsc::channel();
+            std::thread::spawn(move || sent.send(service.registry().is_ok()).unwrap());
+            assert_eq!(
+                received.recv_timeout(Duration::from_secs(60)),
+                Ok(true),
+                "the registry lock was held during the prompt"
+            );
+        })),
+        ..Stub::default()
+    };
+    let root = fixture.workspace.path().to_path_buf();
+    let mut verifier = FakeVerifier::new(true, &[]);
+    // The developer changes the file after the agent's edit.
+    verifier.on_run = Some(Box::new(move |_| {
+        fs::write(root.join("a.txt"), "developer\n").unwrap();
+        None
+    }));
+    let (result, _) = fixture.run(
+        vec![
+            plan(None),
+            one("edit_file", json!({"path":"a.txt","old":"a","new":"b"})),
+            one("run_command", json!({"argv":["ls"]})),
+            finish(),
+        ],
+        &stub,
+        &mut verifier,
+    );
+    assert_eq!(result, Ok(()));
+    assert_eq!(*stub.overwrites.lock().unwrap(), ["a.txt"]);
+    assert_eq!(fs::read_to_string(fixture.path("a.txt")).unwrap(), "a\n");
+    assert!(!fixture.checkpoint_exists());
 }
 
 #[test]

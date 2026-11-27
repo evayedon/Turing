@@ -20,6 +20,8 @@ struct Panel {
     events: Mutex<Vec<Value>>,
     deny_plan: bool,
     dirty: HashSet<String>,
+    /// Cancels once this file exists; `None` never cancels.
+    cancel_when: Option<std::path::PathBuf>,
 }
 
 impl Host for Panel {
@@ -31,7 +33,7 @@ impl Host for Panel {
         Ok(())
     }
     fn cancelled(&self) -> bool {
-        false
+        self.cancel_when.as_ref().is_some_and(|path| path.exists())
     }
     fn dirty(&self) -> HashSet<String> {
         self.dirty.clone()
@@ -65,7 +67,11 @@ impl Approver for Panel {
         !self.deny_plan
     }
     fn action(&self, reason: AskReason, _: &str) -> bool {
-        assert_eq!(reason, AskReason::UnsandboxedTests);
+        assert!(
+            reason == AskReason::UnsandboxedTests
+                || (self.cancel_when.is_some() && matches!(reason, AskReason::Command(_))),
+            "unexpected approval {reason:?}"
+        );
         true
     }
     fn overwrite_after_agent(&self, path: &str) -> bool {
@@ -171,6 +177,7 @@ fn plan_edit_fail_fix_pass_review_rollback() {
         events: Mutex::default(),
         deny_plan: false,
         dirty: HashSet::new(),
+        cancel_when: None,
     };
     let script = server(vec![
         vec![tool(
@@ -262,6 +269,7 @@ fn planning_refuses_writes_commands_secrets_and_traversal_then_honors_decline() 
         events: Mutex::default(),
         deny_plan: true,
         dirty: HashSet::new(),
+        cancel_when: None,
     };
     let script = server(vec![
         vec![
@@ -296,4 +304,77 @@ fn planning_refuses_writes_commands_secrets_and_traversal_then_honors_decline() 
     );
     assert!(!requests.join("").contains("fixture-secret-do-not-send"));
     fixture.unchanged();
+}
+
+/// Starts a grandchild, records both pids, then sleeps well beyond the test.
+const PROCESS_TREE: &str = r#"
+const { spawn } = require('child_process');
+const fs = require('fs');
+fs.writeFileSync('child.pid', String(process.pid));
+spawn(process.execPath, ['-e', `
+  require('fs').writeFileSync('grand.tmp', String(process.pid));
+  require('fs').renameSync('grand.tmp', 'grand.pid');
+  setTimeout(() => {}, 600000);
+`], { stdio: 'ignore' });
+setTimeout(() => {}, 600000);
+"#;
+
+fn alive(pid: &str) -> bool {
+    #[cfg(unix)]
+    return std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .any(|word| word == pid)
+    }
+}
+
+#[test]
+fn cancelling_a_command_kills_its_process_tree() {
+    let fixture = Fixture::new();
+    let grand = fixture.workspace.path().join("grand.pid");
+    let panel = Panel {
+        events: Mutex::default(),
+        deny_plan: false,
+        dirty: HashSet::new(),
+        cancel_when: Some(grand.clone()),
+    };
+    let script = server(vec![
+        vec![plan()],
+        vec![tool(
+            "run_command",
+            json!({"argv":["node","-e",PROCESS_TREE]}),
+        )],
+        vec![tool("finish", json!({"summary":"unreachable"}))],
+    ]);
+    fixture.run(&script.url, &panel).unwrap();
+    script.requests();
+    let events = panel.events.into_inner().unwrap();
+    let command = events.iter().find(|e| e["kind"] == "command").unwrap();
+    assert_eq!(command["outcome"]["cancelled"], true);
+    let review = events.iter().find(|e| e["kind"] == "review").unwrap();
+    assert_eq!(review["reason"]["kind"], "cancelled");
+    let pids = [
+        fs::read_to_string(fixture.workspace.path().join("child.pid")).unwrap(),
+        fs::read_to_string(grand).unwrap(),
+    ];
+    // Generous: only bounds how long the OS may take to reap a killed tree.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while pids.iter().any(|pid| alive(pid)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command's process tree outlived the cancel"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }

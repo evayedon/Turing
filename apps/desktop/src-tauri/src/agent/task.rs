@@ -384,6 +384,12 @@ impl Task<'_> {
                         return PhaseEnd::Review(ReviewReason::Finished, Some(summary))
                     }
                     Err(refused) => {
+                        // A cancel or limit reached during an approval dialog stops the
+                        // task; it is not a refusal.
+                        if let Err(reason) = self.check() {
+                            self.add_tool_result(&call, json!({ "stopped": stop_code(&reason) }));
+                            return PhaseEnd::Review(reason, None);
+                        }
                         let reason = refused.reason_code();
                         let tool: String = call.name.chars().take(128).collect();
                         if let Err(code) = self.emit(AgentEvent::Refused { tool, reason }) {
@@ -544,8 +550,6 @@ impl Task<'_> {
             return Err(AgentError::PlanDeclined);
         }
         let baseline = self.fingerprints();
-        // The approved limits govern execution; planning tool calls do not use them up.
-        self.tool_calls = 0;
         let execution = async {
             self.emit(AgentEvent::Executing {
                 network: self.network,
@@ -592,9 +596,8 @@ impl Task<'_> {
         self.emit(AgentEvent::Review(review))?;
         let decision = self.ctx.host.review_decision()?;
         let report = if decision == ReviewDecision::RollBack {
-            let registry = self.registry().map_err(|_| AgentError::WorkspaceDenied)?;
             Some(checkpoint.rollback(
-                &registry,
+                &|| self.registry().ok(),
                 self.ctx.owner,
                 self.ctx.workspace_id,
                 &mut |path| self.ctx.approver.overwrite_after_agent(path),
@@ -713,7 +716,7 @@ impl Task<'_> {
     }
 
     fn authorize_action(&self, phase: Phase, action: &Action<'_>) -> Result<(), ToolRefusal> {
-        self.check().map_err(|_| ToolRefusal::OutsideWorkspace)?;
+        self.check().map_err(|_| ToolRefusal::Interrupted)?;
         let scope = Scope {
             tests: self.verification.as_deref(),
             sandboxed: self.sandboxed,
@@ -732,7 +735,7 @@ impl Task<'_> {
                     granted,
                 })
                 .map_err(|_| ToolRefusal::WorkspaceError)?;
-                self.check().map_err(|_| ToolRefusal::OutsideWorkspace)?;
+                self.check().map_err(|_| ToolRefusal::Interrupted)?;
                 if !granted {
                     return Err(ToolRefusal::ApprovalDeclined);
                 }
@@ -825,6 +828,14 @@ impl Task<'_> {
             };
         }
         Ok(result)
+    }
+}
+
+fn stop_code(reason: &ReviewReason) -> &'static str {
+    match reason {
+        ReviewReason::Cancelled => "cancelled",
+        ReviewReason::Limit { limit } => limit,
+        _ => "failed",
     }
 }
 

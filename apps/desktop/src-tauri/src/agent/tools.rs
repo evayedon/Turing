@@ -228,6 +228,8 @@ pub(crate) enum ToolRefusal {
     OldTextNotUnique,
     ApprovalDeclined,
     WorkspaceError,
+    /// The task was cancelled or hit a limit; the loop ends instead of reporting a refusal.
+    Interrupted,
 }
 
 impl ToolRefusal {
@@ -252,6 +254,7 @@ impl ToolRefusal {
             Self::OldTextNotUnique => "OLD_TEXT_NOT_UNIQUE",
             Self::ApprovalDeclined => "APPROVAL_DECLINED",
             Self::WorkspaceError => "WORKSPACE_ERROR",
+            Self::Interrupted => "INTERRUPTED",
         }
     }
 }
