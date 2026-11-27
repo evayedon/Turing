@@ -96,7 +96,7 @@ impl Sandbox {
         {
             use std::{sync::atomic::AtomicBool, time::Duration};
 
-            let mut probe = || {
+            let mut probe = || -> io::Result<Self> {
                 let policy = windows::Policy::new(
                     grants.task_id,
                     cwd,
@@ -106,25 +106,34 @@ impl Sandbox {
                     program,
                     network,
                     grants.record,
-                )
-                .ok()?;
+                )?;
                 let mut command = Command::new(program);
                 command.arg("--version");
                 let path = std::env::var_os("PATH").unwrap_or_default();
                 super::baseline_env(&mut command, &path, temp);
-                let child = policy.spawn(&command).ok()?;
+                let child = policy.spawn(&command)?;
                 let status = super::process::supervise_container(
                     child,
                     &super::Progress::new(None),
                     &AtomicBool::new(false),
                     Duration::from_secs(20),
                 )
-                .ok()??;
-                status.success().then_some(Self { policy })
+                .map_err(|error| io::Error::other(format!("{error:?}")))?;
+                if status.is_some_and(|status| status.success()) {
+                    Ok(Self { policy })
+                } else {
+                    Err(io::Error::other(format!(
+                        "version probe returned {status:?}"
+                    )))
+                }
             };
             match probe() {
-                Some(sandbox) => Availability::Available(sandbox),
-                None => {
+                Ok(sandbox) => Availability::Available(sandbox),
+                Err(error) => {
+                    #[cfg(test)]
+                    eprintln!("AppContainer self-check: {error}");
+                    #[cfg(not(test))]
+                    let _ = error;
                     Availability::Unavailable("AppContainer could not run the verification program")
                 }
             }
@@ -202,9 +211,12 @@ mod conformance {
     impl Fixture {
         fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
+            #[cfg(not(windows))]
             let workspace = root
                 .path()
                 .join(r#"workspace") (allow file-write* (subpath "#);
+            #[cfg(windows)]
+            let workspace = root.path().join("workspace with spaces");
             let temp = root.path().join("scratch");
             let home = root.path().join("home");
             for path in [&workspace, &temp, &home] {

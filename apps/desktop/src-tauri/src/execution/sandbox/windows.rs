@@ -36,8 +36,8 @@ use windows_sys::Win32::{
         GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION, DELETE,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
-        WRITE_DAC,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        READ_CONTROL, WRITE_DAC,
     },
     System::{
         Pipes::CreatePipe,
@@ -144,7 +144,7 @@ fn grant_handle(path: &Path) -> io::Result<File> {
         return Err(invalid());
     }
     let file = OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC)
+        .access_mode(FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC)
         // Keep the granted root from being renamed while a live sandbox uses it.
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
