@@ -396,7 +396,8 @@ fn declining_the_plan_ends_with_nothing_changed() {
     let (result, _) = fixture.run(vec![plan(None)], &stub, &mut verifier);
     assert_eq!(result, Err(AgentError::PlanDeclined));
     assert!(!fixture.checkpoint_exists());
-    assert!(verifier.released);
+    assert!(verifier.prepared.is_none());
+    assert!(!verifier.released);
     assert!(verifier.runs().is_empty());
     assert_eq!(fixture.snapshot(), before);
     assert_eq!(kinds(&stub.events()), ["planning", "modelCall", "plan"]);
@@ -408,7 +409,6 @@ fn sandbox_is_prepared_with_the_final_adjustments() {
     let final_argv = argv(&["pnpm", "test", "--", "-u"]);
     let stub = Stub {
         network: true,
-        approve_plan: false,
         ..Stub::tests(&["pnpm", "test", "--", "-u"])
     };
     let mut verifier = FakeVerifier::new(false, &[]);
@@ -417,8 +417,14 @@ fn sandbox_is_prepared_with_the_final_adjustments() {
         json!({"summary":"s","steps":["s"],"files":[],"verification":["npm","test"]}),
     );
     assert_eq!(
-        fixture.run(vec![plan], &stub, &mut verifier).0,
-        Err(AgentError::PlanDeclined)
+        fixture
+            .run(
+                vec![plan, one("finish", json!({"summary":"done"}))],
+                &stub,
+                &mut verifier
+            )
+            .0,
+        Ok(())
     );
     assert_eq!(verifier.prepared, Some((Some(final_argv.clone()), true)));
     assert_eq!(

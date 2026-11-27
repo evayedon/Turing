@@ -530,6 +530,30 @@ impl Task<'_> {
         let mut checkpoint =
             Checkpoint::create(self.ctx.app_data, self.ctx.task_id, identity, display)
                 .map_err(|_| AgentError::CheckpointIo)?;
+        let sandbox_preview = SandboxView {
+            sandboxed: false,
+            label: if self.verification.is_some() {
+                "Isolation is checked after approval. Each unsandboxed test run requires approval."
+            } else {
+                "No verification command"
+            }
+            .into(),
+        };
+        if !self.ctx.approver.plan(
+            &plan,
+            self.verification.as_deref(),
+            &sandbox_preview,
+            self.network,
+            &self.limits,
+            self.ctx.cloud.as_ref(),
+        ) {
+            checkpoint.discard().map_err(|_| AgentError::CheckpointIo)?;
+            return Err(AgentError::PlanDeclined);
+        }
+        self.check().map_err(phase_error)?;
+        let baseline = self.fingerprints();
+        // Detect may run the selected executable with --version in the
+        // workspace. The plan must already be approved before any launch.
         let sandbox =
             self.ctx
                 .verifier
@@ -537,19 +561,6 @@ impl Task<'_> {
                     checkpoint.note_acl_grant(path)
                 });
         self.sandboxed = sandbox.sandboxed;
-        if !self.ctx.approver.plan(
-            &plan,
-            self.verification.as_deref(),
-            &sandbox,
-            self.network,
-            &self.limits,
-            self.ctx.cloud.as_ref(),
-        ) {
-            self.release(&checkpoint)?;
-            checkpoint.discard().map_err(|_| AgentError::CheckpointIo)?;
-            return Err(AgentError::PlanDeclined);
-        }
-        let baseline = self.fingerprints();
         let execution = async {
             self.emit(AgentEvent::Executing {
                 network: self.network,
