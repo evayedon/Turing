@@ -525,14 +525,26 @@ mod conformance {
         assert!(!outside.exists());
         for path in [&credential, &fixture.root.path().join("outside-secret")] {
             fs::write(path, "test fixture").unwrap();
+            assert!(path.is_file());
             let result = fixture.run(
                 &sandbox,
                 false,
-                "require('fs').readFileSync(process.argv[1])",
+                r#"
+                const path = process.argv[1];
+                try {
+                    require('fs').readFileSync(path);
+                } catch (error) {
+                    if (error.path === path && ['EPERM', 'EACCES', 'ENOENT'].includes(error.code)) {
+                        console.error('outside read blocked:', error.code);
+                        process.exit(23);
+                    }
+                    throw error;
+                }
+                "#,
                 &[path],
             );
-            assert!(result.exit_code.is_some_and(|code| code != 0));
-            assert!(result.stderr.contains("EPERM") || result.stderr.contains("EACCES"));
+            assert_eq!(result.exit_code, Some(23), "{}", result.stderr);
+            assert!(result.stderr.contains("outside read blocked:"));
         }
     }
 
