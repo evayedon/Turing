@@ -25,6 +25,8 @@ const SYSTEM_READS: &[&str] = &[
     "/etc/ld.so.conf",
     "/etc/ld.so.conf.d",
     "/etc/ssl/certs",
+    // Node can report its version without loading this file, but scripts need it.
+    "/etc/ssl/openssl.cnf",
     "/etc/pki/tls/certs",
     "/etc/hosts",
     "/etc/host.conf",

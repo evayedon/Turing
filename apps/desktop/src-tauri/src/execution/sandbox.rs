@@ -268,10 +268,24 @@ mod conformance {
         receiver.set_nonblocking(true).unwrap();
         let port = receiver.local_addr().unwrap().port();
         let script = format!(
-            "const socket = require('dgram').createSocket('udp4');              socket.send('probe', {port}, '127.0.0.1', error => {{ socket.close(); process.exit(error ? 1 : 0); }});"
+            r#"
+            const socket = require('dgram').createSocket('udp4');
+            function finish(error) {{
+                if (error) console.error('UDP probe:', error.code);
+                process.exit(error ? 1 : 0);
+            }}
+            socket.on('error', finish);
+            socket.send('probe', {port}, '127.0.0.1', finish);
+            "#
         );
         let result = fixture.run(&sandbox, false, &script, &[]);
         assert_eq!(result.exit_code, Some(1), "{}", result.stderr);
+        assert!(
+            result.stderr.contains("UDP probe: EPERM")
+                || result.stderr.contains("UDP probe: EACCES"),
+            "{}",
+            result.stderr
+        );
         assert_eq!(
             receiver.recv(&mut [0; 5]).unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock,
