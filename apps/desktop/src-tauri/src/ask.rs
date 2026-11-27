@@ -446,10 +446,10 @@ pub async fn ask_run(
     }
 }
 
-async fn interruptible<F: std::future::Future>(
+pub(crate) async fn interruptible<F: std::future::Future, E>(
     future: F,
-    check: &impl Fn() -> Result<(), Error>,
-) -> Result<F::Output, Error> {
+    check: &impl Fn() -> Result<(), E>,
+) -> Result<F::Output, E> {
     let mut future = std::pin::pin!(future);
     loop {
         check()?;
@@ -716,27 +716,87 @@ pub(crate) mod fake_server {
         );
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = BufReader::new(&socket);
-            let mut length = None;
-            loop {
-                let mut line = String::new();
-                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.strip_prefix("content-length: ") {
-                    length = Some(value.trim().parse::<usize>().unwrap());
-                }
-            }
-            let mut body = vec![0; length.unwrap()];
-            reader.read_exact(&mut body).unwrap();
+            let body = read_request(&socket);
             write!(socket, "HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{frames}", frames.len()).unwrap();
-            String::from_utf8(body).unwrap()
+            body
         });
         (url, server)
+    }
+    /// A tool-calling model that answers each request with the next scripted
+    /// assistant message, numbering tool call ids and reporting 120/30 tokens.
+    pub(crate) struct Script {
+        pub url: String,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: std::thread::JoinHandle<Vec<String>>,
+    }
+
+    impl Script {
+        pub(crate) fn new(messages: Vec<serde_json::Value>) -> Self {
+            use std::sync::{atomic::Ordering, Arc};
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopped = Arc::clone(&stop);
+            let worker = std::thread::spawn(move || {
+                let mut requests = Vec::new();
+                let mut next_id = 0;
+                for mut message in messages {
+                    // Generous: this only bounds a hung test, not normal runs.
+                    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+                    let mut socket = loop {
+                        match listener.accept() {
+                            Ok((socket, _)) => break socket,
+                            Err(_) if stopped.load(Ordering::Relaxed) => return requests,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(std::time::Instant::now() < deadline, "no model request");
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(error) => panic!("{error}"),
+                        }
+                    };
+                    socket.set_nonblocking(false).unwrap();
+                    requests.push(read_request(&socket));
+                    for call in message["tool_calls"].as_array_mut().into_iter().flatten() {
+                        next_id += 1;
+                        call["id"] = serde_json::json!(format!("call-{next_id}"));
+                    }
+                    let body = serde_json::json!({"choices":[{"message":message}],
+                        "usage":{"prompt_tokens":120,"completion_tokens":30}})
+                    .to_string();
+                    write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+                requests
+            });
+            Self { url, stop, worker }
+        }
+
+        /// The request bodies received; unused script entries are dropped.
+        pub(crate) fn requests(self) -> Vec<String> {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.worker.join().unwrap()
+        }
+    }
+
+    pub(crate) fn read_request(socket: &std::net::TcpStream) -> String {
+        socket
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let mut reader = BufReader::new(socket);
+        let mut length = None;
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("content-length: ") {
+                length = Some(value.trim().parse::<usize>().unwrap());
+            }
+        }
+        let mut body = vec![0; length.unwrap()];
+        reader.read_exact(&mut body).unwrap();
+        String::from_utf8(body).unwrap()
     }
 }
 

@@ -1116,3 +1116,6 @@ mod contract_tests {
         fixture::assert_case_count("ExecutionUpdate", 2);
     }
 }
+
+#[cfg(test)]
+mod agent_e2e;

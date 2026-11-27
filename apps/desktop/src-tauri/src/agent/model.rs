@@ -1,4 +1,4 @@
-//! OpenAI-compatible tool calling. Task execution consumes this client in Task 10.
+//! OpenAI-compatible tool calling for `agent::task`.
 #![allow(dead_code)]
 
 use super::AgentError;
@@ -20,6 +20,10 @@ pub(crate) struct Endpoint {
 }
 
 impl Endpoint {
+    pub(crate) fn is_cloud(&self) -> bool {
+        self.cloud
+    }
+
     pub(crate) fn local(server: &str, model: Option<String>) -> Result<Self, AgentError> {
         Ok(Self {
             url: format!("{}/v1/chat/completions", ask::local_base(server)?),
@@ -27,6 +31,17 @@ impl Endpoint {
             model,
             cloud: false,
         })
+    }
+
+    /// A cloud endpoint without credentials, for consent tests that must send nothing.
+    #[cfg(test)]
+    pub(crate) fn test_cloud(server: &str) -> Self {
+        Self {
+            url: server.into(),
+            authorization: None,
+            model: Some(ask::cloud::MODEL.into()),
+            cloud: true,
+        }
     }
 
     pub(crate) fn cloud() -> Result<Self, AgentError> {

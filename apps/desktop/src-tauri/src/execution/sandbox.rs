@@ -54,6 +54,17 @@ pub(crate) struct Sandbox {
 }
 
 impl Sandbox {
+    pub(crate) fn label(&self) -> &'static str {
+        #[cfg(target_os = "macos")]
+        return "macOS sandbox-exec";
+        #[cfg(target_os = "linux")]
+        return self.policy.label();
+        #[cfg(windows)]
+        return "Windows AppContainer";
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        return "Unavailable";
+    }
+
     pub(crate) fn detect(
         cwd: &cap_std::fs::Dir,
         workspace: &Path,

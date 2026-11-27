@@ -44,6 +44,17 @@ pub struct SearchOptions {
     filename_filter: Option<String>,
 }
 
+impl SearchOptions {
+    pub(crate) fn literal(query: String) -> Self {
+        Self {
+            query,
+            case_sensitive: false,
+            whole_word: false,
+            filename_filter: None,
+        }
+    }
+}
+
 struct Query {
     pattern: Regex,
     whole_word: bool,
@@ -84,22 +95,22 @@ impl Query {
 #[derive(Default, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResponse {
-    files: Vec<SearchFile>,
+    pub(crate) files: Vec<SearchFile>,
     truncated: bool,
     skipped_files: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SearchFile {
-    relative_path: String,
-    matches: Vec<SearchMatch>,
+pub(crate) struct SearchFile {
+    pub(crate) relative_path: String,
+    pub(crate) matches: Vec<SearchMatch>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SearchMatch {
-    line: usize,
+pub(crate) struct SearchMatch {
+    pub(crate) line: usize,
     column: usize,
     before: String,
     text: String,
@@ -348,7 +359,7 @@ pub(super) fn visible_component(name: &str) -> bool {
     valid_component(name) && !name.starts_with(".turing-save-")
 }
 
-pub(super) fn ignored_directory(name: &str) -> bool {
+pub(crate) fn ignored_directory(name: &str) -> bool {
     IGNORED
         .iter()
         .any(|ignored| name.eq_ignore_ascii_case(ignored))
@@ -741,4 +752,70 @@ mod contract_tests {
         );
         fixture::assert_case_count("SearchResponse", 2);
     }
+}
+
+impl Registry {
+    pub(crate) fn agent_search(
+        &self,
+        owner: &str,
+        id: &str,
+        options: SearchOptions,
+    ) -> Result<SearchTask> {
+        self.language_root(owner, id)?;
+        Ok(SearchTask {
+            root: self.authorize(owner, id)?.try_clone()?,
+            query: Query::new(options)?,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+
+pub(crate) type FileFingerprints =
+    std::collections::BTreeMap<String, (u64, cap_std::time::SystemTime)>;
+
+/// `(len, mtime)` of every visible workspace file outside ignored directories.
+pub(crate) fn agent_fingerprints(root: &Dir) -> Result<FileFingerprints> {
+    struct Fingerprint {
+        entries: usize,
+        files: FileFingerprints,
+    }
+
+    impl Walk for Fingerprint {
+        fn stop(&mut self) -> Result<bool> {
+            Ok(self.entries >= MAX_ENTRIES)
+        }
+
+        fn count_entry(&mut self) {
+            self.entries += 1;
+        }
+
+        fn skipped(&mut self) {}
+
+        fn truncate(&mut self) {}
+
+        fn file(&mut self, _: &Dir, dir: &Dir, parents: &[String], name: &str) -> Result<()> {
+            if let Ok(metadata) = dir.symlink_metadata(name) {
+                if metadata.is_file() && !super::is_workspace_link(&metadata) {
+                    let path = parents
+                        .iter()
+                        .map(String::as_str)
+                        .chain([name])
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    let modified = metadata.modified().ok();
+                    if let Some(modified) = modified {
+                        self.files.insert(path, (metadata.len(), modified));
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut scan = Fingerprint {
+        entries: 0,
+        files: FileFingerprints::new(),
+    };
+    scan.visit(root, &mut Vec::new())?;
+    Ok(scan.files)
 }

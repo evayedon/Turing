@@ -129,6 +129,13 @@ pub(super) struct Policy {
 }
 
 impl Policy {
+    pub(super) fn label(&self) -> &'static str {
+        match self.kind {
+            Kind::Landlock(_) => "Linux Landlock",
+            Kind::Bubblewrap => "bubblewrap",
+        }
+    }
+
     fn new(
         kind: Kind,
         workspace: &Path,

@@ -194,7 +194,7 @@ async fn approved_payload<F: std::future::Future<Output = Result<bool, Error>>>(
     Ok(payload)
 }
 
-fn dialog_text(payload: &str) -> String {
+pub(crate) fn dialog_text(payload: &str) -> String {
     let mut visible = String::with_capacity(payload.len());
     for ch in payload.chars() {
         // GTK's native message description is a printf format string.

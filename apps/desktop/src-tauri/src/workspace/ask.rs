@@ -190,7 +190,7 @@ fn eligible(name: &str) -> bool {
     })
 }
 
-fn excluded_content(content: &str) -> bool {
+pub(crate) fn excluded_content(content: &str) -> bool {
     content.contains('\0')
         || content.contains("PRIVATE KEY-----")
         || content.lines().any(|line| {

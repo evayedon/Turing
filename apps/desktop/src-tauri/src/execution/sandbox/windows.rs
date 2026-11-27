@@ -101,6 +101,10 @@ fn hresult(code: i32) -> io::Result<()> {
 
 struct Sid(PSID);
 
+// The Win32 allocation has a single owner, is immutable after construction,
+// and FreeSid is independent of the thread that allocated it.
+unsafe impl Send for Sid {}
+
 impl Drop for Sid {
     fn drop(&mut self) {
         if !self.0.is_null() {

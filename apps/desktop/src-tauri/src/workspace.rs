@@ -4,7 +4,7 @@ mod agent;
 pub(crate) mod ask;
 mod file;
 mod mutations;
-mod search;
+pub(crate) mod search;
 mod selected;
 mod symbols;
 mod watch;

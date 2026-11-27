@@ -55,10 +55,10 @@ struct Declaration {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Symbol {
+pub(crate) struct Symbol {
     name: String,
     kind: Kind,
-    relative_path: String,
+    pub(crate) relative_path: String,
     line: usize,
     character: usize,
 }
@@ -69,7 +69,7 @@ pub struct SymbolsResponse {
     generation: u64,
     complete: bool,
     truncated: bool,
-    symbols: Vec<Symbol>,
+    pub(crate) symbols: Vec<Symbol>,
 }
 
 struct IndexedFile {

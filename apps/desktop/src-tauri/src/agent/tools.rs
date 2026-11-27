@@ -1,4 +1,4 @@
-//! Model tool schemas and validation. Execution is added in Task 10.
+//! Model tool schemas and validation. `agent::task` executes the calls.
 #![allow(dead_code)]
 
 use super::{model::ToolCall, policy::Denial};
