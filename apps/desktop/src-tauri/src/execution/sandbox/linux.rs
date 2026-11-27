@@ -22,6 +22,7 @@ const SYSTEM_READS: &[&str] = &[
     "/lib",
     "/lib64",
     "/nix/store",
+    "/etc/alternatives",
     "/etc/ld.so.cache",
     "/etc/ld.so.conf",
     "/etc/ld.so.conf.d",
@@ -363,6 +364,9 @@ impl Policy {
                 command.arg("--ro-bind").arg(path).arg(path);
             }
         }
+        // Seal the synthetic root and its parent scaffolding. This does not
+        // change the mode of the workspace, scratch, or other mounted paths.
+        command.args(["--remount-ro", "/"]);
         // bwrap applies the filter to the program only, after its own namespace setup (which
         // needs a netlink socket), and sets no_new_privs itself.
         let program = seccomp_program(filter)?;
