@@ -4,9 +4,9 @@ use serde::Deserialize;
 use tauri::{ipc::Channel, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-pub(super) const MODEL: &str = "qwen/qwen3-coder";
+pub(crate) const MODEL: &str = "qwen/qwen3-coder";
 pub(super) const ID: &str = "openrouter-qwen3-coder";
-pub(super) const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+pub(crate) const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 
 // The native review lists every shared file range; the payload carries those lines.
 const CLOUD_BYTES: usize = 24 * 1024;
@@ -18,7 +18,7 @@ fn entry() -> Result<keyring::Entry, Error> {
     keyring::Entry::new(SERVICE, ACCOUNT).map_err(|_| Error::CredentialStore)
 }
 
-pub(super) fn authorization() -> Result<HeaderValue, Error> {
+pub(crate) fn authorization() -> Result<HeaderValue, Error> {
     let key = match entry()?.get_password() {
         Ok(key) => key,
         Err(keyring::Error::NoEntry) => return Err(Error::CloudKeyRequired),

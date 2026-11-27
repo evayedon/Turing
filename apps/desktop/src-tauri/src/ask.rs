@@ -175,7 +175,7 @@ pub async fn ask_local_status(
 
 /// Accepts only `http://<loopback>:<port>` (optionally with a trailing slash) and
 /// returns it normalized; callers append fixed paths, so no path, query, or userinfo.
-fn local_base(server: &str) -> Result<String, Error> {
+pub(crate) fn local_base(server: &str) -> Result<String, Error> {
     let rest = server
         .strip_prefix("http://")
         .ok_or(Error::InvalidLocalServer)?;
@@ -395,15 +395,7 @@ pub async fn ask_run(
                 None,
             )
         };
-        let client = reqwest::Client::builder()
-            .https_only(cloud)
-            .retry(reqwest::retry::never())
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|_| Error::InferenceFailed)?;
+        let client = inference_client(cloud).map_err(|_| Error::InferenceFailed)?;
         let mut outgoing = client.post(if cloud {
             cloud::ENDPOINT.to_owned()
         } else {
@@ -573,9 +565,9 @@ struct Frame {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Usage {
     #[serde(rename(serialize = "inputTokens", deserialize = "prompt_tokens"))]
-    input_tokens: u64,
+    pub(crate) input_tokens: u64,
     #[serde(rename(serialize = "outputTokens", deserialize = "completion_tokens"))]
-    output_tokens: u64,
+    pub(crate) output_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -677,7 +669,18 @@ async fn infer(
     Err(Error::InferenceFailed)
 }
 
-fn response_error(status: reqwest::StatusCode, cloud: bool) -> Error {
+pub(crate) fn inference_client(cloud: bool) -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .https_only(cloud)
+        .retry(reqwest::retry::never())
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(120))
+        .build()
+}
+
+pub(crate) fn response_error(status: reqwest::StatusCode, cloud: bool) -> Error {
     match (cloud, status.as_u16()) {
         (true, 401 | 403) => Error::ProviderUnauthorized,
         // OpenRouter answers 404 when no endpoint satisfies the data-collection policy.
@@ -690,10 +693,61 @@ fn response_error(status: reqwest::StatusCode, cloud: bool) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod fake_server {
+    use super::Duration;
     use std::{
         io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+    };
+
+    pub(crate) fn serve(frames: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        respond("200 OK", frames)
+    }
+
+    /// Answers one request with `status` and `frames`; returns the request body.
+    pub(crate) fn respond(
+        status: &'static str,
+        frames: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(&socket);
+            let mut length = None;
+            loop {
+                let mut line = String::new();
+                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.strip_prefix("content-length: ") {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            let mut body = vec![0; length.unwrap()];
+            reader.read_exact(&mut body).unwrap();
+            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{frames}", frames.len()).unwrap();
+            String::from_utf8(body).unwrap()
+        });
+        (url, server)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        fake_server::{respond, serve},
+        *,
+    };
+    use std::{
+        io::{Read, Write},
         net::TcpListener,
     };
 
@@ -902,45 +956,6 @@ mod tests {
             tauri::async_runtime::block_on(local_status(&url)),
             LocalStatus::Offline
         );
-    }
-
-    fn serve(frames: &'static str) -> (String, std::thread::JoinHandle<String>) {
-        respond("200 OK", frames)
-    }
-
-    /// Answers one request with `status` and `frames`; returns the request body.
-    fn respond(
-        status: &'static str,
-        frames: &'static str,
-    ) -> (String, std::thread::JoinHandle<String>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let url = format!(
-            "http://{}/v1/chat/completions",
-            listener.local_addr().unwrap()
-        );
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = BufReader::new(&socket);
-            let mut length = None;
-            loop {
-                let mut line = String::new();
-                assert_ne!(reader.read_line(&mut line).unwrap(), 0);
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.strip_prefix("content-length: ") {
-                    length = Some(value.trim().parse::<usize>().unwrap());
-                }
-            }
-            let mut body = vec![0; length.unwrap()];
-            reader.read_exact(&mut body).unwrap();
-            write!(socket, "HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{frames}", frames.len()).unwrap();
-            String::from_utf8(body).unwrap()
-        });
-        (url, server)
     }
 
     #[test]
