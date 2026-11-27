@@ -18,6 +18,7 @@ const PROFILE: &str = r#"
     (subpath "/System/Library") (subpath "/usr") (subpath "/bin") (subpath "/sbin")
     (subpath "/Library/Developer") (subpath "/Library/Java/JavaVirtualMachines")
     (subpath "/Applications/Xcode.app/Contents/Developer")
+    (regex #"^/Applications/Xcode_[0-9]+(\.[0-9]+)*\.app/Contents/Developer(/|$)")
     (subpath "/opt/homebrew") (subpath "/opt/local")
     (literal "/private/etc/localtime") (literal "/private/etc/hosts")
     (literal "/private/etc/resolv.conf") (literal "/private/etc/passwd")
