@@ -45,6 +45,7 @@ pub(crate) struct ArgvRun<'a> {
     pub temp: &'a Path,
     pub timeout: Duration,
     pub network: bool,
+    pub sandbox: Option<&'a super::sandbox::Sandbox>,
     pub stopped: &'a AtomicBool,
 }
 
@@ -94,8 +95,21 @@ pub(crate) fn run_argv(run: ArgvRun<'_>) -> Result<ArgvOutcome, ExecutionError> 
     let executable = resolve_program(program, inherited.as_deref())?;
     let path = std::env::join_paths(toolchain::directories(inherited.as_deref()))
         .map_err(|_| ExecutionError::ProcessUnavailable)?;
-    let mut command = Command::new(executable);
-    command.args(args);
+    let mut command = match run.sandbox {
+        Some(sandbox) => sandbox.command(
+            run.cwd,
+            run.cwd_path,
+            run.temp,
+            &executable,
+            run.network,
+            args,
+        )?,
+        None => {
+            let mut command = Command::new(executable);
+            command.args(args);
+            command
+        }
+    };
     baseline_env(&mut command, &path, run.temp);
     for key in EXTRA_ENV {
         if let Some(value) = std::env::var_os(key).filter(|_| !secret_env_name(key)) {
@@ -137,7 +151,7 @@ pub(crate) fn run_argv(run: ArgvRun<'_>) -> Result<ArgvOutcome, ExecutionError> 
         truncated: state.truncated,
         stdout: text(Stream::Stdout),
         stderr: text(Stream::Stderr),
-        sandboxed: false,
+        sandboxed: run.sandbox.is_some(),
     })
 }
 
@@ -219,6 +233,7 @@ mod tests {
             temp: temp.path(),
             timeout,
             network,
+            sandbox: None,
             stopped: &stopped,
         })
         .unwrap();
@@ -278,6 +293,7 @@ mod tests {
             temp: temp.path(),
             timeout: COMMAND_TIMEOUT,
             network: true,
+            sandbox: None,
             stopped: &stopped,
         })
         .unwrap();
@@ -364,6 +380,7 @@ mod tests {
                 temp: temp.path(),
                 timeout: COMMAND_TIMEOUT,
                 network: true,
+                sandbox: None,
                 stopped: &stopped,
             })
             .unwrap()

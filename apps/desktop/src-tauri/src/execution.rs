@@ -1,6 +1,7 @@
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod argv;
 mod process;
+pub(crate) mod sandbox;
 mod toolchain;
 
 use crate::windows::workbench;
