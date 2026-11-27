@@ -534,7 +534,7 @@ mod conformance {
                 try {
                     require('fs').readFileSync(path);
                 } catch (error) {
-                    if (error.path === path && ['EPERM', 'EACCES', 'ENOENT'].includes(error.code)) {
+                    if (error.syscall === 'open' && ['EPERM', 'EACCES', 'ENOENT'].includes(error.code)) {
                         console.error('outside read blocked:', error.code);
                         process.exit(23);
                     }
