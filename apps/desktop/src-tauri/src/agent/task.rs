@@ -130,7 +130,7 @@ impl Verifier for ArgvVerifier {
             return unavailable("Verification program unavailable");
         };
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
-        match Sandbox::detect(
+        match sandbox::detect_for_program(
             &self.cwd,
             &self.root,
             self.temp.path(),

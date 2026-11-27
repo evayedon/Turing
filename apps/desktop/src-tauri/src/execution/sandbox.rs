@@ -36,6 +36,47 @@ pub(crate) fn revoke_grants(task: Uuid, grants: &[String]) -> io::Result<()> {
     }
 }
 
+/// Node resolves the real path of every script and module by stat'ing each ancestor
+/// directory, and an AppContainer cannot stat the drive root or the user profile. Node-family
+/// programs therefore run unsandboxed on Windows, after the per-run unsandboxed approval.
+pub(crate) const WINDOWS_NODE_UNSANDBOXED: &str = "Node cannot run in the Windows sandbox";
+
+const NODE_FAMILY: &[&str] = &[
+    "node", "npm", "npx", "pnpm", "pnpx", "yarn", "corepack", "bun", "bunx", "deno",
+];
+
+/// Matches the program's basename, case-insensitively, with or without a Windows shim suffix.
+fn node_family(program: &Path) -> bool {
+    let Some(name) = program
+        .to_str()
+        .and_then(|path| path.rsplit(['/', '\\']).next())
+    else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    let name = [".exe", ".cmd", ".ps1"]
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .unwrap_or(&name);
+    NODE_FAMILY.contains(&name)
+}
+
+/// The one decision on whether a verification `program` runs sandboxed on this machine.
+pub(crate) fn detect_for_program(
+    cwd: &cap_std::fs::Dir,
+    workspace: &Path,
+    temp: &Path,
+    home: Option<&Path>,
+    program: &Path,
+    network: bool,
+    grants: TaskGrants<'_>,
+) -> Availability {
+    if cfg!(windows) && node_family(program) {
+        return Availability::Unavailable(WINDOWS_NODE_UNSANDBOXED);
+    }
+    Sandbox::detect(cwd, workspace, temp, home, program, network, grants)
+}
+
 use super::ExecutionError;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::{baseline_env, process, Progress};
@@ -204,6 +245,41 @@ impl Sandbox {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_node_family_programs_by_basename() {
+        for program in [
+            "node",
+            "/usr/local/bin/npm",
+            r"C:\Program Files\nodejs\node.exe",
+            r"C:\Users\dev\AppData\Roaming\npm\pnpm.cmd",
+            "Yarn.PS1",
+            "NPX.CMD",
+            "corepack",
+            "bunx.exe",
+            "deno",
+            "pnpx",
+            "bun",
+        ] {
+            assert!(node_family(Path::new(program)), "{program}");
+        }
+        for program in [
+            "cargo",
+            "cargo.exe",
+            "python.exe",
+            "nodemon",
+            "node.js",
+            "my-node.exe",
+            "go",
+        ] {
+            assert!(!node_family(Path::new(program)), "{program}");
+        }
+    }
+}
+
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod conformance {
     use super::*;
@@ -359,11 +435,35 @@ mod conformance {
         }
     }
 
+    fn detect_for_program(fixture: &Fixture, program: &Path) -> Availability {
+        let cwd = Dir::open_ambient_dir(&fixture.workspace, ambient_authority()).unwrap();
+        super::detect_for_program(
+            &cwd,
+            &fixture.workspace,
+            &fixture.temp,
+            Some(&fixture.home),
+            program,
+            false,
+            TaskGrants {
+                task_id: Uuid::new_v4(),
+                record: &mut |_| Ok(()),
+            },
+        )
+    }
+
     /// Test runners load script files, and Node resolves the real path of each
     /// module by checking every ancestor directory, unlike `node -e`.
     #[test]
     fn runs_a_script_file_that_requires_a_workspace_module() {
         let fixture = Fixture::new();
+        if cfg!(windows) {
+            // The AppContainer cannot stat the workspace's ancestors (EPERM on `C:\`).
+            assert!(matches!(
+                detect_for_program(&fixture, &fixture.node),
+                Availability::Unavailable(WINDOWS_NODE_UNSANDBOXED)
+            ));
+            return;
+        }
         let Some(sandbox) = fixture.detect(false) else {
             return;
         };
@@ -384,23 +484,28 @@ mod conformance {
             "require(require('path').resolve(process.argv[1]))",
             &[Path::new("main.js")],
         );
-        if result.exit_code != Some(0) {
-            // Name the directory the sandbox cannot stat, so CI shows the cause.
-            let probe = fixture.run(
-                &sandbox,
-                false,
-                "const path = require('path'); let dir = path.resolve(process.argv[1]); \
-                 for (;;) { try { require('fs').lstatSync(dir); console.log('ok', dir); } \
-                 catch (error) { console.log(error.code, dir); } \
-                 const parent = path.dirname(dir); if (parent === dir) break; dir = parent; }",
-                &[Path::new("main.js")],
-            );
-            panic!(
-                "exit {:?}\nstderr: {}\nancestor lstat probe:\n{}",
-                result.exit_code, result.stderr, probe.stdout
-            );
-        }
+        assert_eq!(result.exit_code, Some(0), "stderr: {}", result.stderr);
         assert!(result.stdout.contains("loaded 5"), "{}", result.stdout);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runs_node_unsandboxed_and_other_programs_in_the_container() {
+        let fixture = Fixture::new();
+        assert!(matches!(
+            detect_for_program(&fixture, &fixture.node),
+            Availability::Unavailable(WINDOWS_NODE_UNSANDBOXED)
+        ));
+        // A program outside the Node family keeps the AppContainer. A renamed copy of
+        // node.exe is a portable executable that answers the `--version` self-check.
+        let bin = fixture.root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let runner = bin.join("runner.exe");
+        fs::copy(&fixture.node, &runner).unwrap();
+        assert!(matches!(
+            detect_for_program(&fixture, &runner),
+            Availability::Available(_)
+        ));
     }
 
     #[test]

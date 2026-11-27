@@ -228,9 +228,17 @@ fn plan_edit_fail_fix_pass_review_rollback() {
         "review",
         "finished",
     ];
-    let sandboxed = events[5]["sandbox"]["sandboxed"].as_bool().unwrap();
-    if std::env::var_os("TURING_CI_REQUIRE_SANDBOX").is_some() {
-        assert!(sandboxed);
+    let sandbox = &events[5]["sandbox"];
+    let sandboxed = sandbox["sandboxed"].as_bool().unwrap();
+    if cfg!(windows) {
+        // Node cannot run in the AppContainer, so each run asks and is marked unsandboxed.
+        assert!(!sandboxed, "{sandbox}");
+        assert_eq!(
+            sandbox["label"],
+            crate::execution::sandbox::WINDOWS_NODE_UNSANDBOXED
+        );
+    } else if std::env::var_os("TURING_CI_REQUIRE_SANDBOX").is_some() {
+        assert!(sandboxed, "{sandbox}");
     }
     if !sandboxed {
         for index in (0..expected.len()).rev() {
@@ -258,8 +266,12 @@ fn plan_edit_fail_fix_pass_review_rollback() {
             "expected exit {exit} printing {sum:?}, got {outcome}"
         );
     }
+    for command in &commands {
+        assert_eq!(command["outcome"]["sandboxed"], sandboxed);
+    }
     let review = events.iter().find(|e| e["kind"] == "review").unwrap();
     assert_eq!(review["verification"]["status"], "passed");
+    assert_eq!(review["sandboxed"], sandboxed);
     assert_eq!(review["files"].as_array().unwrap().len(), 2);
     assert_eq!(events[3]["inputTokens"], 120);
     assert_eq!(events[3]["sources"][0]["relativePath"], "src/sum.js");
