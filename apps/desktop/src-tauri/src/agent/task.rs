@@ -606,8 +606,9 @@ impl Task<'_> {
             None
         };
         let complete = report.as_ref().is_none_or(|report| report.complete);
-        // A complete rollback already removed the checkpoint directory.
-        if report.is_none() {
+        // Keep or a complete rollback: revoke the grant log, then drop the checkpoint. A partial
+        // rollback keeps both for another attempt.
+        if complete {
             checkpoint.discard().map_err(|_| AgentError::CheckpointIo)?;
         }
         self.emit(AgentEvent::Finished {

@@ -429,33 +429,29 @@ impl Checkpoint {
         remaining.reverse();
         dirs.reverse();
         let complete = remaining.is_empty();
-        if complete {
-            // Every path is restored; a leftover directory would only re-offer no-op work.
-            if let Err(error) = fs::remove_dir_all(&self.dir) {
-                eprintln!(
-                    "turing agent checkpoint: cannot remove a rolled-back checkpoint: {error}"
-                );
-            }
-            self.manifest.entries.clear();
-            self.manifest.created_dirs.clear();
-        } else {
-            // On failure the stored manifest still lists every entry; rerunning is a no-op for
-            // the restored ones.
-            if let Err(error) = self.update(|manifest| {
-                manifest.entries = remaining;
-                manifest.created_dirs = dirs;
-            }) {
-                eprintln!("turing agent checkpoint: cannot record rollback progress: {error}");
-            }
+        // On failure the stored manifest still lists every entry; rerunning is a no-op for the
+        // restored ones. A complete rollback keeps the ACL grant log: the caller then calls
+        // `discard`, which revokes the grants before it deletes the checkpoint.
+        if let Err(error) = self.update(|manifest| {
+            manifest.entries = remaining;
+            manifest.created_dirs = dirs;
+        }) {
+            eprintln!("turing agent checkpoint: cannot record rollback progress: {error}");
         }
         RollbackReport { files, complete }
     }
 
-    /// Keep: drops the checkpoint and leaves the agent's changes in place.
+    /// Keep, or the end of a complete rollback: revokes every logged sandbox grant, then deletes
+    /// the checkpoint. If revocation fails, the checkpoint and its grant log stay for a retry.
     pub(crate) fn discard(self) -> io::Result<()> {
-        // Use the same journal for normal completion and recovery after a crash.
-        // Retain the checkpoint if cleanup fails so it can be retried.
-        crate::execution::sandbox::revoke_grants(self.task_id(), self.acl_grants())?;
+        self.discard_with(crate::execution::sandbox::revoke_grants)
+    }
+
+    fn discard_with(
+        self,
+        revoke: impl FnOnce(Uuid, &[String]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        revoke(self.task_id(), self.acl_grants())?;
         fs::remove_dir_all(&self.dir)
     }
 
@@ -581,6 +577,41 @@ pub(crate) fn unfinished(app_data: &Path, workspace_identity: &str) -> Vec<Recov
         Recovery::Corrupt { task_id, .. } => *task_id,
     });
     found
+}
+
+/// Keep for a checkpoint that cannot be opened (`Recovery::Corrupt`). The grant log is read from
+/// the raw manifest and revoked first; a log that exists but cannot be read keeps the checkpoint.
+pub(crate) fn discard_unreadable(app_data: &Path, task_id: Uuid) -> io::Result<()> {
+    discard_unreadable_with(app_data, task_id, crate::execution::sandbox::revoke_grants)
+}
+
+fn discard_unreadable_with(
+    app_data: &Path,
+    task_id: Uuid,
+    revoke: impl FnOnce(Uuid, &[String]) -> io::Result<()>,
+) -> io::Result<()> {
+    let dir = task_dir(app_data, task_id);
+    let grants = match read_limited(&dir.join(MANIFEST), MAX_MANIFEST) {
+        // Grants are only logged through the manifest, so without one none were logged.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        manifest => {
+            let grants = manifest.ok().and_then(|bytes| {
+                let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+                match manifest.get("aclGrants") {
+                    None => Some(Vec::new()),
+                    Some(grants) => serde_json::from_value::<Vec<String>>(grants.clone()).ok(),
+                }
+            });
+            // Only Windows logs grants, so elsewhere an unreadable log holds nothing to revoke.
+            match grants {
+                Some(grants) => grants,
+                None if cfg!(windows) => return Err(invalid("unreadable sandbox grant log")),
+                None => Vec::new(),
+            }
+        }
+    };
+    revoke(task_id, &grants)?;
+    fs::remove_dir_all(dir)
 }
 
 fn corrupt(
@@ -815,6 +846,9 @@ mod tests {
         }
         assert!(!f.folder.path().join("new").exists());
         assert!(!f.folder.path().join("e.txt").exists());
+        // The grant log outlives the rollback until `discard` revokes it.
+        assert!(task_dir(f.app_data.path(), task).exists());
+        checkpoint.discard().unwrap();
         assert!(!task_dir(f.app_data.path(), task).exists());
     }
 
@@ -1135,6 +1169,110 @@ mod tests {
         checkpoint.set_state(CheckpointState::Review).unwrap();
         let reopened = Checkpoint::open(f.app_data.path(), checkpoint.task_id()).unwrap();
         assert!(reopened.manifest.state == CheckpointState::Review);
+    }
+
+    fn failing_revoke(_: Uuid, _: &[String]) -> io::Result<()> {
+        Err(io::Error::other("revocation failed"))
+    }
+
+    #[test]
+    fn every_end_path_revokes_logged_grants_before_deleting_the_log() {
+        let f = fixture();
+        let grants = || vec!["/w".to_owned(), "/t".to_owned()];
+        let logged = |identity: &str| {
+            let mut checkpoint = f.checkpoint(identity);
+            for grant in grants() {
+                checkpoint.note_acl_grant(Path::new(&grant)).unwrap();
+            }
+            checkpoint
+        };
+        let reopen_grants = |task: Uuid| {
+            Checkpoint::open(f.app_data.path(), task)
+                .unwrap()
+                .acl_grants()
+                .to_vec()
+        };
+
+        // Keep (and the in-session end): a failed revocation keeps the log for a retry.
+        let checkpoint = logged("A");
+        let task = checkpoint.task_id();
+        assert!(checkpoint.discard_with(failing_revoke).is_err());
+        assert_eq!(reopen_grants(task), grants());
+        let mut revoked = Vec::new();
+        Checkpoint::open(f.app_data.path(), task)
+            .unwrap()
+            .discard_with(|id, list| {
+                assert_eq!(id, task);
+                revoked = list.to_vec();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(revoked, grants());
+        assert!(!task_dir(f.app_data.path(), task).exists());
+
+        // Crash recovery, then a complete Roll back: the log survives until revoked.
+        let mut checkpoint = logged("A");
+        let task = checkpoint.task_id();
+        checkpoint.record("gone.txt", None).unwrap();
+        drop(checkpoint);
+        let mut checkpoint = Checkpoint::open(f.app_data.path(), task).unwrap();
+        assert!(f.rollback(&mut checkpoint, &mut |_| true).complete);
+        assert!(checkpoint.discard_with(failing_revoke).is_err());
+        assert_eq!(reopen_grants(task), grants());
+
+        // A partial rollback keeps every grant logged.
+        let mut checkpoint = logged("A");
+        let task = checkpoint.task_id();
+        fs::write(f.folder.path().join("p.txt"), "original").unwrap();
+        let version = f.version("p.txt");
+        checkpoint
+            .record("p.txt", Some((b"original", &version)))
+            .unwrap();
+        f.agent_write(&mut checkpoint, "p.txt", "agent");
+        fs::write(f.folder.path().join("p.txt"), "developer").unwrap();
+        assert!(!f.rollback(&mut checkpoint, &mut |_| false).complete);
+        assert_eq!(reopen_grants(task), grants());
+
+        // A corrupt checkpoint: the raw manifest's log is revoked before deletion.
+        let mut checkpoint = logged("A");
+        let task = checkpoint.task_id();
+        checkpoint.record("c.txt", Some((b"c", "v"))).unwrap();
+        let dir = task_dir(f.app_data.path(), task);
+        fs::write(
+            dir.join("blobs")
+                .join(format!("{:x}", Sha256::digest(b"c"))),
+            "tampered",
+        )
+        .unwrap();
+        assert!(Checkpoint::open(f.app_data.path(), task).is_err());
+        assert!(discard_unreadable_with(f.app_data.path(), task, failing_revoke).is_err());
+        assert!(dir.exists());
+        let mut revoked = Vec::new();
+        discard_unreadable_with(f.app_data.path(), task, |_, list| {
+            revoked = list.to_vec();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(revoked, grants());
+        assert!(!dir.exists());
+
+        // A log that exists but cannot be read is never deleted where grants are logged.
+        let task = logged("A").task_id();
+        let dir = task_dir(f.app_data.path(), task);
+        fs::write(dir.join("manifest.json"), "{not json").unwrap();
+        let result = discard_unreadable_with(f.app_data.path(), task, |_, list| {
+            assert!(list.is_empty());
+            Ok(())
+        });
+        assert_eq!(result.is_err(), cfg!(windows));
+        assert_eq!(dir.exists(), cfg!(windows));
+
+        // A lost manifest logged nothing; the platform revocation still runs.
+        let task = f.checkpoint("A").task_id();
+        let dir = task_dir(f.app_data.path(), task);
+        fs::remove_file(dir.join("manifest.json")).unwrap();
+        discard_unreadable(f.app_data.path(), task).unwrap();
+        assert!(!dir.exists());
     }
 
     #[test]
