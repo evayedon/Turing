@@ -234,6 +234,15 @@ fn exited_during_job_assignment(child: &Child) -> bool {
     unsafe { WaitForSingleObject(child.as_raw_handle(), 50) == WAIT_OBJECT_0 }
 }
 
+#[cfg(unix)]
+trait OutputPipe: Read + std::os::fd::AsRawFd {}
+#[cfg(unix)]
+impl<T: Read + std::os::fd::AsRawFd> OutputPipe for T {}
+#[cfg(windows)]
+trait OutputPipe: Read + std::os::windows::io::AsRawHandle {}
+#[cfg(windows)]
+impl<T: Read + std::os::windows::io::AsRawHandle> OutputPipe for T {}
+
 fn collect(
     child: &mut Child,
     progress: &Progress,
@@ -241,8 +250,52 @@ fn collect(
     building: bool,
     timeout: Duration,
 ) -> Result<Option<ExitStatus>> {
-    let mut stdout = child.stdout.take().ok_or(ExecutionError::Internal)?;
-    let mut stderr = child.stderr.take().ok_or(ExecutionError::Internal)?;
+    let stdout = child.stdout.take().ok_or(ExecutionError::Internal)?;
+    let stderr = child.stderr.take().ok_or(ExecutionError::Internal)?;
+    collect_output(
+        stdout,
+        stderr,
+        || child.try_wait(),
+        progress,
+        stopped,
+        building,
+        timeout,
+    )
+}
+
+#[cfg(windows)]
+pub(super) fn supervise_container(
+    child: super::sandbox::windows::ContainerChild,
+    progress: &Progress,
+    stopped: &AtomicBool,
+    timeout: Duration,
+) -> Result<Option<ExitStatus>> {
+    let super::sandbox::windows::ContainerChild {
+        process,
+        stdout,
+        stderr,
+        job: _job,
+    } = child;
+    collect_output(
+        stdout,
+        stderr,
+        || super::sandbox::windows::try_wait(&process),
+        progress,
+        stopped,
+        false,
+        timeout,
+    )
+}
+
+fn collect_output(
+    mut stdout: impl OutputPipe,
+    mut stderr: impl OutputPipe,
+    mut try_wait: impl FnMut() -> io::Result<Option<ExitStatus>>,
+    progress: &Progress,
+    stopped: &AtomicBool,
+    building: bool,
+    timeout: Duration,
+) -> Result<Option<ExitStatus>> {
     configure(&stdout)
         .and_then(|_| configure(&stderr))
         .map_err(|_| ExecutionError::Internal)?;
@@ -273,8 +326,7 @@ fn collect(
                 return Ok(Some(status));
             }
         } else {
-            exit = child
-                .try_wait()
+            exit = try_wait()
                 .map_err(|_| ExecutionError::Internal)?
                 .map(|status| (status, Instant::now()));
         }

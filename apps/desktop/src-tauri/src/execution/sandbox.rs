@@ -1,8 +1,14 @@
 //! OS isolation for agent verification. Unsupported hosts report unavailability
 //! so the caller can require a separate approval for an unsandboxed run.
 
+// Sandbox detection is wired into the production task loop in Task 10.
+#![cfg_attr(not(test), allow(dead_code))]
+
 #[cfg(target_os = "macos")]
 mod macos;
+
+#[cfg(windows)]
+pub(super) mod windows;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -12,14 +18,30 @@ use linux as platform;
 #[cfg(target_os = "macos")]
 use macos as platform;
 
-use std::{path::Path, process::Command};
+use std::{io, path::Path, process::Command};
+use uuid::Uuid;
+
+pub(crate) struct TaskGrants<'a> {
+    pub task_id: Uuid,
+    pub record: &'a mut dyn FnMut(&Path) -> io::Result<()>,
+}
+
+pub(crate) fn revoke_grants(task: Uuid, grants: &[String]) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::revoke(task, grants);
+    #[cfg(not(windows))]
+    {
+        let _ = (task, grants);
+        Ok(())
+    }
+}
 
 use super::ExecutionError;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::{baseline_env, process, Progress};
 
 pub(crate) enum Availability {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     Available(Sandbox),
     Unavailable(&'static str),
 }
@@ -27,32 +49,35 @@ pub(crate) enum Availability {
 pub(crate) struct Sandbox {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     policy: platform::Policy,
+    #[cfg(windows)]
+    policy: windows::Policy,
 }
 
 impl Sandbox {
     pub(crate) fn detect(
+        cwd: &cap_std::fs::Dir,
         workspace: &Path,
         temp: &Path,
         home: Option<&Path>,
         program: &Path,
         network: bool,
+        grants: TaskGrants<'_>,
     ) -> Availability {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            use cap_std::{ambient_authority, fs::Dir};
+            let _ = (grants.task_id, grants.record);
             use std::{sync::atomic::AtomicBool, time::Duration};
 
             let probe = |policy: platform::Policy| {
-                let cwd = Dir::open_ambient_dir(workspace, ambient_authority()).ok()?;
-                if !policy.matches(&cwd, workspace, temp, program, network) {
+                if !policy.matches(cwd, workspace, temp, program, network) {
                     return None;
                 }
-                let mut command = policy.command(&cwd, &["--version".into()]).ok()?;
+                let mut command = policy.command(cwd, &["--version".into()]).ok()?;
                 let path = std::env::var_os("PATH").unwrap_or_default();
                 baseline_env(&mut command, &path, temp);
                 let status = process::supervise(
                     &mut command,
-                    &cwd,
+                    cwd,
                     workspace,
                     &Progress::new(None),
                     &AtomicBool::new(false),
@@ -67,13 +92,51 @@ impl Sandbox {
                 None => Availability::Unavailable(platform::UNAVAILABLE),
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(windows)]
         {
-            let _ = (workspace, temp, home, program, network);
+            use std::{sync::atomic::AtomicBool, time::Duration};
+
+            let mut probe = || {
+                let policy = windows::Policy::new(
+                    grants.task_id,
+                    cwd,
+                    workspace,
+                    temp,
+                    home,
+                    program,
+                    network,
+                    grants.record,
+                )
+                .ok()?;
+                let mut command = Command::new(program);
+                command.arg("--version");
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                super::baseline_env(&mut command, &path, temp);
+                let child = policy.spawn(&command).ok()?;
+                let status = super::process::supervise_container(
+                    child,
+                    &super::Progress::new(None),
+                    &AtomicBool::new(false),
+                    Duration::from_secs(20),
+                )
+                .ok()??;
+                status.success().then_some(Self { policy })
+            };
+            match probe() {
+                Some(sandbox) => Availability::Available(sandbox),
+                None => {
+                    Availability::Unavailable("AppContainer could not run the verification program")
+                }
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        {
+            let _ = (cwd, workspace, temp, home, program, network, grants);
             Availability::Unavailable("Agent test isolation is unavailable on this platform")
         }
     }
 
+    #[cfg(not(windows))]
     pub(super) fn command(
         &self,
         cwd: &cap_std::fs::Dir,
@@ -94,9 +157,34 @@ impl Sandbox {
         let _ = (cwd, workspace, temp, program, network, args);
         Err(ExecutionError::ProcessUnavailable)
     }
+    #[cfg(windows)]
+    pub(super) fn run_windows(
+        &self,
+        run: &super::argv::ArgvRun<'_>,
+        command: &Command,
+        progress: &super::Progress,
+    ) -> Result<Option<std::process::ExitStatus>, ExecutionError> {
+        if run.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(None);
+        }
+        if !self.policy.matches(
+            run.cwd,
+            run.cwd_path,
+            run.temp,
+            Path::new(command.get_program()),
+            run.network,
+        ) {
+            return Err(ExecutionError::ProcessUnavailable);
+        }
+        let child = self
+            .policy
+            .spawn(command)
+            .map_err(|_| ExecutionError::ProcessUnavailable)?;
+        super::process::supervise_container(child, progress, run.stopped, run.timeout)
+    }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod conformance {
     use super::*;
     use crate::execution::argv::{resolve_program, run_argv, ArgvOutcome, ArgvRun};
@@ -133,12 +221,18 @@ mod conformance {
         }
 
         fn detect(&self, network: bool) -> Option<Sandbox> {
+            let cwd = Dir::open_ambient_dir(&self.workspace, ambient_authority()).unwrap();
             match Sandbox::detect(
+                &cwd,
                 &self.workspace,
                 &self.temp,
                 Some(&self.home),
                 &self.node,
                 network,
+                TaskGrants {
+                    task_id: Uuid::new_v4(),
+                    record: &mut |_| Ok(()),
+                },
             ) {
                 Availability::Available(sandbox) => Some(sandbox),
                 Availability::Unavailable(reason) => {
@@ -217,19 +311,29 @@ mod conformance {
             return;
         };
         let cwd = Dir::open_ambient_dir(&fixture.workspace, ambient_authority()).unwrap();
-        fs::rename(&fixture.workspace, fixture.root.path().join("moved")).unwrap();
-        fs::create_dir(&fixture.workspace).unwrap();
-
-        assert!(sandbox
-            .command(
-                &cwd,
-                &fixture.workspace,
-                &fixture.temp,
-                &fixture.node,
-                false,
-                &[],
-            )
-            .is_err());
+        let moved = fixture.root.path().join("moved");
+        #[cfg(windows)]
+        {
+            assert!(fs::rename(&fixture.workspace, moved).is_err());
+            drop(sandbox);
+            drop(cwd);
+            fs::rename(&fixture.workspace, fixture.root.path().join("moved")).unwrap();
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&fixture.workspace, moved).unwrap();
+            fs::create_dir(&fixture.workspace).unwrap();
+            assert!(sandbox
+                .command(
+                    &cwd,
+                    &fixture.workspace,
+                    &fixture.temp,
+                    &fixture.node,
+                    false,
+                    &[]
+                )
+                .is_err());
+        }
     }
 
     #[test]
@@ -238,6 +342,7 @@ mod conformance {
         let Some(offline) = fixture.detect(false) else {
             return;
         };
+        #[cfg(not(windows))]
         let online = fixture.detect(true).expect("online sandbox self-check");
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -251,9 +356,13 @@ mod conformance {
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
-        let result = fixture.run(&online, true, &script, &[]);
-        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
-        assert!(listener.accept().is_ok());
+        // AppContainer's internetClient capability does not exempt loopback.
+        #[cfg(not(windows))]
+        {
+            let result = fixture.run(&online, true, &script, &[]);
+            assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+            assert!(listener.accept().is_ok());
+        }
     }
     #[cfg(target_os = "linux")]
     #[test]

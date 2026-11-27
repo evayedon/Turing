@@ -82,6 +82,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           TURING_CI_REQUIRE_WINDOWS_TOOLCHAINS: "1"
+          TURING_CI_REQUIRE_SANDBOX: "1"
         run: |
           cargo test --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml execution:: -- --test-threads=1
 

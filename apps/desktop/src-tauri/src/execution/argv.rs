@@ -95,21 +95,27 @@ pub(crate) fn run_argv(run: ArgvRun<'_>) -> Result<ArgvOutcome, ExecutionError> 
     let executable = resolve_program(program, inherited.as_deref())?;
     let path = std::env::join_paths(toolchain::directories(inherited.as_deref()))
         .map_err(|_| ExecutionError::ProcessUnavailable)?;
-    let mut command = match run.sandbox {
-        Some(sandbox) => sandbox.command(
-            run.cwd,
-            run.cwd_path,
-            run.temp,
-            &executable,
-            run.network,
-            args,
-        )?,
-        None => {
-            let mut command = Command::new(executable);
-            command.args(args);
-            command
-        }
-    };
+    #[cfg(not(windows))]
+    let sandbox_command = run
+        .sandbox
+        .map(|sandbox| {
+            sandbox.command(
+                run.cwd,
+                run.cwd_path,
+                run.temp,
+                &executable,
+                run.network,
+                args,
+            )
+        })
+        .transpose()?;
+    #[cfg(windows)]
+    let sandbox_command = None;
+    let mut command = sandbox_command.unwrap_or_else(|| {
+        let mut command = Command::new(executable);
+        command.args(args);
+        command
+    });
     baseline_env(&mut command, &path, run.temp);
     for key in EXTRA_ENV {
         if let Some(value) = std::env::var_os(key).filter(|_| !secret_env_name(key)) {
@@ -120,15 +126,25 @@ pub(crate) fn run_argv(run: ArgvRun<'_>) -> Result<ArgvOutcome, ExecutionError> 
         command.envs(OFFLINE_ENV);
     }
     let progress = Progress::new(None);
-    let (exit_code, timed_out, cancelled) = match process::supervise(
-        &mut command,
-        run.cwd,
-        run.cwd_path,
-        &progress,
-        run.stopped,
-        false,
-        run.timeout,
-    ) {
+    let supervise = |command: &mut Command| {
+        process::supervise(
+            command,
+            run.cwd,
+            run.cwd_path,
+            &progress,
+            run.stopped,
+            false,
+            run.timeout,
+        )
+    };
+    #[cfg(windows)]
+    let status = match run.sandbox {
+        Some(sandbox) => sandbox.run_windows(&run, &command, &progress),
+        None => supervise(&mut command),
+    };
+    #[cfg(not(windows))]
+    let status = supervise(&mut command);
+    let (exit_code, timed_out, cancelled) = match status {
         Ok(Some(status)) => (status.code(), false, false),
         Ok(None) => (None, false, true),
         Err(ExecutionError::TimedOut) => (None, true, false),

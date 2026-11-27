@@ -444,6 +444,9 @@ impl Checkpoint {
 
     /// Keep: drops the checkpoint and leaves the agent's changes in place.
     pub(crate) fn discard(self) -> io::Result<()> {
+        // Use the same journal for normal completion and recovery after a crash.
+        // Retain the checkpoint if cleanup fails so it can be retried.
+        crate::execution::sandbox::revoke_grants(self.task_id(), self.acl_grants())?;
         fs::remove_dir_all(&self.dir)
     }
 

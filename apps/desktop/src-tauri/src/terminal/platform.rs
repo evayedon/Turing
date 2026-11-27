@@ -267,6 +267,11 @@ impl Drop for ProcessGuard {
 
 #[cfg(windows)]
 pub fn guard(child: &dyn Child) -> Result<ProcessGuard> {
+    guard_handle(child.as_raw_handle().ok_or(TerminalError::PtyUnavailable)?)
+}
+
+#[cfg(windows)]
+pub fn guard_handle(shell: windows_sys::Win32::Foundation::HANDLE) -> Result<ProcessGuard> {
     use std::{
         os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
         ptr,
@@ -284,7 +289,6 @@ pub fn guard(child: &dyn Child) -> Result<ProcessGuard> {
     let job = unsafe { OwnedHandle::from_raw_handle(handle) };
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let shell = child.as_raw_handle().ok_or(TerminalError::PtyUnavailable)?;
     if unsafe {
         SetInformationJobObject(
             job.as_raw_handle(),
